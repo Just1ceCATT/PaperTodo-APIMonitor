@@ -1,0 +1,66 @@
+{
+  "kind": "native",
+  "id": "api.balance.monitor",
+  "name": "API 余额监测",
+  "description": "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色圆环。",
+  "version": "1.0.0",
+  "apiVersion": "1.7",
+  "stateVersion": 1,
+  "entry": "PaperTodo.Plugin.ApiBalanceMonitor.dll",
+  "capabilities": [],
+  "requires": [
+    "backgroundUpdates"
+  ],
+  "settings": [
+    {
+      "id": "apiKey",
+      "type": "string",
+      "name": "API Key（Bearer）",
+      "description": "⚠️ 本地明文存储。建议使用仅具备只读权限的子 key。重启 PaperTodo 后会自动从此设置读回。",
+      "placeholder": "sk-…",
+      "maxLength": 400,
+      "default": ""
+    },
+    {
+      "id": "pollSeconds",
+      "type": "number",
+      "name": "刷新间隔",
+      "description": "胶囊折叠后仍会按此间隔轮询（已声明 backgroundUpdates）。",
+      "min": 15,
+      "max": 3600,
+      "step": 15,
+      "default": 60,
+      "suffix": "秒",
+      "quick": true
+    },
+    {
+      "id": "currencySymbol",
+      "type": "select",
+      "name": "货币符号",
+      "default": "¥",
+      "options": [
+        { "value": "¥", "name": "¥  人民币" },
+        { "value": "$", "name": "$  美元" }
+      ]
+    },
+    {
+      "id": "balanceThreshold",
+      "type": "number",
+      "name": "余额提醒阈值",
+      "description": "当余额接近此值时圆环变黄、低于时变红。计算公式：阈值 / (余额 - 阈值)；阈值 / (余额 - 阈值) 小于 0.6 显示绿色，0.6-0.8 黄色，超过 0.8 红色。",
+      "min": 1,
+      "max": 99999,
+      "step": 1,
+      "default": 20,
+      "quick": true
+    },
+    {
+      "id": "showPercentage",
+      "type": "boolean",
+      "name": "显示百分比",
+      "description": "胶囊文字右侧附加 · X%（需要接口同时提供总额字段）。",
+      "default": true,
+      "quick": true
+    }
+  ]
+}
