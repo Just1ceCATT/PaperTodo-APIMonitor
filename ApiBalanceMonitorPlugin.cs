@@ -72,6 +72,11 @@ internal sealed record BalanceSnapshot(
 /// </summary>
 internal sealed record UsageDay(string Date, double Tokens);
 
+/// <summary>
+/// 单日消费金额（元，来自 platform.deepseek.com 消费接口的 days 汇总）。
+/// </summary>
+internal sealed record CostDay(string Date, double Cost);
+
 internal sealed class BalanceSession : IPaperBodySession
 {
     private readonly PaperBodyContext _context;
@@ -82,6 +87,7 @@ internal sealed class BalanceSession : IPaperBodySession
     private string _lastCapsuleSignature = "";
     private int _polling;
     private UsageDay[]? _usageDays;
+    private CostDay[]? _costDays;
     private PaperBodyTheme _theme;
 
     // WebView2 监视面板
@@ -264,16 +270,20 @@ internal sealed class BalanceSession : IPaperBodySession
 
         try
         {
-            // 余额与用量并行拉取（v3.1 收集方式）；用量 Token 未配置时只拉余额。
-            // 用量拉取上个月 + 本月，覆盖所有预置时段（近 30 天 / 本月 / 上月）。
+            // 余额 / 用量 / 消费并行拉取（v3.1 收集方式）；用量 Token 未配置时只拉余额。
+            // 用量与消费拉取上个月 + 本月，覆盖所有预置时段（近 30 天 / 本月 / 上月）。
             var now = DateTime.Now;
             var balanceTask = FetchBalanceAsync();
             var usageTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
                 ? Task.FromResult<UsageDay[]?>(null)
                 : FetchUsageForRecentMonthsAsync(_settings.UsageToken, now);
+            var costTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
+                ? Task.FromResult<CostDay[]?>(null)
+                : FetchCostForRecentMonthsAsync(_settings.UsageToken, now);
 
-            await Task.WhenAll(balanceTask, usageTask).ConfigureAwait(true);
+            await Task.WhenAll(balanceTask, usageTask, costTask).ConfigureAwait(true);
             _usageDays = usageTask.Result;
+            _costDays = costTask.Result;
             UpdateSnapshot(balanceTask.Result);
         }
         catch (TaskCanceledException)
@@ -330,6 +340,130 @@ internal sealed class BalanceSession : IPaperBodySession
         if (last != null) list.AddRange(last);
         if (current != null) list.AddRange(current);
         return list.ToArray();
+    }
+
+    /// <summary>
+    /// 拉取上个月 + 本月的每日消费并合并，供"近 7 天消费"统计。
+    /// </summary>
+    private async Task<CostDay[]?> FetchCostForRecentMonthsAsync(string token, DateTime now)
+    {
+        var thisMonth = new DateTime(now.Year, now.Month, 1);
+        var lastMonth = thisMonth.AddMonths(-1);
+        var currentTask = FetchCostAsync(token, thisMonth.Year, thisMonth.Month);
+        var lastTask = FetchCostAsync(token, lastMonth.Year, lastMonth.Month);
+        await Task.WhenAll(currentTask, lastTask).ConfigureAwait(false);
+        var current = currentTask.Result;
+        var last = lastTask.Result;
+        if (current == null && last == null)
+        {
+            return null;
+        }
+        var list = new List<CostDay>();
+        if (last != null) list.AddRange(last);
+        if (current != null) list.AddRange(current);
+        return list.ToArray();
+    }
+
+    /// <summary>
+    /// v3.1 收集方式：调用 platform.deepseek.com 消费接口拉取指定月份每日消费（元）。
+    /// </summary>
+    private async Task<CostDay[]?> FetchCostAsync(string token, int year, int month)
+    {
+        try
+        {
+            var url =
+                $"https://platform.deepseek.com/api/v0/usage/cost?month={month:D2}&year={year}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.TryAddWithoutValidation("x-app-version", "1.0.0");
+            request.Headers.TryAddWithoutValidation("Accept", "*/*");
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return ParseCostResponse(body);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 解析消费接口响应，汇总每天的金额。
+    /// 响应：{ data: { biz_data: [ { days: [ { date, data: [ { usage: [ { type, amount } ] } ] } ] } ] } }
+    /// amount 为元；费用类型与用量一致，逐条汇总即可。
+    /// </summary>
+    private static CostDay[]? ParseCostResponse(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("biz_data", out var bizArr) ||
+                bizArr.ValueKind != JsonValueKind.Array ||
+                !bizArr.EnumerateArray().Any())
+            {
+                return null;
+            }
+            var biz = bizArr.EnumerateArray().First();
+            var result = new List<CostDay>();
+            if (!biz.TryGetProperty("days", out var days) ||
+                days.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+            foreach (var day in days.EnumerateArray())
+            {
+                var date = day.TryGetProperty("date", out var d) &&
+                           d.ValueKind == JsonValueKind.String
+                    ? d.GetString()
+                    : null;
+                if (date == null)
+                {
+                    continue;
+                }
+                double total = 0;
+                if (day.TryGetProperty("data", out var dataArr) &&
+                    dataArr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var modelUsage in dataArr.EnumerateArray())
+                    {
+                        if (!modelUsage.TryGetProperty("usage", out var usageArr) ||
+                            usageArr.ValueKind != JsonValueKind.Array)
+                        {
+                            continue;
+                        }
+                        foreach (var entry in usageArr.EnumerateArray())
+                        {
+                            var type = entry.TryGetProperty("type", out var t) &&
+                                       t.ValueKind == JsonValueKind.String
+                                ? t.GetString()
+                                : null;
+                            if (type is not ("PROMPT_TOKEN" or "PROMPT_CACHE_HIT_TOKEN"
+                                or "PROMPT_CACHE_MISS_TOKEN" or "RESPONSE_TOKEN"))
+                            {
+                                continue;
+                            }
+                            if (entry.TryGetProperty("amount", out var a) &&
+                                a.ValueKind == JsonValueKind.String &&
+                                double.TryParse(a.GetString(), NumberStyles.Any,
+                                    CultureInfo.InvariantCulture, out var v))
+                            {
+                                total += v;
+                            }
+                        }
+                    }
+                }
+                result.Add(new CostDay(date, total));
+            }
+            return result.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -943,6 +1077,7 @@ internal sealed class BalanceSession : IPaperBodySession
             ["updateTime"] = hasData
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
+            ["cost7d"] = BuildCost7dText(),
             ["usage"] = BuildUsageArray()
         };
 
@@ -951,6 +1086,34 @@ internal sealed class BalanceSession : IPaperBodySession
             ["theme"] = theme,
             ["data"] = data
         });
+    }
+
+    /// <summary>
+    /// 近 7 天（含今天）消费总额文本；无数据返回空字符串。
+    /// </summary>
+    private string BuildCost7dText()
+    {
+        if (_costDays == null || _costDays.Length == 0)
+        {
+            return "";
+        }
+        var now = DateTime.Now;
+        var start = now.AddDays(-6).Date;
+        double total = 0;
+        for (var d = start; d <= now.Date; d = d.AddDays(1))
+        {
+            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var day = Array.Find(_costDays, c => c.Date == key);
+            if (day != null)
+            {
+                total += day.Cost;
+            }
+        }
+        if (total <= 0)
+        {
+            return "";
+        }
+        return _settings.CurrencySymbol + total.ToString("0.00", CultureInfo.CurrentCulture);
     }
 
     /// <summary>

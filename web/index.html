@@ -39,6 +39,7 @@
   .balance-row { display: flex; align-items: baseline; gap: calc(7px * var(--font-scale)); margin-top: calc(2px * var(--font-scale)); }
   #balanceValue { font-size: calc(32px * var(--font-scale)); font-weight: 700; line-height: 1.1; }
   #balanceCurrency { font-size: calc(15px * var(--font-scale)); color: var(--weak); }
+  .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; margin-top: calc(4px * var(--font-scale)); }
 
   /* ── 风险区 ── */
   .risk-row { display: flex; align-items: center; gap: calc(14px * var(--font-scale)); margin-top: calc(16px * var(--font-scale)); }
@@ -111,6 +112,7 @@
     <span id="balanceValue">—</span>
     <span id="balanceCurrency"></span>
   </div>
+  <div id="costLine" class="cost-line"></div>
 
   <div class="risk-row">
     <div class="ring-wrap">
@@ -202,6 +204,8 @@ function render(msg) {
   // 余额
   $("balanceValue").textContent = d.hasBalance ? d.balance : "—";
   $("balanceCurrency").textContent = d.currency || "";
+  // 近 7 天消费
+  $("costLine").textContent = d.cost7d ? "近 7 天消费：" + d.cost7d : "";
 
   // 风险环
   var ratio = d.ratio || 0;
