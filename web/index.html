@@ -89,6 +89,11 @@
   .risk-info { display: flex; flex-direction: column; gap: calc(5px * var(--font-scale)); }
   #riskState { font-size: calc(15px * var(--font-scale)); font-weight: 600; }
   #riskThreshold { font-size: calc(12px * var(--font-scale)); color: var(--weak); }
+  .cache-block { margin-top: calc(7px * var(--font-scale)); }
+  .cache-text { font-size: calc(12px * var(--font-scale)); color: var(--weak); margin-bottom: calc(3px * var(--font-scale)); }
+  .cache-bar { display: flex; height: calc(6px * var(--font-scale)); border-radius: 3px; overflow: hidden; width: calc(150px * var(--font-scale)); }
+  .cache-hit { background: #4caf50; }
+  .cache-miss { background: #9e9e9e; opacity: .45; }
 
   /* ── 用量柱状图 ── */
   .usage { margin-top: calc(18px * var(--font-scale)); }
@@ -164,6 +169,13 @@
     <div class="risk-info">
       <div id="riskState">等待数据…</div>
       <div id="riskThreshold"></div>
+      <div id="cacheBlock" class="cache-block">
+        <div id="cacheText" class="cache-text"></div>
+        <div class="cache-bar">
+          <div id="cacheHitBar" class="cache-hit"></div>
+          <div id="cacheMissBar" class="cache-miss"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -284,6 +296,18 @@ function render(msg) {
   $("riskState").textContent = d.riskState || "";
   $("riskState").style.color = color;
   $("riskThreshold").textContent = d.threshold || "";
+
+  // 缓存命中可视化（今日命中率 + 命中/未命中条）
+  var cacheBlock = $("cacheBlock");
+  if (d.cacheRate != null && d.cacheRate >= 0) {
+    cacheBlock.style.display = "";
+    $("cacheText").textContent = "缓存命中 " + Math.round(d.cacheRate * 100) + "%";
+    var hitW = Math.round(d.cacheRate * 100);
+    $("cacheHitBar").style.width = hitW + "%";
+    $("cacheMissBar").style.width = (100 - hitW) + "%";
+  } else {
+    cacheBlock.style.display = "none";
+  }
 
   // 用量柱状图（保存全量每日数据，由当前时段筛选渲染）
   currentUsage = d.usage || [];

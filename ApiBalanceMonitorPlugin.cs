@@ -69,8 +69,9 @@ internal sealed record BalanceSnapshot(
 
 /// <summary>
 /// 单日 Token 用量（来自 platform.deepseek.com 用量接口的 days 汇总）。
+/// CacheHit / CacheMiss 用于缓存命中率可视化。
 /// </summary>
-internal sealed record UsageDay(string Date, double Tokens);
+internal sealed record UsageDay(string Date, double Tokens, double CacheHit = 0, double CacheMiss = 0);
 
 /// <summary>
 /// 单日消费金额（元，来自 platform.deepseek.com 消费接口的 days 汇总）。
@@ -521,6 +522,8 @@ internal sealed class BalanceSession : IPaperBodySession
                     continue;
                 }
                 double total = 0;
+                double hit = 0;
+                double miss = 0;
                 if (day.TryGetProperty("data", out var dataArr) &&
                     dataArr.ValueKind == JsonValueKind.Array)
                 {
@@ -548,11 +551,19 @@ internal sealed class BalanceSession : IPaperBodySession
                                     CultureInfo.InvariantCulture, out var v))
                             {
                                 total += v;
+                                if (type == "PROMPT_CACHE_HIT_TOKEN")
+                                {
+                                    hit += v;
+                                }
+                                else if (type == "PROMPT_CACHE_MISS_TOKEN")
+                                {
+                                    miss += v;
+                                }
                             }
                         }
                     }
                 }
-                result.Add(new UsageDay(date, total));
+                result.Add(new UsageDay(date, total, hit, miss));
             }
             return result.ToArray();
         }
@@ -1079,6 +1090,7 @@ internal sealed class BalanceSession : IPaperBodySession
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
             ["costToday"] = BuildCostTodayText(),
+            ["cacheRate"] = BuildTodayCacheRate(),
             ["cost7d"] = BuildCost7dText(),
             ["costDays7"] = BuildCostDays7Array(),
             ["usage"] = BuildUsageArray()
@@ -1107,6 +1119,24 @@ internal sealed class BalanceSession : IPaperBodySession
             return "";
         }
         return _settings.CurrencySymbol + day.Cost.ToString("0.00", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// 今日缓存命中率（0~1）；当天无缓存数据返回 null。
+    /// </summary>
+    private double? BuildTodayCacheRate()
+    {
+        if (_usageDays == null || _usageDays.Length == 0)
+        {
+            return null;
+        }
+        var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var day = Array.Find(_usageDays, u => u.Date == key);
+        if (day == null || (day.CacheHit + day.CacheMiss) <= 0)
+        {
+            return null;
+        }
+        return day.CacheHit / (day.CacheHit + day.CacheMiss);
     }
 
     /// <summary>
