@@ -43,7 +43,8 @@
   .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; cursor: default; }
   .cost-detail {
     position: absolute;
-    left: 0; top: calc(100% + 4px);
+    left: 50%;
+    top: calc(100% + 6px);
     background: var(--paper);
     border: 1px solid color-mix(in srgb, var(--weak) 30%, transparent);
     border-radius: 6px;
@@ -53,13 +54,24 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.12);
     opacity: 0;
     visibility: hidden;
-    transform: translateY(-6px);
+    transform: translateX(-50%) translateY(-6px) scale(0.94);
+    transform-origin: top center;
     transition: opacity .18s ease, transform .18s ease, visibility .18s;
+  }
+  /* 指向标签的小箭头，强化"以标签为焦点"的展开效果 */
+  .cost-detail::before {
+    content: "";
+    position: absolute;
+    top: -6px; left: 50%;
+    margin-left: -6px;
+    width: 0; height: 0;
+    border: 6px solid transparent;
+    border-bottom-color: var(--paper);
   }
   .cost-wrap:hover .cost-detail {
     opacity: 1;
     visibility: visible;
-    transform: translateY(0);
+    transform: translateX(-50%) translateY(0) scale(1);
   }
   .cost-detail-row {
     display: flex; justify-content: space-between; gap: calc(12px * var(--font-scale));
