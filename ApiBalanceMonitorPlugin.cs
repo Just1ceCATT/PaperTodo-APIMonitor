@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using PaperTodo.Plugin;
 
@@ -71,11 +73,27 @@ internal sealed class BalanceSession : IPaperBodySession
     private BalanceSnapshot _snapshot = BalanceSnapshot.Empty("尚未拉取");
     private string _lastCapsuleSignature = "";
     private int _polling;
+    private PaperBodyTheme _theme;
+
+    // 监视面板控件
+    private ScrollViewer _viewRoot = null!;
+    private TextBlock _titleText = null!;
+    private Ellipse _statusDot = null!;
+    private TextBlock _statusText = null!;
+    private TextBlock _balanceText = null!;
+    private TextBlock _currencyText = null!;
+    private MonitorRiskRing _riskRing = null!;
+    private TextBlock _riskStateText = null!;
+    private TextBlock _thresholdText = null!;
+    private TextBlock _updateTimeText = null!;
 
     public BalanceSession(PaperBodyContext context)
     {
         _context = context;
+        _theme = context.Body.Theme;
         _settings = ReadSettings(context.SettingsJson);
+
+        BuildMonitorView(_theme);
 
         _http = new HttpClient
         {
@@ -88,18 +106,11 @@ internal sealed class BalanceSession : IPaperBodySession
         _timer.Tick += async (_, _) => await PollAsync();
 
         ApplySettings(_settings);
+        RefreshMonitorView();
         // 构造时不主动拉取，等 timer 首次触发，避免阻塞宿主启动。
     }
 
-    public FrameworkElement View { get; } = new TextBlock
-    {
-        // 该插件不提供完整 PaperBody 正文，最小可视元素即可；
-        // 用户主要与胶囊与设置面板交互。
-        Text = "API 余额监测：胶囊显示当前余额，设置页可调整 API Key / 刷新间隔 / 提醒阈值。",
-        TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(16),
-        Opacity = 0.65
-    };
+    public FrameworkElement View => _viewRoot;
 
     public void Commit() { /* 设置由宿主管理，正文无草稿 */ }
     public void RefreshFromModel() { /* 无外部数据源需要刷新 */ }
@@ -117,8 +128,14 @@ internal sealed class BalanceSession : IPaperBodySession
         // 折叠成胶囊后仍按 backgroundUpdates 继续轮询，无需特别处理。
     }
     public void OnPresentationChanged(bool expanded) { }
-    public void OnThemeChanged(PaperBodyTheme theme) { }
-    public void OnTypographyChanged(PaperBodyTheme theme) { }
+    public void OnThemeChanged(PaperBodyTheme theme)
+    {
+        _theme = theme;
+        ApplyMonitorTheme(theme);
+        RefreshMonitorView();
+    }
+
+    public void OnTypographyChanged(PaperBodyTheme theme) => OnThemeChanged(theme);
     public void OnDpiChanged() { }
 
     public void OnSettingsChanged(string settingsJson)
@@ -386,6 +403,8 @@ internal sealed class BalanceSession : IPaperBodySession
                 }
             }
         });
+
+        RefreshMonitorView();
     }
 
     /// <summary>
@@ -474,4 +493,376 @@ internal sealed class BalanceSession : IPaperBodySession
             : asDecimal.ToString("F2", CultureInfo.CurrentCulture);
     }
 
+    // ---------------- 展开后的监视面板 ----------------
+
+    // 风险色（v3.1 语义）
+    private static readonly Color RiskGreen = Color.FromRgb(0x4C, 0xAF, 0x50);
+    private static readonly Color RiskYellow = Color.FromRgb(0xFF, 0xC1, 0x07);
+    private static readonly Color RiskOrange = Color.FromRgb(0xFF, 0x98, 0x00);
+    private static readonly Color RiskRed = Color.FromRgb(0xF4, 0x43, 0x36);
+    private static readonly Color RiskGray = Color.FromRgb(0x9E, 0x9E, 0x9E);
+
+    private static readonly Brush GreenBrush = new SolidColorBrush(RiskGreen);
+    private static readonly Brush RedBrush = new SolidColorBrush(RiskRed);
+    private static readonly Brush GrayBrush = new SolidColorBrush(RiskGray);
+
+    /// <summary>
+    /// 构建监视面板（展开便签后的正文）。结构参考 v3.1 的 DeepSeek 监视器：
+    /// 标题行 + 在线状态点、大字余额 + 币种、大号风险环 + 风险状态/阈值、更新时间。
+    /// 宿主把正文 View 放进透明 Grid 且不自带滚动，这里用 ScrollViewer 自行容纳长内容。
+    /// </summary>
+    private void BuildMonitorView(PaperBodyTheme theme)
+    {
+        _titleText = new TextBlock
+        {
+            Text = "API 余额监测",
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        _statusDot = new Ellipse
+        {
+            Width = 8,
+            Height = 8,
+            Fill = GrayBrush,
+            Margin = new Thickness(0, 0, 6, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _statusText = new TextBlock
+        {
+            Text = "等待数据…",
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var statusStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        statusStack.Children.Add(_statusDot);
+        statusStack.Children.Add(_statusText);
+
+        var topRow = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(_titleText, 0);
+        Grid.SetColumn(statusStack, 1);
+        topRow.Children.Add(_titleText);
+        topRow.Children.Add(statusStack);
+
+        _balanceText = new TextBlock { Text = "—", FontWeight = FontWeights.Bold };
+        _currencyText = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(6, 0, 0, 3)
+        };
+        var balanceRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 2, 0, 0)
+        };
+        balanceRow.Children.Add(_balanceText);
+        balanceRow.Children.Add(_currencyText);
+
+        _riskRing = new MonitorRiskRing { VerticalAlignment = VerticalAlignment.Center };
+        _riskStateText = new TextBlock { Text = "等待数据…", FontWeight = FontWeights.SemiBold };
+        _thresholdText = new TextBlock { Margin = new Thickness(0, 4, 0, 0) };
+        var riskPanel = new StackPanel
+        {
+            Margin = new Thickness(14, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        riskPanel.Children.Add(_riskStateText);
+        riskPanel.Children.Add(_thresholdText);
+        var riskRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 14, 0, 0)
+        };
+        riskRow.Children.Add(_riskRing);
+        riskRow.Children.Add(riskPanel);
+
+        _updateTimeText = new TextBlock
+        {
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+
+        var stack = new StackPanel { Margin = new Thickness(18, 14, 18, 16) };
+        stack.Children.Add(topRow);
+        stack.Children.Add(new TextBlock { Text = "可用余额", FontWeight = FontWeights.SemiBold });
+        stack.Children.Add(balanceRow);
+        stack.Children.Add(riskRow);
+        stack.Children.Add(_updateTimeText);
+
+        _viewRoot = new ScrollViewer
+        {
+            Content = stack,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0)
+        };
+
+        ApplyMonitorTheme(theme);
+    }
+
+    /// <summary>
+    /// 应用主题：面板全部文字使用主题字体族，字号按 FontScale 缩放（v3.1 用 AppTypography.Scale 同理）。
+    /// </summary>
+    private void ApplyMonitorTheme(PaperBodyTheme theme)
+    {
+        var scale = Math.Clamp(theme.FontScale, 0.85, 1.2);
+        var font = new FontFamily(theme.FontFamily);
+        var text = ToBrush(theme.TextColor, "#202020");
+        var weak = ToBrush(theme.WeakTextColor, "#707070");
+
+        StyleText(_titleText, font, 20 * scale, FontWeights.SemiBold, text);
+        StyleText(_statusText, font, 13 * scale, FontWeights.Normal, weak);
+        StyleText(_balanceText, font, 32 * scale, FontWeights.Bold, text);
+        StyleText(_currencyText, font, 15 * scale, FontWeights.Normal, weak);
+        StyleText(_riskStateText, font, 15 * scale, FontWeights.SemiBold, text);
+        StyleText(_thresholdText, font, 12 * scale, FontWeights.Normal, weak);
+        StyleText(_updateTimeText, font, 12 * scale, FontWeights.Normal, weak);
+
+        _riskRing.FontFamily = font;
+        _riskRing.FontScale = scale;
+        _riskRing.InvalidateVisual();
+    }
+
+    private static void StyleText(
+        TextBlock? block,
+        FontFamily font,
+        double size,
+        FontWeight weight,
+        Brush foreground)
+    {
+        if (block == null)
+        {
+            return;
+        }
+        block.FontFamily = font;
+        block.FontSize = size;
+        block.FontWeight = weight;
+        block.Foreground = foreground;
+    }
+
+    /// <summary>
+    /// 用最新快照刷新面板：状态点、余额、风险环、风险文字、阈值、更新时间。
+    /// </summary>
+    private void RefreshMonitorView()
+    {
+        if (_viewRoot == null)
+        {
+            return;
+        }
+        var status = _snapshot.StatusText ?? "";
+        var hasData = _snapshot.HasRemaining && !double.IsNaN(_snapshot.Remaining);
+        var ratio = ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold);
+        var riskColor = RiskColor(ratio);
+
+        // 状态点：在线（绿）/ 请求错误（红）/ 未配置（灰）
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            _statusDot.Fill = GreenBrush;
+            _statusText.Text = "在线";
+            _statusText.Foreground = GreenBrush;
+        }
+        else if (status.StartsWith("错误：", StringComparison.Ordinal))
+        {
+            _statusDot.Fill = RedBrush;
+            _statusText.Text = status;
+            _statusText.Foreground = RedBrush;
+        }
+        else
+        {
+            _statusDot.Fill = GrayBrush;
+            _statusText.Text = status;
+            _statusText.Foreground = GrayBrush;
+        }
+
+        // 余额 + 币种
+        if (hasData)
+        {
+            _balanceText.Text = FormatAmount(_snapshot.Remaining);
+            _currencyText.Text =
+                MapCurrencySymbolToCode(_settings.CurrencySymbol) ?? _settings.CurrencySymbol;
+        }
+        else
+        {
+            _balanceText.Text = "—";
+            _currencyText.Text = _settings.CurrencySymbol;
+        }
+
+        // 风险环 + 状态文字 + 阈值
+        _riskRing.Update(ratio, riskColor);
+        _riskStateText.Text = RiskStateText(ratio);
+        _riskStateText.Foreground = new SolidColorBrush(riskColor);
+        _thresholdText.Text = _settings.BalanceThreshold > 0
+            ? $"提醒阈值 {_settings.CurrencySymbol}{FormatAmount(_settings.BalanceThreshold)}"
+            : "未设置提醒阈值，可在设置页配置";
+
+        _updateTimeText.Text = hasData
+            ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
+            : "";
+    }
+
+    /// <summary>
+    /// v3.1 风险环颜色（含过渡渐变）：绿 → 黄 → 橙 → 红；未配置阈值时灰。
+    /// </summary>
+    private static Color RiskColor(double ratio)
+    {
+        if (ratio <= 0)
+        {
+            return RiskGray;
+        }
+        if (ratio >= 1.0)
+        {
+            return RiskRed;
+        }
+        if (ratio >= 0.8)
+        {
+            return Lerp(RiskYellow, RiskOrange, (ratio - 0.8) / 0.2);
+        }
+        if (ratio >= 0.5)
+        {
+            return Lerp(RiskGreen, RiskYellow, (ratio - 0.5) / 0.3);
+        }
+        return RiskGreen;
+    }
+
+    private static Color Lerp(Color from, Color to, double t)
+    {
+        t = Math.Clamp(t, 0, 1);
+        return Color.FromRgb(
+            (byte)(from.R + (to.R - from.R) * t),
+            (byte)(from.G + (to.G - from.G) * t),
+            (byte)(from.B + (to.B - from.B) * t));
+    }
+
+    /// <summary>
+    /// 风险状态文案（v3.1 语义）。
+    /// </summary>
+    private static string RiskStateText(double ratio) => ratio switch
+    {
+        <= 0 => "未配置提醒阈值",
+        >= 1.0 => "余额低于提醒阈值",
+        >= 0.8 => "余额偏低",
+        >= 0.5 => "接近提醒阈值",
+        _ => "余额充足"
+    };
+
+    private static SolidColorBrush ToBrush(string? value, string fallback)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return new SolidColorBrush((Color)ColorConverter.ConvertFromString(value)!);
+            }
+        }
+        catch
+        {
+        }
+        return new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallback)!);
+    }
+
+    /// <summary>
+    /// 监视面板的大号风险环：72px 环 + 中心风险百分比（参考 v3.1 DeepSeekPaymentRiskWidget）。
+    /// </summary>
+    private sealed class MonitorRiskRing : FrameworkElement
+    {
+        private const double Size = 72;
+        private const double StrokeW = 5;
+        private const double Radius = (Size - StrokeW) / 2;
+        private const double Center = Size / 2;
+        private static readonly Color GrayColor = Color.FromRgb(0x9E, 0x9E, 0x9E);
+
+        public FontFamily FontFamily { get; set; } = new FontFamily("Microsoft YaHei UI");
+        public double FontScale { get; set; } = 1.0;
+
+        private double _ratio;
+        private Color _foreColor = GrayColor;
+
+        public MonitorRiskRing()
+        {
+            Width = Size;
+            Height = Size;
+        }
+
+        protected override Size MeasureOverride(Size constraint) => new Size(Size, Size);
+
+        public void Update(double ratio, Color color)
+        {
+            _ratio = ratio;
+            _foreColor = color;
+            InvalidateVisual();
+        }
+
+        protected override void OnRender(DrawingContext dc)
+        {
+            // 背景轨道
+            var trackPen = new Pen(new SolidColorBrush(GrayColor) { Opacity = 0.3 }, StrokeW);
+            dc.DrawEllipse(null, trackPen, new Point(Center, Center), Radius, Radius);
+
+            if (_ratio > 0)
+            {
+                var deg = Math.Max(_ratio * 360, 5);
+                if (deg >= 360)
+                {
+                    // 满圆
+                    dc.DrawEllipse(
+                        null,
+                        new Pen(new SolidColorBrush(_foreColor), StrokeW),
+                        new Point(Center, Center),
+                        Radius,
+                        Radius);
+                }
+                else
+                {
+                    // 弧：12 点方向起顺时针
+                    var rad = deg * Math.PI / 180;
+                    var sa = -Math.PI / 2;
+                    var sx = Center + Radius * Math.Cos(sa);
+                    var sy = Center + Radius * Math.Sin(sa);
+                    var ex = Center + Radius * Math.Cos(sa + rad);
+                    var ey = Center + Radius * Math.Sin(sa + rad);
+                    var seg = new ArcSegment(
+                        new Point(ex, ey),
+                        new Size(Radius, Radius),
+                        0,
+                        deg > 180,
+                        SweepDirection.Clockwise,
+                        true);
+                    var fig = new PathFigure(new Point(sx, sy), [seg], closed: false);
+                    var geo = new PathGeometry([fig]);
+                    var pen = new Pen(new SolidColorBrush(_foreColor), StrokeW)
+                    {
+                        StartLineCap = PenLineCap.Round,
+                        EndLineCap = PenLineCap.Round
+                    };
+                    dc.DrawGeometry(null, pen, geo);
+                }
+            }
+
+            // 中心百分比
+            var pct = _ratio > 0 ? $"{(int)(_ratio * 100)}%" : "--";
+            var ft = new FormattedText(
+                pct,
+                CultureInfo.CurrentUICulture,
+                FlowDirection.LeftToRight,
+                new Typeface(
+                    FontFamily,
+                    FontStyles.Normal,
+                    FontWeights.Bold,
+                    FontStretches.Normal),
+                14 * FontScale,
+                new SolidColorBrush(_foreColor),
+                96.0);
+            dc.DrawText(ft, new Point(Center - ft.Width / 2, Center - ft.Height / 2));
+        }
+    }
 }
