@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>API 余额监测</title>
+<style>
+  :root {
+    /* 由宿主主题通过 window.chrome.webview 注入覆盖 */
+    --text: #202020;
+    --weak: #707070;
+    --accent: #b07a31;
+    --paper: #fff8e6;
+    --dark: 0;
+    --font-scale: 1;
+    --font: "Microsoft YaHei UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; min-height: 100%; background: transparent; }
+  body {
+    font-family: var(--font);
+    color: var(--text);
+    font-size: calc(14px * var(--font-scale));
+    user-select: none;
+    padding: calc(14px * var(--font-scale)) calc(16px * var(--font-scale)) calc(16px * var(--font-scale));
+    overflow-y: auto;
+  }
+
+  /* ── 标题行 ── */
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: calc(10px * var(--font-scale)); }
+  h1 { font-size: calc(20px * var(--font-scale)); font-weight: 600; }
+  .status { display: inline-flex; align-items: center; gap: calc(6px * var(--font-scale)); font-size: calc(13px * var(--font-scale)); color: var(--weak); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #9e9e9e; flex: none; }
+  .dot.ok { background: #4caf50; }
+  .dot.error { background: #f44336; }
+
+  /* ── 余额 ── */
+  .balance-label { font-size: calc(13px * var(--font-scale)); font-weight: 600; color: var(--weak); }
+  .balance-row { display: flex; align-items: baseline; gap: calc(7px * var(--font-scale)); margin-top: calc(2px * var(--font-scale)); }
+  #balanceValue { font-size: calc(32px * var(--font-scale)); font-weight: 700; line-height: 1.1; }
+  #balanceCurrency { font-size: calc(15px * var(--font-scale)); color: var(--weak); }
+
+  /* ── 风险区 ── */
+  .risk-row { display: flex; align-items: center; gap: calc(14px * var(--font-scale)); margin-top: calc(16px * var(--font-scale)); }
+  .ring-wrap { position: relative; width: calc(72px * var(--font-scale)); height: calc(72px * var(--font-scale)); flex: none; }
+  .ring-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring-track { fill: none; stroke: rgba(158,158,158,.30); stroke-width: 5; }
+  .ring-arc { fill: none; stroke-width: 5; stroke-linecap: round; transition: stroke-dasharray .2s ease, stroke .2s ease; }
+  #riskPct {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: calc(14px * var(--font-scale)); font-weight: 700;
+  }
+  .risk-info { display: flex; flex-direction: column; gap: calc(5px * var(--font-scale)); }
+  #riskState { font-size: calc(15px * var(--font-scale)); font-weight: 600; }
+  #riskThreshold { font-size: calc(12px * var(--font-scale)); color: var(--weak); }
+
+  /* ── 用量柱状图 ── */
+  .usage { margin-top: calc(18px * var(--font-scale)); }
+  .usage-label { font-size: calc(14px * var(--font-scale)); font-weight: 600; color: var(--weak); margin-bottom: calc(6px * var(--font-scale)); }
+  #chart { display: flex; align-items: flex-end; gap: calc(6px * var(--font-scale)); height: calc(70px * var(--font-scale)); }
+  .bar-col { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+  .bar-fill {
+    width: 100%; max-width: calc(22px * var(--font-scale));
+    height: 0; min-height: 2px;
+    background: #4caf50; border-radius: 3px 3px 0 0;
+    transition: height .25s ease;
+  }
+  .bar-col:hover .bar-fill { opacity: .85; }
+  .bar-lbl { font-size: calc(10px * var(--font-scale)); color: var(--weak); margin-top: 4px; }
+
+  /* ── 更新时间 ── */
+  #updateTime { text-align: right; font-size: calc(12px * var(--font-scale)); color: var(--weak); margin-top: calc(14px * var(--font-scale)); }
+
+  /* ── 暗色 ── */
+  body[data-dark="1"] .ring-track { stroke: rgba(158,158,158,.22); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>API 余额监测</h1>
+    <div class="status">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">等待数据…</span>
+    </div>
+  </header>
+
+  <div class="balance-label">可用余额</div>
+  <div class="balance-row">
+    <span id="balanceValue">—</span>
+    <span id="balanceCurrency"></span>
+  </div>
+
+  <div class="risk-row">
+    <div class="ring-wrap">
+      <svg viewBox="0 0 80 80">
+        <circle class="ring-track" cx="40" cy="40" r="33"/>
+        <circle id="riskArc" class="ring-arc" cx="40" cy="40" r="33" stroke="#9e9e9e"/>
+      </svg>
+      <div id="riskPct">--</div>
+    </div>
+    <div class="risk-info">
+      <div id="riskState">等待数据…</div>
+      <div id="riskThreshold"></div>
+    </div>
+  </div>
+
+  <div class="usage">
+    <div class="usage-label">用量趋势（近 7 天）</div>
+    <div id="chart"></div>
+  </div>
+
+  <div id="updateTime"></div>
+
+<script>
+"use strict";
+// C# 侧通过 window.chrome.webview.postMessage 推送 JSON，这里接收并渲染。
+// 页面自身不发起任何网络请求（CORS 限制），数据全部来自插件 C#。
+
+var $ = function (id) { return document.getElementById(id); };
+
+var RING_R = 33;
+var RING_C = 2 * Math.PI * RING_R; // 弧长 周长
+
+function applyTheme(t) {
+  if (!t) return;
+  var r = document.documentElement.style;
+  r.setProperty("--text", t.text || "#202020");
+  r.setProperty("--weak", t.weak || "#707070");
+  r.setProperty("--accent", t.accent || "#b07a31");
+  r.setProperty("--paper", t.paper || "#fff8e6");
+  r.setProperty("--font-scale", (t.fontScale || 1) + "");
+  document.body.setAttribute("data-dark", t.dark ? "1" : "0");
+}
+
+function fmtTokens(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return "" + n;
+}
+
+function render(msg) {
+  if (!msg) return;
+  applyTheme(msg.theme);
+  var d = msg.data;
+
+  // 状态点
+  var dot = $("statusDot"), st = $("statusText");
+  if (d.statusKind === "ok") {
+    dot.className = "dot ok";
+    st.textContent = "在线";
+    st.style.color = "#4caf50";
+  } else if (d.statusKind === "error") {
+    dot.className = "dot error";
+    st.textContent = d.status || "错误";
+    st.style.color = "#f44336";
+  } else {
+    dot.className = "dot";
+    st.textContent = d.status || "等待数据…";
+    st.style.color = "";
+  }
+
+  // 余额
+  $("balanceValue").textContent = d.hasBalance ? d.balance : "—";
+  $("balanceCurrency").textContent = d.currency || "";
+
+  // 风险环
+  var ratio = d.ratio || 0;
+  var color = d.riskColor || "#9e9e9e";
+  var arc = $("riskArc");
+  arc.style.stroke = color;
+  if (ratio >= 1) {
+    arc.style.strokeDasharray = RING_C + " " + RING_C;
+  } else if (ratio <= 0) {
+    arc.style.strokeDasharray = "0 " + RING_C;
+  } else {
+    arc.style.strokeDasharray = (RING_C * Math.max(ratio, 0.014)) + " " + RING_C;
+  }
+  var pct = $("riskPct");
+  pct.textContent = ratio > 0 ? Math.round(ratio * 100) + "%" : "--";
+  pct.style.color = color;
+
+  // 风险状态 / 阈值
+  $("riskState").textContent = d.riskState || "";
+  $("riskState").style.color = color;
+  $("riskThreshold").textContent = d.threshold || "";
+
+  // 用量柱状图
+  renderChart(d.usage);
+
+  // 更新时间
+  $("updateTime").textContent = d.updateTime || "";
+}
+
+function renderChart(usage) {
+  var box = $("chart");
+  box.innerHTML = "";
+  if (!usage || !usage.length) return;
+  var max = 1;
+  usage.forEach(function (u) { if (u.tokens > max) max = u.tokens; });
+  usage.forEach(function (u) {
+    var col = document.createElement("div");
+    col.className = "bar-col";
+    col.title = u.label + "\n" + fmtTokens(u.tokens) + " Token";
+    var fill = document.createElement("div");
+    fill.className = "bar-fill";
+    fill.style.height = (u.tokens / max * 100).toFixed(1) + "%";
+    var lbl = document.createElement("div");
+    lbl.className = "bar-lbl";
+    lbl.textContent = u.label;
+    col.appendChild(fill);
+    col.appendChild(lbl);
+    box.appendChild(col);
+  });
+}
+
+// 接收 C# 推送（主题 + 数据）
+window.chrome.webview.addEventListener("message", function (e) {
+  try {
+    render(JSON.parse(e.data));
+  } catch (err) {
+    // 忽略异常消息，保持面板稳定
+  }
+});
+</script>
+</body>
+</html>

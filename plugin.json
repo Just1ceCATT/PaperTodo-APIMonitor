@@ -3,7 +3,7 @@
   "id": "api.balance.monitor",
   "name": "API 余额监测",
   "description": "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色圆环。",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": "1.7",
   "stateVersion": 1,
   "entry": "PaperTodo.Plugin.ApiBalanceMonitor.dll",

@@ -1,14 +1,15 @@
 using System.Globalization;
+using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using System.Windows.Threading;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.Wpf;
 using PaperTodo.Plugin;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor;
@@ -30,7 +31,7 @@ public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
     public string DisplayName => "API 余额监测";
     public string Description =>
         "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色的圆环。";
-    public Version Version => new(1, 0, 0);
+    public Version Version => new(1, 1, 0);
     public string ApiVersion => "1.7";
     public int StateVersion => 1;
     public PaperBodyCapabilities Capabilities => PaperBodyCapabilities.None;
@@ -83,19 +84,17 @@ internal sealed class BalanceSession : IPaperBodySession
     private UsageDay[]? _usageDays;
     private PaperBodyTheme _theme;
 
-    // 监视面板控件
-    private ScrollViewer _viewRoot = null!;
-    private TextBlock _titleText = null!;
-    private Ellipse _statusDot = null!;
-    private TextBlock _statusText = null!;
-    private TextBlock _balanceText = null!;
-    private TextBlock _currencyText = null!;
-    private MonitorRiskRing _riskRing = null!;
-    private TextBlock _riskStateText = null!;
-    private TextBlock _thresholdText = null!;
-    private TextBlock _updateTimeText = null!;
-    private TextBlock _usageChartLabel = null!;
-    private UsageChart _usageChart = null!;
+    // WebView2 监视面板
+    private Grid _viewRoot = null!;
+    private WebView2CompositionControl _webView = null!;
+    private readonly object _environmentGate = new();
+    private Task<CoreWebView2Environment>? _environmentTask;
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool _webViewInitializationStarted;
+    private bool _webViewReady;
+    private bool _documentReady;
+    private string? _pendingPayload;
+    private bool _disposed;
 
     public BalanceSession(PaperBodyContext context)
     {
@@ -103,7 +102,7 @@ internal sealed class BalanceSession : IPaperBodySession
         _theme = context.Body.Theme;
         _settings = ReadSettings(context.SettingsJson);
 
-        BuildMonitorView(_theme);
+        BuildWebView();
 
         _http = new HttpClient
         {
@@ -116,8 +115,8 @@ internal sealed class BalanceSession : IPaperBodySession
         _timer.Tick += async (_, _) => await PollAsync();
 
         ApplySettings(_settings);
-        RefreshMonitorView();
-        // 构造时不主动拉取，等 timer 首次触发，避免阻塞宿主启动。
+        // WebView2 在 View 首次布局后初始化（TryStartWebView），构造时不主动拉取，
+        // 等 timer 首次触发，避免阻塞宿主启动。
     }
 
     public FrameworkElement View => _viewRoot;
@@ -127,8 +126,17 @@ internal sealed class BalanceSession : IPaperBodySession
     public void CancelInteractions() { /* 无交互状态 */ }
     public void Dispose()
     {
+        _disposed = true;
+        _lifetime.Cancel();
         _timer.Stop();
         _http.Dispose();
+        try
+        {
+            _webView?.Dispose();
+        }
+        catch
+        {
+        }
     }
 
     public void OnActivated() { }
@@ -141,8 +149,7 @@ internal sealed class BalanceSession : IPaperBodySession
     public void OnThemeChanged(PaperBodyTheme theme)
     {
         _theme = theme;
-        ApplyMonitorTheme(theme);
-        RefreshMonitorView();
+        PushView();
     }
 
     public void OnTypographyChanged(PaperBodyTheme theme) => OnThemeChanged(theme);
@@ -530,8 +537,8 @@ internal sealed class BalanceSession : IPaperBodySession
             });
         }
 
-        // 面板（含用量柱状图）每次拉取后都刷新：余额可能不变但用量/时间变了。
-        RefreshMonitorView();
+        // 面板（HTML）每次拉取后都推送：余额可能不变但用量/时间变了。
+        PushView();
     }
 
     /// <summary>
@@ -620,8 +627,6 @@ internal sealed class BalanceSession : IPaperBodySession
             : asDecimal.ToString("F2", CultureInfo.CurrentCulture);
     }
 
-    // ---------------- 展开后的监视面板 ----------------
-
     // 风险色（v3.1 语义）
     private static readonly Color RiskGreen = Color.FromRgb(0x4C, 0xAF, 0x50);
     private static readonly Color RiskYellow = Color.FromRgb(0xFF, 0xC1, 0x07);
@@ -629,262 +634,289 @@ internal sealed class BalanceSession : IPaperBodySession
     private static readonly Color RiskRed = Color.FromRgb(0xF4, 0x43, 0x36);
     private static readonly Color RiskGray = Color.FromRgb(0x9E, 0x9E, 0x9E);
 
-    private static readonly Brush GreenBrush = new SolidColorBrush(RiskGreen);
-    private static readonly Brush RedBrush = new SolidColorBrush(RiskRed);
-    private static readonly Brush GrayBrush = new SolidColorBrush(RiskGray);
+    // ---------------- WebView2 监视面板 ----------------
 
     /// <summary>
-    /// 构建监视面板（展开便签后的正文）。结构参考 v3.1 的 DeepSeek 监视器：
-    /// 标题行 + 在线状态点、大字余额 + 币种、大号风险环 + 风险状态/阈值、更新时间。
-    /// 宿主把正文 View 放进透明 Grid 且不自带滚动，这里用 ScrollViewer 自行容纳长内容。
+    /// 构建正文容器：插件自建 WebView2，加载本地 web/index.html 渲染监视面板。
+    /// 数据由 C# 侧拉取后通过 PostWebMessageAsJson 推给页面 JS，页面自身不发网络请求
+    /// （规避 WebView2 的 DenyCors / CORS 限制，且不修改宿主）。
     /// </summary>
-    private void BuildMonitorView(PaperBodyTheme theme)
+    private void BuildWebView()
     {
-        _titleText = new TextBlock
+        _webView = new WebView2CompositionControl
         {
-            Text = "API 余额监测",
-            FontWeight = FontWeights.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        _statusDot = new Ellipse
-        {
-            Width = 8,
-            Height = 8,
-            Fill = GrayBrush,
-            Margin = new Thickness(0, 0, 6, 0),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        _statusText = new TextBlock
-        {
-            Text = "等待数据…",
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        var statusStack = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        statusStack.Children.Add(_statusDot);
-        statusStack.Children.Add(_statusText);
-
-        var topRow = new Grid { Margin = new Thickness(0, 0, 0, 8) };
-        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(_titleText, 0);
-        Grid.SetColumn(statusStack, 1);
-        topRow.Children.Add(_titleText);
-        topRow.Children.Add(statusStack);
-
-        _balanceText = new TextBlock { Text = "—", FontWeight = FontWeights.Bold };
-        _currencyText = new TextBlock
-        {
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(6, 0, 0, 3)
-        };
-        var balanceRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 2, 0, 0)
-        };
-        balanceRow.Children.Add(_balanceText);
-        balanceRow.Children.Add(_currencyText);
-
-        _riskRing = new MonitorRiskRing { VerticalAlignment = VerticalAlignment.Center };
-        _riskStateText = new TextBlock { Text = "等待数据…", FontWeight = FontWeights.SemiBold };
-        _thresholdText = new TextBlock { Margin = new Thickness(0, 4, 0, 0) };
-        var riskPanel = new StackPanel
-        {
-            Margin = new Thickness(14, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        riskPanel.Children.Add(_riskStateText);
-        riskPanel.Children.Add(_thresholdText);
-        var riskRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 14, 0, 0)
-        };
-        riskRow.Children.Add(_riskRing);
-        riskRow.Children.Add(riskPanel);
-
-        _usageChartLabel = new TextBlock
-        {
-            Text = "用量趋势（近 7 天）",
-            FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 16, 0, 4)
-        };
-        _usageChart = new UsageChart
-        {
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-
-        _updateTimeText = new TextBlock
-        {
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 12, 0, 0)
-        };
-
-        var stack = new StackPanel { Margin = new Thickness(18, 14, 18, 16) };
-        stack.Children.Add(topRow);
-        stack.Children.Add(new TextBlock { Text = "可用余额", FontWeight = FontWeights.SemiBold });
-        stack.Children.Add(balanceRow);
-        stack.Children.Add(riskRow);
-        stack.Children.Add(_usageChartLabel);
-        stack.Children.Add(_usageChart);
-        stack.Children.Add(_updateTimeText);
-
-        _viewRoot = new ScrollViewer
-        {
-            Content = stack,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0)
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IsHitTestVisible = true
         };
 
-        ApplyMonitorTheme(theme);
+        _viewRoot = new Grid
+        {
+            Background = Brushes.Transparent,
+            ClipToBounds = true
+        };
+        _viewRoot.Children.Add(_webView);
+        _viewRoot.Loaded += OnViewRootLoaded;
+        _viewRoot.SizeChanged += OnViewRootSizeChanged;
     }
 
-    /// <summary>
-    /// 应用主题：面板全部文字使用主题字体族，字号按 FontScale 缩放（v3.1 用 AppTypography.Scale 同理）。
-    /// </summary>
-    private void ApplyMonitorTheme(PaperBodyTheme theme)
+    private void OnViewRootLoaded(object sender, RoutedEventArgs e) => TryStartWebView();
+
+    private void OnViewRootSizeChanged(object sender, SizeChangedEventArgs e) => TryStartWebView();
+
+    private void TryStartWebView()
     {
-        var scale = Math.Clamp(theme.FontScale, 0.85, 1.2);
-        var font = new FontFamily(theme.FontFamily);
-        var text = ToBrush(theme.TextColor, "#202020");
-        var weak = ToBrush(theme.WeakTextColor, "#707070");
-
-        StyleText(_titleText, font, 20 * scale, FontWeights.SemiBold, text);
-        StyleText(_statusText, font, 13 * scale, FontWeights.Normal, weak);
-        StyleText(_balanceText, font, 32 * scale, FontWeights.Bold, text);
-        StyleText(_currencyText, font, 15 * scale, FontWeights.Normal, weak);
-        StyleText(_riskStateText, font, 15 * scale, FontWeights.SemiBold, text);
-        StyleText(_thresholdText, font, 12 * scale, FontWeights.Normal, weak);
-        StyleText(_usageChartLabel, font, 14 * scale, FontWeights.SemiBold, weak);
-        StyleText(_updateTimeText, font, 12 * scale, FontWeights.Normal, weak);
-
-        _riskRing.FontFamily = font;
-        _riskRing.FontScale = scale;
-        _riskRing.InvalidateVisual();
-
-        _usageChart.FontFamily = font;
-        _usageChart.FontScale = scale;
-        _usageChart.WeakBrush = weak;
-        _usageChart.InvalidateVisual();
-    }
-
-    private static void StyleText(
-        TextBlock? block,
-        FontFamily font,
-        double size,
-        FontWeight weight,
-        Brush foreground)
-    {
-        if (block == null)
+        if (_webViewInitializationStarted ||
+            _disposed ||
+            !_viewRoot.IsLoaded ||
+            _viewRoot.ActualWidth <= 0 ||
+            _viewRoot.ActualHeight <= 0)
         {
             return;
         }
-        block.FontFamily = font;
-        block.FontSize = size;
-        block.FontWeight = weight;
-        block.Foreground = foreground;
+        _webViewInitializationStarted = true;
+        _viewRoot.SizeChanged -= OnViewRootSizeChanged;
+        _ = InitializeWebViewAsync(_lifetime.Token);
     }
 
-    /// <summary>
-    /// 用最新快照刷新面板：状态点、余额、风险环、风险文字、阈值、更新时间。
-    /// </summary>
-    private void RefreshMonitorView()
+    private async Task InitializeWebViewAsync(CancellationToken token)
     {
-        if (_viewRoot == null)
+        try
+        {
+            var environment = await GetWebViewEnvironmentAsync();
+            token.ThrowIfCancellationRequested();
+
+            await _webView.EnsureCoreWebView2Async(environment);
+            token.ThrowIfCancellationRequested();
+
+            var core = _webView.CoreWebView2 ??
+                throw new InvalidOperationException("WebView2 初始化失败。");
+            core.Settings.AreDefaultContextMenusEnabled = false;
+            core.Settings.AreDevToolsEnabled = false;
+            core.Settings.AreBrowserAcceleratorKeysEnabled = true;
+            core.Settings.IsStatusBarEnabled = false;
+            core.NavigationCompleted += OnWebViewNavigationCompleted;
+            core.ProcessFailed += OnWebViewProcessFailed;
+
+            var pluginDirectory =
+                Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
+                ?? AppContext.BaseDirectory;
+            var htmlPath = Path.Combine(pluginDirectory, "web", "index.html");
+            if (!File.Exists(htmlPath))
+            {
+                throw new InvalidOperationException("缺少 web/index.html。");
+            }
+
+            _webViewReady = true;
+            core.Navigate(new Uri(htmlPath).AbsoluteUri);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            // WebView2 初始化失败不致命：胶囊仍由宿主渲染，仅展开面板不可用。
+            _webViewInitializationStarted = false;
+        }
+    }
+
+    private async Task<CoreWebView2Environment> GetWebViewEnvironmentAsync()
+    {
+        Task<CoreWebView2Environment> task;
+        lock (_environmentGate)
+        {
+            task = _environmentTask ??= CreateWebViewEnvironmentAsync();
+        }
+        try
+        {
+            return await task;
+        }
+        catch
+        {
+            lock (_environmentGate)
+            {
+                if (ReferenceEquals(_environmentTask, task))
+                {
+                    _environmentTask = null;
+                }
+            }
+            throw;
+        }
+    }
+
+    private static Task<CoreWebView2Environment> CreateWebViewEnvironmentAsync()
+    {
+        var pluginDirectory =
+            Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
+            ?? AppContext.BaseDirectory;
+        var userDataFolder = Path.Combine(pluginDirectory, ".runtime", "webview2");
+        Directory.CreateDirectory(userDataFolder);
+        return CoreWebView2Environment.CreateAsync(
+            browserExecutableFolder: null,
+            userDataFolder: userDataFolder,
+            options: null);
+    }
+
+    private void OnWebViewNavigationCompleted(
+        object? sender,
+        CoreWebView2NavigationCompletedEventArgs e)
+    {
+        if (!e.IsSuccess)
         {
             return;
         }
+        _documentReady = true;
+        if (_pendingPayload != null)
+        {
+            var payload = _pendingPayload;
+            _pendingPayload = null;
+            PostPayload(payload);
+        }
+    }
+
+    private void OnWebViewProcessFailed(
+        object? sender,
+        CoreWebView2ProcessFailedEventArgs e)
+    {
+        // 渲染进程异常退出时重新加载页面恢复。
+        if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited)
+        {
+            _documentReady = false;
+            try
+            {
+                _webView.CoreWebView2?.Reload();
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// 把最新主题与数据推给 HTML 面板。WebView2 未初始化或页面未就绪时缓存，
+    /// 就绪后自动补发。
+    /// </summary>
+    private void PushView()
+    {
+        if (!_webViewReady || _disposed)
+        {
+            return;
+        }
+        var payload = BuildViewPayload();
+        if (!_documentReady)
+        {
+            _pendingPayload = payload;
+            return;
+        }
+        PostPayload(payload);
+    }
+
+    private void PostPayload(string payload)
+    {
+        try
+        {
+            _webView.CoreWebView2?.PostWebMessageAsJson(payload);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 组装推给 HTML 的 JSON：{ theme, data }。data 含状态、余额、风险、用量、更新时间。
+    /// </summary>
+    private string BuildViewPayload()
+    {
         var status = _snapshot.StatusText ?? "";
         var hasData = _snapshot.HasRemaining && !double.IsNaN(_snapshot.Remaining);
         var ratio = ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold);
-        var riskColor = RiskColor(ratio);
+        var riskColor = ToHex(RiskColor(ratio));
 
-        // 状态点：在线（绿）/ 请求错误（红）/ 未配置（灰）
+        string statusKind;
         if (string.IsNullOrWhiteSpace(status))
         {
-            _statusDot.Fill = GreenBrush;
-            _statusText.Text = "在线";
-            _statusText.Foreground = GreenBrush;
+            statusKind = "ok";
         }
         else if (status.StartsWith("错误：", StringComparison.Ordinal))
         {
-            _statusDot.Fill = RedBrush;
-            _statusText.Text = status;
-            _statusText.Foreground = RedBrush;
+            statusKind = "error";
         }
         else
         {
-            _statusDot.Fill = GrayBrush;
-            _statusText.Text = status;
-            _statusText.Foreground = GrayBrush;
+            statusKind = "warn";
         }
 
-        // 余额 + 币种
-        if (hasData)
+        var theme = new Dictionary<string, object?>
         {
-            _balanceText.Text = FormatAmount(_snapshot.Remaining);
-            _currencyText.Text =
-                MapCurrencySymbolToCode(_settings.CurrencySymbol) ?? _settings.CurrencySymbol;
-        }
-        else
+            ["dark"] = _theme.IsDark,
+            ["text"] = NormalizeHex(_theme.TextColor, "#202020"),
+            ["weak"] = NormalizeHex(_theme.WeakTextColor, "#707070"),
+            ["accent"] = NormalizeHex(_theme.AccentColor, "#B07A31"),
+            ["paper"] = NormalizeHex(_theme.PaperColor, "#FFF8E6"),
+            ["fontScale"] = Math.Clamp(_theme.FontScale, 0.85, 1.2)
+        };
+
+        var data = new Dictionary<string, object?>
         {
-            _balanceText.Text = "—";
-            _currencyText.Text = _settings.CurrencySymbol;
-        }
+            ["status"] = status,
+            ["statusKind"] = statusKind,
+            ["hasBalance"] = hasData,
+            ["balance"] = hasData ? FormatAmount(_snapshot.Remaining) : "—",
+            ["currency"] = MapCurrencySymbolToCode(_settings.CurrencySymbol) ?? _settings.CurrencySymbol,
+            ["ratio"] = ratio,
+            ["riskColor"] = riskColor,
+            ["riskState"] = RiskStateText(ratio),
+            ["threshold"] = _settings.BalanceThreshold > 0
+                ? $"{_settings.CurrencySymbol}{FormatAmount(_settings.BalanceThreshold)}"
+                : "未设置提醒阈值，可在设置页配置",
+            ["updateTime"] = hasData
+                ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
+                : "",
+            ["usage"] = BuildUsageArray()
+        };
 
-        // 风险环 + 状态文字 + 阈值
-        _riskRing.Update(ratio, riskColor);
-        _riskStateText.Text = RiskStateText(ratio);
-        _riskStateText.Foreground = new SolidColorBrush(riskColor);
-        _thresholdText.Text = _settings.BalanceThreshold > 0
-            ? $"提醒阈值 {_settings.CurrencySymbol}{FormatAmount(_settings.BalanceThreshold)}"
-            : "未设置提醒阈值，可在设置页配置";
-
-        _updateTimeText.Text = hasData
-            ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
-            : "";
-
-        UpdateUsageChart();
+        return JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["theme"] = theme,
+            ["data"] = data
+        });
     }
 
     /// <summary>
-    /// 用最近 7 天（含今天）的每日用量刷新柱状图。无数据时清空图表。
+    /// 最近 7 天（含今天）每日 Token 用量数组，供 HTML 柱状图渲染。
     /// </summary>
-    private void UpdateUsageChart()
+    private object[] BuildUsageArray()
     {
-        if (_usageChart == null)
-        {
-            return;
-        }
         if (_usageDays == null || _usageDays.Length == 0)
         {
-            _usageChart.Update(Array.Empty<double>());
-            return;
+            return Array.Empty<object>();
         }
-
         var now = DateTime.Now;
         var start = now.AddDays(-6).Date;
-        var values = new List<double>();
-        var labels = new List<string>();
+        var items = new List<Dictionary<string, object?>>();
         for (var d = start; d <= now.Date; d = d.AddDays(1))
         {
             var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             var day = Array.Find(_usageDays, u => u.Date == key);
-            values.Add(day?.Tokens ?? 0);
-            labels.Add(d.Day.ToString(CultureInfo.InvariantCulture));
+            items.Add(new Dictionary<string, object?>
+            {
+                ["label"] = d.Day.ToString(CultureInfo.InvariantCulture),
+                ["tokens"] = day?.Tokens ?? 0
+            });
         }
-        _usageChart.Update(values.ToArray(), labels.ToArray());
+        return items.Cast<object>().ToArray();
+    }
+
+    private static string ToHex(Color color) =>
+        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private static string NormalizeHex(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+        return value.StartsWith("#") ? value : "#" + value;
     }
 
     /// <summary>
@@ -932,292 +964,4 @@ internal sealed class BalanceSession : IPaperBodySession
         _ => "余额充足"
     };
 
-    private static SolidColorBrush ToBrush(string? value, string fallback)
-    {
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return new SolidColorBrush((Color)ColorConverter.ConvertFromString(value)!);
-            }
-        }
-        catch
-        {
-        }
-        return new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallback)!);
-    }
-
-    /// <summary>
-    /// 监视面板的大号风险环：72px 环 + 中心风险百分比（参考 v3.1 DeepSeekPaymentRiskWidget）。
-    /// </summary>
-    private sealed class MonitorRiskRing : FrameworkElement
-    {
-        private const double Size = 72;
-        private const double StrokeW = 5;
-        private const double Radius = (Size - StrokeW) / 2;
-        private const double Center = Size / 2;
-        private static readonly Color GrayColor = Color.FromRgb(0x9E, 0x9E, 0x9E);
-
-        public FontFamily FontFamily { get; set; } = new FontFamily("Microsoft YaHei UI");
-        public double FontScale { get; set; } = 1.0;
-
-        private double _ratio;
-        private Color _foreColor = GrayColor;
-
-        public MonitorRiskRing()
-        {
-            Width = Size;
-            Height = Size;
-        }
-
-        protected override Size MeasureOverride(Size constraint) => new Size(Size, Size);
-
-        public void Update(double ratio, Color color)
-        {
-            _ratio = ratio;
-            _foreColor = color;
-            InvalidateVisual();
-        }
-
-        protected override void OnRender(DrawingContext dc)
-        {
-            // 背景轨道
-            var trackPen = new Pen(new SolidColorBrush(GrayColor) { Opacity = 0.3 }, StrokeW);
-            dc.DrawEllipse(null, trackPen, new Point(Center, Center), Radius, Radius);
-
-            if (_ratio > 0)
-            {
-                var deg = Math.Max(_ratio * 360, 5);
-                if (deg >= 360)
-                {
-                    // 满圆
-                    dc.DrawEllipse(
-                        null,
-                        new Pen(new SolidColorBrush(_foreColor), StrokeW),
-                        new Point(Center, Center),
-                        Radius,
-                        Radius);
-                }
-                else
-                {
-                    // 弧：12 点方向起顺时针
-                    var rad = deg * Math.PI / 180;
-                    var sa = -Math.PI / 2;
-                    var sx = Center + Radius * Math.Cos(sa);
-                    var sy = Center + Radius * Math.Sin(sa);
-                    var ex = Center + Radius * Math.Cos(sa + rad);
-                    var ey = Center + Radius * Math.Sin(sa + rad);
-                    var seg = new ArcSegment(
-                        new Point(ex, ey),
-                        new Size(Radius, Radius),
-                        0,
-                        deg > 180,
-                        SweepDirection.Clockwise,
-                        true);
-                    var fig = new PathFigure(new Point(sx, sy), [seg], closed: false);
-                    var geo = new PathGeometry([fig]);
-                    var pen = new Pen(new SolidColorBrush(_foreColor), StrokeW)
-                    {
-                        StartLineCap = PenLineCap.Round,
-                        EndLineCap = PenLineCap.Round
-                    };
-                    dc.DrawGeometry(null, pen, geo);
-                }
-            }
-
-            // 中心百分比
-            var pct = _ratio > 0 ? $"{(int)(_ratio * 100)}%" : "--";
-            var ft = new FormattedText(
-                pct,
-                CultureInfo.CurrentUICulture,
-                FlowDirection.LeftToRight,
-                new Typeface(
-                    FontFamily,
-                    FontStyles.Normal,
-                    FontWeights.Bold,
-                    FontStretches.Normal),
-                14 * FontScale,
-                new SolidColorBrush(_foreColor),
-                96.0);
-            dc.DrawText(ft, new Point(Center - ft.Width / 2, Center - ft.Height / 2));
-        }
-    }
-
-    /// <summary>
-    /// 简约趋势柱状图（v3.1 DeepSeekUsageChart 移植）：坐标轴 + 绿柱 + 悬停 ToolTip。
-    /// 主题字体 / 弱色 / 字号缩放由 ApplyMonitorTheme 注入，柱子布局按当前宽度实时计算。
-    /// </summary>
-    private sealed class UsageChart : FrameworkElement
-    {
-        private const double BarWidth = 14;
-        private const double BarGap = 20;
-        private const double ChartArea = 60;
-        private const double AxisWidth = 42;
-        private const double AxisHeight = 18;
-        private const double TotalHeight = ChartArea + AxisHeight + 4;
-
-        private static readonly Color BarColor = Color.FromRgb(0x4C, 0xAF, 0x50);
-        private static readonly Color HoverColor = Color.FromRgb(0x66, 0xBB, 0x6A);
-        private static readonly Color AxisColor = Color.FromRgb(0x9E, 0x9E, 0x9E);
-
-        public FontFamily FontFamily { get; set; } = new FontFamily("Microsoft YaHei UI");
-        public double FontScale { get; set; } = 1.0;
-        public Brush WeakBrush { get; set; } = Brushes.Gray;
-
-        private double[] _values = Array.Empty<double>();
-        private string[] _labels = Array.Empty<string>();
-        private double _maxVal = 1;
-        private int _hoverIndex = -1;
-
-        public UsageChart()
-        {
-            Height = TotalHeight;
-            ToolTipService.SetInitialShowDelay(this, 0);
-            ToolTipService.SetBetweenShowDelay(this, 0);
-            ToolTipService.SetShowDuration(this, 60000);
-        }
-
-        public void Update(double[] dailyTokens, string[]? dateLabels = null)
-        {
-            _values = dailyTokens ?? Array.Empty<double>();
-            _labels = dateLabels ?? Array.Empty<string>();
-            _maxVal = _values.Length == 0 ? 1 : Math.Max(_values.Max(), 1);
-            _hoverIndex = -1;
-            InvalidateVisual();
-        }
-
-        protected override void OnRender(DrawingContext dc)
-        {
-            var w = ActualWidth;
-            if (w <= 0 || _values.Length == 0)
-            {
-                return;
-            }
-
-            var bottom = ChartArea;
-            var axisPen = new Pen(new SolidColorBrush(AxisColor) { Opacity = 0.25 }, 1);
-            var axisFontSize = 11 * FontScale;
-            var axisX = AxisWidth - 4;
-
-            // Y 轴 / X 轴
-            dc.DrawLine(axisPen, new Point(axisX, 0), new Point(axisX, bottom));
-            dc.DrawLine(axisPen, new Point(axisX, bottom), new Point(w - 2, bottom));
-
-            // Y 轴刻度：0 / 50% / 100%
-            foreach (var tick in new[] { 0.0, _maxVal * 0.5, _maxVal })
-            {
-                var y = bottom - tick / _maxVal * ChartArea;
-                dc.DrawLine(axisPen, new Point(axisX - 4, y), new Point(axisX, y));
-                var ft = new FormattedText(
-                    FormatTokens((long)tick),
-                    CultureInfo.CurrentUICulture,
-                    FlowDirection.LeftToRight,
-                    new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
-                    axisFontSize,
-                    WeakBrush,
-                    96);
-                dc.DrawText(ft, new Point(axisX - 8 - ft.Width, y - ft.Height / 2));
-            }
-
-            // 柱子 + X 轴日期标签
-            var rects = ComputeBars();
-            for (var i = 0; i < rects.Length; i++)
-            {
-                var rect = rects[i];
-                var color = i == _hoverIndex ? HoverColor : BarColor;
-                var opacity = i == _hoverIndex ? 0.9 : 0.65;
-                var brush = new SolidColorBrush(color) { Opacity = opacity };
-                var geo = new RectangleGeometry(rect, BarWidth / 2, BarWidth / 2);
-                dc.DrawGeometry(brush, null, geo);
-
-                if (i < _labels.Length)
-                {
-                    var ft = new FormattedText(
-                        _labels[i],
-                        CultureInfo.CurrentUICulture,
-                        FlowDirection.LeftToRight,
-                        new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
-                        axisFontSize,
-                        WeakBrush,
-                        96);
-                    dc.DrawText(ft, new Point(rect.X + BarWidth / 2 - ft.Width / 2, bottom + 4));
-                }
-            }
-        }
-
-        protected override void OnMouseMove(MouseEventArgs e)
-        {
-            base.OnMouseMove(e);
-            var pos = e.GetPosition(this);
-            var rects = ComputeBars();
-            var found = -1;
-            for (var i = 0; i < rects.Length; i++)
-            {
-                if (rects[i].Contains(pos))
-                {
-                    found = i;
-                    break;
-                }
-            }
-            if (found != _hoverIndex)
-            {
-                _hoverIndex = found;
-                ToolTip = found >= 0 && found < _labels.Length
-                    ? $"{_labels[found]}\n{FormatTokens((long)_values[found])} Token"
-                    : "";
-                InvalidateVisual();
-            }
-        }
-
-        protected override void OnMouseLeave(MouseEventArgs e)
-        {
-            base.OnMouseLeave(e);
-            if (_hoverIndex >= 0)
-            {
-                _hoverIndex = -1;
-                ToolTip = "";
-                InvalidateVisual();
-            }
-        }
-
-        /// <summary>
-        /// 按当前实际宽度计算柱子矩形（渲染与悬停共用，布局变化后自动校正）。
-        /// </summary>
-        private Rect[] ComputeBars()
-        {
-            if (_values.Length == 0 || ActualWidth <= 0)
-            {
-                return Array.Empty<Rect>();
-            }
-            var bottom = ChartArea;
-            var areaWidth = Math.Max(ActualWidth - AxisWidth, 10);
-            var totalBarArea = _values.Length * (BarWidth + BarGap) - BarGap;
-            var startX = AxisWidth + (areaWidth - totalBarArea) / 2;
-            var rects = new Rect[_values.Length];
-            for (var i = 0; i < _values.Length; i++)
-            {
-                var h = Math.Max(_values[i] / _maxVal * ChartArea, 2);
-                var x = startX + i * (BarWidth + BarGap);
-                rects[i] = new Rect(x, bottom - h, BarWidth, h);
-            }
-            return rects;
-        }
-
-        private static string FormatTokens(long tokens)
-        {
-            if (tokens >= 1_000_000_000)
-            {
-                return $"{tokens / 1_000_000_000.0:F2}B";
-            }
-            if (tokens >= 1_000_000)
-            {
-                return $"{tokens / 1_000_000.0:F1}M";
-            }
-            if (tokens >= 1_000)
-            {
-                return $"{tokens / 1_000.0:F1}K";
-            }
-            return tokens.ToString();
-        }
-    }
 }
