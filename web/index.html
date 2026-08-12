@@ -237,8 +237,8 @@ function render(msg) {
     st.style.color = "";
   }
 
-  // 余额
-  $("balanceValue").textContent = d.hasBalance ? d.balance : "—";
+  // 余额（数值前加半角货币符号）
+  $("balanceValue").textContent = d.hasBalance ? (d.currencySymbol || "") + d.balance : "—";
   $("balanceCurrency").textContent = d.currency || "";
   // 近 7 天消费（悬停展开 7 天明细）
   $("costLine").textContent = d.cost7d ? "近 7 天消费：" + d.cost7d : "";

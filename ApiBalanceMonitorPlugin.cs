@@ -1068,6 +1068,7 @@ internal sealed class BalanceSession : IPaperBodySession
             ["hasBalance"] = hasData,
             ["balance"] = hasData ? FormatAmount(_snapshot.Remaining) : "—",
             ["currency"] = MapCurrencySymbolToCode(_settings.CurrencySymbol) ?? _settings.CurrencySymbol,
+            ["currencySymbol"] = _settings.CurrencySymbol,
             ["ratio"] = ratio,
             ["riskColor"] = riskColor,
             ["riskState"] = RiskStateText(ratio),
