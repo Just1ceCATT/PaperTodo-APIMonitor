@@ -427,9 +427,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 胶囊文本：货币符号 + 余额 +（可选）百分比，v3.1 风格。
-    /// 1.7 视图下胶囊宽度随内容自适应，文本不再被宿主 CharacterEllipsis 截断，
-    /// 因此保留一个普通空格分隔即可。
+    /// 胶囊文本：货币符号 + 余额 +（可选）百分比，v3.1 风格 "¥12.34 · 6%"。
+    /// 1.7 视图下胶囊宽度随内容自适应（最大 320），" · " 分隔不会截断。
     /// </summary>
     private static string BuildCapsuleText(
         BalanceSnapshot snapshot,
@@ -447,7 +446,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             var percent = (int)Math.Round(
                 Math.Clamp(riskRatio, 0, 1) * 100.0, MidpointRounding.AwayFromZero);
-            sb.Append(' ');
+            sb.Append(" · ");
             sb.Append(percent.ToString(CultureInfo.CurrentCulture));
             sb.Append('%');
         }
