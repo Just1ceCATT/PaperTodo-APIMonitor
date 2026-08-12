@@ -39,8 +39,10 @@
   .balance-row { display: flex; align-items: baseline; gap: calc(7px * var(--font-scale)); margin-top: calc(2px * var(--font-scale)); }
   #balanceValue { font-size: calc(32px * var(--font-scale)); font-weight: 700; line-height: 1.1; }
   #balanceCurrency { font-size: calc(15px * var(--font-scale)); color: var(--weak); }
-  .cost-wrap { position: relative; margin-top: calc(4px * var(--font-scale)); }
-  .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; cursor: default; }
+  .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; }
+  .today-cost { margin-top: calc(4px * var(--font-scale)); }
+  .cost-wrap { position: relative; margin-top: calc(2px * var(--font-scale)); }
+  .cost-wrap .cost-line { cursor: default; }
   .cost-detail {
     position: absolute;
     left: 50%;
@@ -145,6 +147,7 @@
     <span id="balanceValue">—</span>
     <span id="balanceCurrency"></span>
   </div>
+  <div id="todayCost" class="cost-line today-cost"></div>
   <div id="costWrap" class="cost-wrap">
     <div id="costLine" class="cost-line"></div>
     <div id="costDetail" class="cost-detail"></div>
@@ -240,6 +243,8 @@ function render(msg) {
   // 余额（数值前加半角货币符号）
   $("balanceValue").textContent = d.hasBalance ? (d.currencySymbol || "") + d.balance : "—";
   $("balanceCurrency").textContent = d.currency || "";
+  // 今日消费
+  $("todayCost").textContent = d.costToday ? "今日消费：" + d.costToday : "";
   // 近 7 天消费（悬停展开 7 天明细）
   $("costLine").textContent = d.cost7d ? "近 7 天消费：" + d.cost7d : "";
   var costDetail = $("costDetail");

@@ -1078,6 +1078,7 @@ internal sealed class BalanceSession : IPaperBodySession
             ["updateTime"] = hasData
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
+            ["costToday"] = BuildCostTodayText(),
             ["cost7d"] = BuildCost7dText(),
             ["costDays7"] = BuildCostDays7Array(),
             ["usage"] = BuildUsageArray()
@@ -1088,6 +1089,24 @@ internal sealed class BalanceSession : IPaperBodySession
             ["theme"] = theme,
             ["data"] = data
         });
+    }
+
+    /// <summary>
+    /// 今日（当天）消费文本；无数据返回空字符串。
+    /// </summary>
+    private string BuildCostTodayText()
+    {
+        if (_costDays == null || _costDays.Length == 0)
+        {
+            return "";
+        }
+        var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var day = Array.Find(_costDays, c => c.Date == key);
+        if (day == null || day.Cost <= 0)
+        {
+            return "";
+        }
+        return _settings.CurrencySymbol + day.Cost.ToString("0.00", CultureInfo.CurrentCulture);
     }
 
     /// <summary>
