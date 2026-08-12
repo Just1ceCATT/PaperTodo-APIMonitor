@@ -73,6 +73,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private string _lastCapsuleSignature = "";
     private BalanceCapsuleView? _regularCapsuleView;
     private BalanceCapsuleView? _dockedCapsuleView;
+    private int _polling;
 
     public BalanceSession(PaperBodyContext context)
     {
@@ -255,7 +256,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             return;
         }
 
-        BalanceSnapshot next;
+        // 并发保护：上一次请求尚未完成时跳过本次，避免请求堆积与相互取消。
+        if (Interlocked.Exchange(ref _polling, 1) != 0)
+        {
+            return;
+        }
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, DeepSeekBalanceUrl);
@@ -264,14 +270,22 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             using var response = await _http.SendAsync(request).ConfigureAwait(true);
             response.EnsureSuccessStatusCode();
             var body = await response.Content.ReadAsStringAsync().ConfigureAwait(true);
-            next = ParseResponse(body);
+            UpdateSnapshot(ParseResponse(body));
+        }
+        catch (TaskCanceledException)
+        {
+            // HttpClient 超时在 .NET 中以 TaskCanceledException 呈现（而非 TimeoutException），
+            // 单独捕获并给出友好提示，而不是把异常类型名展示给用户。
+            UpdateSnapshot(BalanceSnapshot.Error("请求超时，请检查网络连接"));
         }
         catch (Exception ex)
         {
-            next = BalanceSnapshot.Error(ex.GetType().Name);
+            UpdateSnapshot(BalanceSnapshot.Error(ex.GetType().Name));
         }
-
-        UpdateSnapshot(next);
+        finally
+        {
+            Interlocked.Exchange(ref _polling, 0);
+        }
     }
 
     private BalanceSnapshot ParseResponse(string body)
