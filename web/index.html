@@ -46,23 +46,26 @@
     left: 50%;
     top: calc(100% + 6px);
     transform: translateX(-50%);
+    width: 0;
+    max-height: 0;
+    overflow: hidden;
     background: var(--paper);
     border: 1px solid color-mix(in srgb, var(--weak) 30%, transparent);
     border-radius: 6px;
     padding: calc(6px * var(--font-scale)) calc(10px * var(--font-scale));
-    min-width: calc(132px * var(--font-scale));
     z-index: 5;
     box-shadow: 0 2px 8px rgba(0,0,0,0.12);
     opacity: 0;
     visibility: hidden;
-    /* 顶部锚定矩形扩张：水平自两侧、垂直向下展开，顶部边固定，文字不缩放 */
-    clip-path: inset(0 50% 100% 50%);
-    transition: clip-path .25s ease, opacity .2s ease, visibility .25s;
+    /* 顶部锚定矩形扩张：translateX 居中使宽度自两侧扩张，max-height 使高度向下展开，
+       文字在 overflow:hidden 容器内保持原始尺寸 */
+    transition: width .28s ease, max-height .28s ease, opacity .2s ease, visibility .28s;
   }
   .cost-wrap:hover .cost-detail {
+    width: calc(160px * var(--font-scale));
+    max-height: calc(170px * var(--font-scale));
     opacity: 1;
     visibility: visible;
-    clip-path: inset(0 0 0 0);
   }
   .cost-detail-row {
     display: flex; justify-content: space-between; gap: calc(12px * var(--font-scale));
