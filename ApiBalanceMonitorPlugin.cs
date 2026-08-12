@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 using System.Windows.Threading;
 using PaperTodo.Plugin;
 
@@ -16,8 +15,8 @@ namespace PaperTodo.Plugin.ApiBalanceMonitor;
 /// 在胶囊中显示「绿/黄/红圆环 + 货币 + 余额 + 可选百分比」。
 ///
 /// 实现要点（不修改宿主）：
-/// - 1.7 协议胶囊（PaperCapsulePresentation）即可渲染圆环形态
-///   （ProgressRing + Text），外壳底色由暗色主题自然提供。
+/// - 胶囊由宿主 1.6 模板渲染（ProgressRing + Text），文本使用宿主自家胶囊字体，
+///   与宿主其它胶囊完全一致；宿主（v4.0.0 起）支持胶囊宽度随内容自适应，不会截断。
 /// - 设置项由宿主自带的"插件"设置页绘制（boolean / string / number / select 四类）。
 /// - 鉴权信息（apiKey）会随设置写入 plugins/data/api.balance.monitor.json（明文），
 ///   因此在 plugin.json 的 description 中明确告知用户并建议使用只读子 key。
@@ -63,7 +62,7 @@ internal sealed record BalanceSnapshot(
         new(remaining, total, !double.IsNaN(remaining), !double.IsNaN(total), string.Empty);
 }
 
-internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvider
+internal sealed class BalanceSession : IPaperBodySession
 {
     private readonly PaperBodyContext _context;
     private readonly HttpClient _http;
@@ -71,8 +70,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private BalanceSettings _settings;
     private BalanceSnapshot _snapshot = BalanceSnapshot.Empty("尚未拉取");
     private string _lastCapsuleSignature = "";
-    private BalanceCapsuleView? _regularCapsuleView;
-    private BalanceCapsuleView? _dockedCapsuleView;
     private int _polling;
 
     public BalanceSession(PaperBodyContext context)
@@ -120,44 +117,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 折叠成胶囊后仍按 backgroundUpdates 继续轮询，无需特别处理。
     }
     public void OnPresentationChanged(bool expanded) { }
-    public void OnThemeChanged(PaperBodyTheme theme)
-    {
-        _regularCapsuleView?.ApplyTheme(theme);
-        _dockedCapsuleView?.ApplyTheme(theme);
-    }
-
-    public void OnTypographyChanged(PaperBodyTheme theme) => OnThemeChanged(theme);
+    public void OnThemeChanged(PaperBodyTheme theme) { }
+    public void OnTypographyChanged(PaperBodyTheme theme) { }
     public void OnDpiChanged() { }
 
     public void OnSettingsChanged(string settingsJson)
     {
         ApplySettings(ReadSettings(settingsJson));
-    }
-
-    // ---------------- 1.7 协议胶囊视图 ----------------
-
-    /// <summary>
-    /// Protocol 1.7：宿主为每个 live capsule surface 至多调用一次并缓存视图。
-    /// 视图拿到精确的内容段宽度（不含 1.6 模板视觉内边距），由插件自绘圆环与文本，
-    /// 文本不再受宿主 CharacterEllipsis 截断——胶囊窗口宽度会随内容自适应（最大 320）。
-    /// </summary>
-    public FrameworkElement? CreateCapsuleView(PaperCapsuleViewContext context)
-    {
-        var view = new BalanceCapsuleView(context);
-        var ratio = ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold);
-        view.Update(
-            BuildCapsuleText(_snapshot, _settings, ratio),
-            ratio,
-            RingColor(ratio));
-        if (context.Surface == PaperCapsuleSurfaceKind.Docked)
-        {
-            _dockedCapsuleView = view;
-        }
-        else
-        {
-            _regularCapsuleView = view;
-        }
-        return view;
     }
 
     // ---------------- 设置解析 ----------------
@@ -420,15 +386,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 }
             }
         });
-
-        // 1.7 自定义视图（若宿主已创建并缓存）同步当前文本与风险环。
-        _regularCapsuleView?.Update(text, riskRatio, ringColor);
-        _dockedCapsuleView?.Update(text, riskRatio, ringColor);
     }
 
     /// <summary>
     /// 胶囊文本：货币符号 + 余额 +（可选）百分比，v3.1 风格 "¥12.34 · 6%"。
-    /// 1.7 视图下胶囊宽度随内容自适应（最大 320），" · " 分隔不会截断。
+    /// 文本由宿主 1.6 模板用宿主胶囊字体渲染；宿主支持胶囊宽度随内容自适应，
+    /// 因此 " · " 分隔不会截断。
     /// </summary>
     private static string BuildCapsuleText(
         BalanceSnapshot snapshot,
@@ -511,236 +474,4 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             : asDecimal.ToString("F2", CultureInfo.CurrentCulture);
     }
 
-    // ---------------- 1.7 胶囊自定义视图 ----------------
-
-    /// <summary>
-    /// 1.7 协议胶囊视图：横向 [风险圆环][文本]，整体占满宿主给的精确内容宽度。
-    /// 文本由插件自绘、字号跟随主题；字重用 Normal 与宿主 1.6 测量一致，使渲染宽度
-    /// 不会超过宿主 slot；若字体/缩放差异仍造成超宽，则按可用宽度自动缩小字号（auto-fit），
-    /// 保证文本始终完整显示，CharacterEllipsis 仅作为极端兜底。
-    /// </summary>
-    private sealed class BalanceCapsuleView : Grid
-    {
-        private const double RingSize = 16;
-        private const double MinFontSize = 6;
-
-        private readonly RiskRingElement _ring;
-        private readonly TextBlock _label;
-        private readonly PaperCapsuleSurfaceKind _surface;
-        private readonly double _baseFontSize;
-        private readonly double _availableTextWidth;
-
-        public BalanceCapsuleView(PaperCapsuleViewContext context)
-        {
-            _surface = context.Surface;
-            _baseFontSize = (_surface == PaperCapsuleSurfaceKind.Docked ? 11.5 : 12)
-                * Math.Clamp(context.Theme.FontScale, 0.85, 1.2);
-            // 可用文本宽 = 宿主给的精确内容宽 - 圆环列（左 margin 6 + 环 16 + 右 margin 5）
-            //              - 文本右 margin 6。
-            _availableTextWidth = Math.Max(10, context.Width - 6 - RingSize - 5 - 6);
-
-            Background = Brushes.Transparent;
-            ClipToBounds = true;
-
-            _ring = new RiskRingElement
-            {
-                Margin = new Thickness(6, 0, 5, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _label = new TextBlock
-            {
-                Margin = new Thickness(0, 0, 6, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                FontWeight = FontWeights.Normal
-            };
-
-            ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Grid.SetColumn(_ring, 0);
-            Grid.SetColumn(_label, 1);
-            Children.Add(_ring);
-            Children.Add(_label);
-
-            ApplyTheme(context.Theme);
-        }
-
-        public void Update(string text, double ratio, string ringColor)
-        {
-            _label.Text = text;
-            _ring.SetState(ratio, ringColor);
-            FitText();
-        }
-
-        public void ApplyTheme(PaperBodyTheme theme)
-        {
-            _label.FontFamily = new FontFamily(theme.FontFamily);
-            _label.FontSize = _baseFontSize;
-            _label.Foreground = ToBrush(theme.TextColor, "#202020");
-            FitText();
-        }
-
-        /// <summary>
-        /// auto-fit：文本实际渲染宽度超过可用宽度时缩小字号，直到放得下；
-        /// 文本变短后恢复基准字号。
-        /// </summary>
-        private void FitText()
-        {
-            if (string.IsNullOrEmpty(_label.Text))
-            {
-                return;
-            }
-            var width = MeasureTextWidth(
-                _label.Text, _label.FontFamily, _label.FontSize, _label.FontWeight);
-            if (width > _availableTextWidth)
-            {
-                var factor = (_availableTextWidth * 0.98) / width;
-                _label.FontSize = Math.Max(MinFontSize, _label.FontSize * factor);
-            }
-            else if (_label.FontSize < _baseFontSize)
-            {
-                _label.FontSize = _baseFontSize;
-            }
-        }
-
-        private static double MeasureTextWidth(
-            string text,
-            FontFamily family,
-            double fontSize,
-            FontWeight weight)
-        {
-            try
-            {
-                var formatted = new FormattedText(
-                    text,
-                    CultureInfo.CurrentUICulture,
-                    FlowDirection.LeftToRight,
-                    new Typeface(family, FontStyles.Normal, weight, FontStretches.Normal),
-                    fontSize,
-                    Brushes.Black,
-                    96.0);
-                return formatted.WidthIncludingTrailingWhitespace;
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-
-        private static SolidColorBrush ToBrush(string? value, string fallback)
-        {
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return new SolidColorBrush((Color)ColorConverter.ConvertFromString(value)!);
-                }
-            }
-            catch
-            {
-            }
-            return new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallback)!);
-        }
-    }
-
-    /// <summary>
-    /// 风险圆环（v3.1 实现移植）：浅色轨道 + 彩色前景弧，自 12 点起顺时针，
-    /// 未配置阈值显示灰环，Overrun 显示满圆，最小可见弧 10°。
-    /// </summary>
-    private sealed class RiskRingElement : FrameworkElement
-    {
-        private const double RingSize = 16;
-        private const double StrokeThicknessValue = 2.5;
-        private const double Radius = (RingSize - StrokeThicknessValue) / 2;
-        private const double MinArcDegrees = 10;
-        private const double Center = RingSize / 2;
-
-        private static readonly Color GrayColor = Color.FromRgb(0x9E, 0x9E, 0x9E);
-
-        private double _ratio;
-        private Color _foreColor = GrayColor;
-
-        public RiskRingElement()
-        {
-            Width = RingSize;
-            Height = RingSize;
-        }
-
-        protected override Size MeasureOverride(Size constraint) =>
-            new Size(RingSize, RingSize);
-
-        public void SetState(double ratio, string color)
-        {
-            _ratio = ratio;
-            _foreColor = ParseColor(color, "#9E9E9E");
-            InvalidateVisual();
-        }
-
-        protected override void OnRender(DrawingContext dc)
-        {
-            // 背景灰色轨道。
-            var trackPen = new Pen(
-                new SolidColorBrush(GrayColor) { Opacity = 0.35 },
-                StrokeThicknessValue);
-            dc.DrawEllipse(null, trackPen, new Point(Center, Center), Radius, Radius);
-
-            // 未配置阈值：只画灰环，不画前景弧。
-            if (_ratio <= 0)
-            {
-                return;
-            }
-
-            if (_ratio >= 1.0)
-            {
-                // Overrun / 满圆。
-                var fullPen = new Pen(new SolidColorBrush(_foreColor), StrokeThicknessValue);
-                dc.DrawEllipse(null, fullPen, new Point(Center, Center), Radius, Radius);
-                return;
-            }
-
-            // 弧形：12 点钟方向起，顺时针。
-            var degrees = Math.Max(_ratio * 360, MinArcDegrees);
-            var radians = degrees * Math.PI / 180;
-            var startAngle = -Math.PI / 2;
-            var start = new Point(
-                Center + Radius * Math.Cos(startAngle),
-                Center + Radius * Math.Sin(startAngle));
-            var end = new Point(
-                Center + Radius * Math.Cos(startAngle + radians),
-                Center + Radius * Math.Sin(startAngle + radians));
-            var isLargeArc = degrees > 180;
-
-            var segment = new ArcSegment(
-                end,
-                new Size(Radius, Radius),
-                0,
-                isLargeArc,
-                SweepDirection.Clockwise,
-                true);
-            var figure = new PathFigure(start, [segment], closed: false);
-            var geometry = new PathGeometry([figure]);
-            var pen = new Pen(new SolidColorBrush(_foreColor), StrokeThicknessValue)
-            {
-                StartLineCap = PenLineCap.Round,
-                EndLineCap = PenLineCap.Round
-            };
-            dc.DrawGeometry(null, pen, geometry);
-        }
-
-        private static Color ParseColor(string? value, string fallback)
-        {
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return (Color)ColorConverter.ConvertFromString(value)!;
-                }
-            }
-            catch
-            {
-            }
-            return (Color)ColorConverter.ConvertFromString(fallback)!;
-        }
-    }
 }
