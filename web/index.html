@@ -42,7 +42,6 @@
   .cost-wrap { position: relative; margin-top: calc(4px * var(--font-scale)); }
   .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; cursor: default; }
   .cost-detail {
-    display: none;
     position: absolute;
     left: 0; top: calc(100% + 4px);
     background: var(--paper);
@@ -52,8 +51,16 @@
     min-width: calc(132px * var(--font-scale));
     z-index: 5;
     box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-6px);
+    transition: opacity .18s ease, transform .18s ease, visibility .18s;
   }
-  .cost-wrap:hover .cost-detail { display: block; }
+  .cost-wrap:hover .cost-detail {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+  }
   .cost-detail-row {
     display: flex; justify-content: space-between; gap: calc(12px * var(--font-scale));
     font-size: calc(12px * var(--font-scale)); color: var(--text);
