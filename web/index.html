@@ -348,8 +348,9 @@ function renderChart() {
     svg.appendChild(text(axisX - 6, y + 3, "chart-axis", "end", fmtTokens(Math.round(max * t))));
   });
 
-  // 柱过多时抽稀日期标签，避免重叠
+  // 柱过多时抽稀日期标签；柱超过 10 根时不再渲染柱顶数值，避免重叠
   var labelStep = n > 15 ? Math.ceil(n / 15) : 1;
+  var showValues = n <= 10;
 
   days.forEach(function (d, i) {
     var h = Math.max(2, d.tokens / max * plotH);
@@ -367,8 +368,10 @@ function renderChart() {
     rect.appendChild(tip);
     svg.appendChild(rect);
 
-    // 柱顶数值
-    svg.appendChild(text(x + barW / 2, y - 3, "chart-val", "middle", fmtTokens(Math.round(d.tokens))));
+    // 柱顶数值（仅柱子数不超过 10 时显示）
+    if (showValues) {
+      svg.appendChild(text(x + barW / 2, y - 3, "chart-val", "middle", fmtTokens(Math.round(d.tokens))));
+    }
 
     // 底部日期标签（抽稀）
     if (i % labelStep === 0) {
