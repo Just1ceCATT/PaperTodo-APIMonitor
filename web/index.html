@@ -56,17 +56,42 @@
 
   /* ── 用量柱状图 ── */
   .usage { margin-top: calc(18px * var(--font-scale)); }
-  .usage-label { font-size: calc(14px * var(--font-scale)); font-weight: 600; color: var(--weak); margin-bottom: calc(6px * var(--font-scale)); }
-  #chart { display: flex; align-items: flex-end; gap: calc(6px * var(--font-scale)); height: calc(70px * var(--font-scale)); }
+  .usage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: calc(6px * var(--font-scale)); }
+  .usage-label { font-size: calc(14px * var(--font-scale)); font-weight: 600; color: var(--weak); }
+  .range-select {
+    font-family: var(--font);
+    font-size: calc(12px * var(--font-scale));
+    color: var(--text);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--weak) 40%, transparent);
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+  .custom-range {
+    display: flex; align-items: center; gap: calc(6px * var(--font-scale));
+    font-size: calc(12px * var(--font-scale)); color: var(--weak);
+    margin-bottom: calc(6px * var(--font-scale));
+  }
+  .custom-range input {
+    font-family: var(--font);
+    font-size: calc(12px * var(--font-scale));
+    color: var(--text);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--weak) 40%, transparent);
+    border-radius: 6px;
+    padding: 2px 4px;
+  }
+  #chart { display: flex; align-items: flex-end; gap: calc(3px * var(--font-scale)); height: calc(70px * var(--font-scale)); }
   .bar-col { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
   .bar-fill {
-    width: 100%; max-width: calc(22px * var(--font-scale));
+    width: 100%; max-width: calc(26px * var(--font-scale));
     height: 0; min-height: 2px;
     background: #4caf50; border-radius: 3px 3px 0 0;
     transition: height .25s ease;
   }
   .bar-col:hover .bar-fill { opacity: .85; }
-  .bar-lbl { font-size: calc(10px * var(--font-scale)); color: var(--weak); margin-top: 4px; }
+  .bar-lbl { font-size: calc(9px * var(--font-scale)); color: var(--weak); margin-top: 3px; white-space: nowrap; }
+  .chart-empty { color: var(--weak); font-size: calc(12px * var(--font-scale)); padding: calc(10px * var(--font-scale)) 0; }
 
   /* ── 更新时间 ── */
   #updateTime { text-align: right; font-size: calc(12px * var(--font-scale)); color: var(--weak); margin-top: calc(14px * var(--font-scale)); }
@@ -105,7 +130,24 @@
   </div>
 
   <div class="usage">
-    <div class="usage-label">用量趋势（近 7 天）</div>
+    <div class="usage-head">
+      <span class="usage-label">用量趋势</span>
+      <select id="rangeSelect" class="range-select">
+        <option value="today">今天</option>
+        <option value="yesterday">昨天</option>
+        <option value="7d" selected>近 7 天</option>
+        <option value="30d">近 30 天</option>
+        <option value="month">本月</option>
+        <option value="lastMonth">上月</option>
+        <option value="custom">自定义</option>
+      </select>
+    </div>
+    <div id="customRange" class="custom-range" style="display:none">
+      <span>从</span>
+      <input type="date" id="fromDate">
+      <span>至</span>
+      <input type="date" id="toDate">
+    </div>
     <div id="chart"></div>
   </div>
 
@@ -185,34 +227,111 @@ function render(msg) {
   $("riskState").style.color = color;
   $("riskThreshold").textContent = d.threshold || "";
 
-  // 用量柱状图
-  renderChart(d.usage);
+  // 用量柱状图（保存全量每日数据，由当前时段筛选渲染）
+  currentUsage = d.usage || [];
+  renderChart();
 
   // 更新时间
   $("updateTime").textContent = d.updateTime || "";
 }
 
-function renderChart(usage) {
+// ── 用量时段：前端从 C# 推来的全量每日数据中按所选时段筛选渲染 ──
+var rangeState = "7d";
+var customFrom = "";
+var customTo = "";
+var currentUsage = [];
+
+function fmtDate(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+function parseDate(s) {
+  var p = s.split("-");
+  return new Date(+p[0], +p[1] - 1, +p[2]);
+}
+
+// 按当前时段从全量按日数据中筛选出柱状图序列
+function collectDays(byDate) {
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var yesterday = new Date(today.getTime() - 86400000);
+  var result = [];
+  function label(dateStr) {
+    if (dateStr === fmtDate(today)) return "今";
+    if (dateStr === fmtDate(yesterday)) return "昨";
+    return dateStr.slice(8);
+  }
+  function add(date) {
+    result.push({ date: date, tokens: byDate[date] || 0, label: label(date) });
+  }
+  function between(a, b) {
+    for (var d = new Date(a); d <= b; d.setDate(d.getDate() + 1)) add(fmtDate(d));
+  }
+
+  switch (rangeState) {
+    case "today":
+      add(fmtDate(today)); break;
+    case "yesterday":
+      add(fmtDate(yesterday)); break;
+    case "7d":
+      between(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6), today); break;
+    case "30d":
+      between(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29), today); break;
+    case "month": {
+      var f = new Date(today.getFullYear(), today.getMonth(), 1);
+      var l = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      between(f, l); break;
+    }
+    case "lastMonth": {
+      var f2 = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      var l2 = new Date(today.getFullYear(), today.getMonth(), 0);
+      between(f2, l2); break;
+    }
+    case "custom":
+      if (customFrom && customTo) {
+        var a = parseDate(customFrom), b = parseDate(customTo);
+        if (a <= b) between(a, b);
+      }
+      break;
+  }
+  return result;
+}
+
+function renderChart() {
   var box = $("chart");
   box.innerHTML = "";
-  if (!usage || !usage.length) return;
+  var byDate = {};
+  (currentUsage || []).forEach(function (u) { byDate[u.date] = u.tokens; });
+  var days = collectDays(byDate);
+  if (!days.length) {
+    box.innerHTML = '<div class="chart-empty">该时段暂无用量数据</div>';
+    return;
+  }
   var max = 1;
-  usage.forEach(function (u) { if (u.tokens > max) max = u.tokens; });
-  usage.forEach(function (u) {
+  days.forEach(function (d) { if (d.tokens > max) max = d.tokens; });
+  days.forEach(function (d) {
     var col = document.createElement("div");
     col.className = "bar-col";
-    col.title = u.label + "\n" + fmtTokens(u.tokens) + " Token";
+    col.title = d.date + "\n" + fmtTokens(d.tokens) + " Token";
     var fill = document.createElement("div");
     fill.className = "bar-fill";
-    fill.style.height = (u.tokens / max * 100).toFixed(1) + "%";
+    fill.style.height = (d.tokens / max * 100).toFixed(1) + "%";
     var lbl = document.createElement("div");
     lbl.className = "bar-lbl";
-    lbl.textContent = u.label;
+    lbl.textContent = d.label;
     col.appendChild(fill);
     col.appendChild(lbl);
     box.appendChild(col);
   });
 }
+
+// 时段切换 / 自定义日期变化 → 立即重渲染（不重新请求 C#）
+$("rangeSelect").addEventListener("change", function () {
+  rangeState = this.value;
+  $("customRange").style.display = rangeState === "custom" ? "flex" : "none";
+  renderChart();
+});
+$("fromDate").addEventListener("change", function () { customFrom = this.value; renderChart(); });
+$("toDate").addEventListener("change", function () { customTo = this.value; renderChart(); });
 
 // 暴露给宿主的直调渲染函数（备用通道，绕过 postMessage 监听）
 window.__renderBalance = function (msg) {

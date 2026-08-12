@@ -265,11 +265,12 @@ internal sealed class BalanceSession : IPaperBodySession
         try
         {
             // 余额与用量并行拉取（v3.1 收集方式）；用量 Token 未配置时只拉余额。
+            // 用量拉取上个月 + 本月，覆盖所有预置时段（近 30 天 / 本月 / 上月）。
             var now = DateTime.Now;
             var balanceTask = FetchBalanceAsync();
             var usageTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
                 ? Task.FromResult<UsageDay[]?>(null)
-                : FetchUsageAsync(_settings.UsageToken, now.Year, now.Month);
+                : FetchUsageForRecentMonthsAsync(_settings.UsageToken, now);
 
             await Task.WhenAll(balanceTask, usageTask).ConfigureAwait(true);
             _usageDays = usageTask.Result;
@@ -307,6 +308,28 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             return BalanceSnapshot.Error(ex.GetType().Name);
         }
+    }
+
+    /// <summary>
+    /// 拉取上个月 + 本月两个月的每日用量并合并，供前端按"今天/昨天/近 7 天/近 30 天/本月/上月/自定义"筛选。
+    /// </summary>
+    private async Task<UsageDay[]?> FetchUsageForRecentMonthsAsync(string token, DateTime now)
+    {
+        var thisMonth = new DateTime(now.Year, now.Month, 1);
+        var lastMonth = thisMonth.AddMonths(-1);
+        var currentTask = FetchUsageAsync(token, thisMonth.Year, thisMonth.Month);
+        var lastTask = FetchUsageAsync(token, lastMonth.Year, lastMonth.Month);
+        await Task.WhenAll(currentTask, lastTask).ConfigureAwait(false);
+        var current = currentTask.Result;
+        var last = lastTask.Result;
+        if (current == null && last == null)
+        {
+            return null;
+        }
+        var list = new List<UsageDay>();
+        if (last != null) list.AddRange(last);
+        if (current != null) list.AddRange(current);
+        return list.ToArray();
     }
 
     /// <summary>
@@ -931,7 +954,7 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 最近 7 天（含今天）每日 Token 用量数组，供 HTML 柱状图渲染。
+    /// 全量每日 Token 用量数组（含 date 字段），供 HTML 按所选时段筛选渲染柱状图。
     /// </summary>
     private object[] BuildUsageArray()
     {
@@ -939,17 +962,13 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             return Array.Empty<object>();
         }
-        var now = DateTime.Now;
-        var start = now.AddDays(-6).Date;
         var items = new List<Dictionary<string, object?>>();
-        for (var d = start; d <= now.Date; d = d.AddDays(1))
+        foreach (var day in _usageDays.OrderBy(u => u.Date, StringComparer.Ordinal))
         {
-            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var day = Array.Find(_usageDays, u => u.Date == key);
             items.Add(new Dictionary<string, object?>
             {
-                ["label"] = d.Day.ToString(CultureInfo.InvariantCulture),
-                ["tokens"] = day?.Tokens ?? 0
+                ["date"] = day.Date,
+                ["tokens"] = day.Tokens
             });
         }
         return items.Cast<object>().ToArray();
