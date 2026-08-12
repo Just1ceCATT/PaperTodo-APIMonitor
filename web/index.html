@@ -103,11 +103,30 @@
     color-scheme: dark;
     font-family: var(--font);
     font-size: calc(12px * var(--font-scale));
-    color: #e8e8e8;
-    background-color: #000;
-    border: 1px solid color-mix(in srgb, var(--weak) 40%, transparent);
-    border-radius: 6px;
-    padding: 2px 6px;
+    color: #f0f0f0;
+    background-color: #1a1a1a;
+    background-image:
+      linear-gradient(180deg, rgba(255,255,255,.06), rgba(0,0,0,.12)),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1 2.5 L4 5.5 L7 2.5' stroke='%239e9e9e' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    border: 1px solid color-mix(in srgb, var(--weak) 35%, transparent);
+    border-radius: 8px;
+    padding: 4px 22px 4px 10px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 1px 2px rgba(0,0,0,.35);
+    outline: none;
+    cursor: pointer;
+    transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .range-select:hover {
+    border-color: color-mix(in srgb, var(--weak) 60%, transparent);
+    background-color: #232323;
+  }
+  .range-select:focus-visible {
+    border-color: #4caf50;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 0 2px rgba(76,175,80,.25);
   }
   .custom-range {
     display: flex; align-items: center; gap: calc(6px * var(--font-scale));
@@ -131,6 +150,7 @@
   .chart-val { fill: var(--text); font-weight: 600; }
   .chart-bar:hover { fill-opacity: 0.9; }
   .chart-empty { color: var(--weak); font-size: calc(12px * var(--font-scale)); padding: calc(10px * var(--font-scale)) 0; }
+  .chart-empty-hint { color: var(--weak); font-size: calc(11px * var(--font-scale)); text-align: center; padding: 0 0 calc(6px * var(--font-scale)); opacity: .85; }
 
   /* ── 更新时间 ── */
   #updateTime { text-align: right; font-size: calc(12px * var(--font-scale)); color: var(--weak); margin-top: calc(14px * var(--font-scale)); }
@@ -391,11 +411,16 @@ function renderChart() {
     box.innerHTML = '<div class="chart-empty">该时段暂无用量数据</div>';
     return;
   }
-  // 单日时段（今天 / 昨天 / 自定义单日）且有小时数据 → 按 2 小时分柱
+  // 单日时段（今天 / 昨天 / 自定义单日）且有小时数据 → 按 2 小时分柱；
+  // 当前 DeepSeek 公开 API 不提供小时粒度，无数据时回退单根日柱 + 说明。
   if (days.length === 1 && currentHourly && currentHourly.length) {
     renderSvgChart(buildHourlySlots(days[0].date));
   } else {
     renderSvgChart(days);
+    if (days.length === 1 && (rangeState === "today" || rangeState === "yesterday"
+        || (rangeState === "custom" && customFrom && customTo && customFrom === customTo))) {
+      showEmptyHint("DeepSeek 公开接口暂未提供小时粒度数据，仅按日展示");
+    }
   }
 }
 
@@ -410,6 +435,14 @@ function buildHourlySlots(date) {
     slots.push({ date: date + " " + h + "时", tokens: total, label: h + "时" });
   }
   return slots;
+}
+
+function showEmptyHint(text) {
+  var box = $("chart");
+  var hint = document.createElement("div");
+  hint.className = "chart-empty-hint";
+  hint.textContent = text;
+  box.appendChild(hint);
 }
 
 // 通用 SVG 柱状图绘制（items: [{date, tokens, label}]）

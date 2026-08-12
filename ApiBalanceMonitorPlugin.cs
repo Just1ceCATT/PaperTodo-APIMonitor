@@ -288,6 +288,9 @@ internal sealed class BalanceSession : IPaperBodySession
                 ? Task.FromResult<CostDay[]?>(null)
                 : FetchCostForRecentMonthsAsync(_settings.UsageToken, now);
             // 小时粒度用量（/v1/usage，用 API Key），用于"今天/昨天/单日"按 2 小时分柱。
+            // 小时粒度用量：探测过所有常用端点均无小时粒度数据（只 /v1/usage 返回 404，
+            // platform/usage/amount 无论是否带 hour/granularity 等参数都返回日粒度），
+            // 因此这里保留调用链与容错，失败时单日时段自动回退到单根日柱。
             var hourlyTask = string.IsNullOrWhiteSpace(_settings.ApiKey)
                 ? Task.FromResult<HourlyUsage[]?>(null)
                 : FetchHourlyUsageAsync(_settings.ApiKey);
