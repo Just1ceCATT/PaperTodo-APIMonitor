@@ -81,16 +81,13 @@
     border-radius: 6px;
     padding: 2px 4px;
   }
-  #chart { display: flex; align-items: flex-end; gap: calc(3px * var(--font-scale)); height: calc(70px * var(--font-scale)); }
-  .bar-col { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
-  .bar-fill {
-    width: 100%; max-width: calc(26px * var(--font-scale));
-    height: 0; min-height: 2px;
-    background: #4caf50; border-radius: 3px 3px 0 0;
-    transition: height .25s ease;
-  }
-  .bar-col:hover .bar-fill { opacity: .85; }
-  .bar-lbl { font-size: calc(9px * var(--font-scale)); color: var(--weak); margin-top: 3px; white-space: nowrap; }
+  #chart { width: 100%; height: 112px; }
+  #chart svg { display: block; }
+  .chart-axis, .chart-val, .chart-lbl { font-size: calc(9px * var(--font-scale)); }
+  .chart-axis { fill: var(--weak); }
+  .chart-lbl { fill: var(--weak); }
+  .chart-val { fill: var(--text); font-weight: 600; }
+  .chart-bar:hover { fill-opacity: 0.9; }
   .chart-empty { color: var(--weak); font-size: calc(12px * var(--font-scale)); padding: calc(10px * var(--font-scale)) 0; }
 
   /* ── 更新时间 ── */
@@ -308,20 +305,78 @@ function renderChart() {
   }
   var max = 1;
   days.forEach(function (d) { if (d.tokens > max) max = d.tokens; });
-  days.forEach(function (d) {
-    var col = document.createElement("div");
-    col.className = "bar-col";
-    col.title = d.date + "\n" + fmtTokens(d.tokens) + " Token";
-    var fill = document.createElement("div");
-    fill.className = "bar-fill";
-    fill.style.height = (d.tokens / max * 100).toFixed(1) + "%";
-    var lbl = document.createElement("div");
-    lbl.className = "bar-lbl";
-    lbl.textContent = d.label;
-    col.appendChild(fill);
-    col.appendChild(lbl);
-    box.appendChild(col);
+
+  // SVG 布局参数
+  var width = Math.max(140, box.clientWidth || 200);
+  var padLeft = 46, padRight = 6, padTop = 22, padBottom = 20;
+  var plotH = 70;
+  var svgH = padTop + plotH + padBottom;
+  var plotW = Math.max(10, width - padLeft - padRight);
+  var axisX = padLeft - 4;
+  var n = days.length;
+  var slot = plotW / n;
+  var barW = Math.max(1, Math.min(26, slot * 0.55));
+  var ns = "http://www.w3.org/2000/svg";
+  var svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", svgH);
+
+  function line(x1, y1, x2, y2) {
+    var l = document.createElementNS(ns, "line");
+    l.setAttribute("x1", x1); l.setAttribute("y1", y1);
+    l.setAttribute("x2", x2); l.setAttribute("y2", y2);
+    l.setAttribute("stroke", "#9e9e9e"); l.setAttribute("stroke-opacity", "0.25");
+    l.setAttribute("stroke-width", "1");
+    return l;
+  }
+  function text(x, y, cls, anchor, content) {
+    var t = document.createElementNS(ns, "text");
+    t.setAttribute("x", x); t.setAttribute("y", y);
+    t.setAttribute("text-anchor", anchor); t.setAttribute("class", cls);
+    t.textContent = content;
+    return t;
+  }
+
+  // 纵轴 + 横轴
+  svg.appendChild(line(axisX, padTop, axisX, padTop + plotH));
+  svg.appendChild(line(axisX, padTop + plotH, width - padRight, padTop + plotH));
+
+  // 纵轴刻度：0 / 50% / 100%（用最大值换算）
+  [0, 0.5, 1].forEach(function (t) {
+    var y = padTop + plotH - t * plotH;
+    svg.appendChild(line(axisX - 4, y, axisX, y));
+    svg.appendChild(text(axisX - 6, y + 3, "chart-axis", "end", fmtTokens(Math.round(max * t))));
   });
+
+  // 柱过多时抽稀日期标签，避免重叠
+  var labelStep = n > 15 ? Math.ceil(n / 15) : 1;
+
+  days.forEach(function (d, i) {
+    var h = Math.max(2, d.tokens / max * plotH);
+    var x = padLeft + i * slot + (slot - barW) / 2;
+    var y = padTop + plotH - h;
+
+    // 柱子（带悬停 ToolTip）
+    var rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", x); rect.setAttribute("y", y);
+    rect.setAttribute("width", barW); rect.setAttribute("height", h);
+    rect.setAttribute("rx", 2); rect.setAttribute("fill", "#4caf50");
+    rect.setAttribute("fill-opacity", "0.65"); rect.setAttribute("class", "chart-bar");
+    var tip = document.createElementNS(ns, "title");
+    tip.textContent = d.date + "\n" + fmtTokens(d.tokens) + " Token";
+    rect.appendChild(tip);
+    svg.appendChild(rect);
+
+    // 柱顶数值
+    svg.appendChild(text(x + barW / 2, y - 3, "chart-val", "middle", fmtTokens(Math.round(d.tokens))));
+
+    // 底部日期标签（抽稀）
+    if (i % labelStep === 0) {
+      svg.appendChild(text(x + barW / 2, padTop + plotH + 14, "chart-lbl", "middle", d.label));
+    }
+  });
+
+  box.appendChild(svg);
 }
 
 // 时段切换 / 自定义日期变化 → 立即重渲染（不重新请求 C#）
@@ -332,6 +387,13 @@ $("rangeSelect").addEventListener("change", function () {
 });
 $("fromDate").addEventListener("change", function () { customFrom = this.value; renderChart(); });
 $("toDate").addEventListener("change", function () { customTo = this.value; renderChart(); });
+
+// 容器尺寸变化（初次布局 / 便签宽度调整）时重绘图表
+if (window.ResizeObserver) {
+  new ResizeObserver(function () { renderChart(); }).observe($("chart"));
+} else {
+  window.addEventListener("resize", renderChart);
+}
 
 // 暴露给宿主的直调渲染函数（备用通道，绕过 postMessage 监听）
 window.__renderBalance = function (msg) {
