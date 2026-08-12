@@ -310,8 +310,9 @@ function render(msg) {
     cacheBlock.style.display = "none";
   }
 
-  // 用量柱状图（保存全量每日数据，由当前时段筛选渲染）
+  // 用量柱状图（保存全量每日 + 小时数据，由当前时段筛选渲染）
   currentUsage = d.usage || [];
+  currentHourly = d.hourly || [];
   renderChart();
 
   // 更新时间
@@ -323,6 +324,7 @@ var rangeState = "7d";
 var customFrom = "";
 var customTo = "";
 var currentUsage = [];
+var currentHourly = [];
 
 function fmtDate(d) {
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -389,8 +391,33 @@ function renderChart() {
     box.innerHTML = '<div class="chart-empty">该时段暂无用量数据</div>';
     return;
   }
+  // 单日时段（今天 / 昨天 / 自定义单日）且有小时数据 → 按 2 小时分柱
+  if (days.length === 1 && currentHourly && currentHourly.length) {
+    renderSvgChart(buildHourlySlots(days[0].date));
+  } else {
+    renderSvgChart(days);
+  }
+}
+
+// 单日 → 每 2 小时一柱，共 12 柱
+function buildHourlySlots(date) {
+  var slots = [];
+  for (var h = 0; h < 24; h += 2) {
+    var total = 0;
+    currentHourly.forEach(function (x) {
+      if (x.date === date && x.hour >= h && x.hour < h + 2) total += x.tokens;
+    });
+    slots.push({ date: date + " " + h + "时", tokens: total, label: h + "时" });
+  }
+  return slots;
+}
+
+// 通用 SVG 柱状图绘制（items: [{date, tokens, label}]）
+function renderSvgChart(items) {
+  var box = $("chart");
+  box.innerHTML = "";
   var max = 1;
-  days.forEach(function (d) { if (d.tokens > max) max = d.tokens; });
+  items.forEach(function (d) { if (d.tokens > max) max = d.tokens; });
 
   // SVG 布局参数
   var width = Math.max(140, box.clientWidth || 200);
@@ -399,7 +426,7 @@ function renderChart() {
   var svgH = padTop + plotH + padBottom;
   var plotW = Math.max(10, width - padLeft - padRight);
   var axisX = padLeft - 4;
-  var n = days.length;
+  var n = items.length;
   var slot = plotW / n;
   var barW = Math.max(1, Math.min(26, slot * 0.55));
   var ns = "http://www.w3.org/2000/svg";
@@ -438,7 +465,7 @@ function renderChart() {
   var labelStep = n > 15 ? Math.ceil(n / 15) : 1;
   var showValues = n <= 10;
 
-  days.forEach(function (d, i) {
+  items.forEach(function (d, i) {
     var h = Math.max(2, d.tokens / max * plotH);
     var x = padLeft + i * slot + (slot - barW) / 2;
     var y = padTop + plotH - h;

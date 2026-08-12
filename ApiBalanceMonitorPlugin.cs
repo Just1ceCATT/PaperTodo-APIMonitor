@@ -78,6 +78,11 @@ internal sealed record UsageDay(string Date, double Tokens, double CacheHit = 0,
 /// </summary>
 internal sealed record CostDay(string Date, double Cost);
 
+/// <summary>
+/// 单小时 Token 用量（来自 /v1/usage 接口的小时粒度明细）。
+/// </summary>
+internal sealed record HourlyUsage(string Date, int Hour, double Tokens);
+
 internal sealed class BalanceSession : IPaperBodySession
 {
     private readonly PaperBodyContext _context;
@@ -89,6 +94,7 @@ internal sealed class BalanceSession : IPaperBodySession
     private int _polling;
     private UsageDay[]? _usageDays;
     private CostDay[]? _costDays;
+    private HourlyUsage[]? _hourlyUsage;
     private PaperBodyTheme _theme;
 
     // WebView2 监视面板
@@ -281,10 +287,15 @@ internal sealed class BalanceSession : IPaperBodySession
             var costTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
                 ? Task.FromResult<CostDay[]?>(null)
                 : FetchCostForRecentMonthsAsync(_settings.UsageToken, now);
+            // 小时粒度用量（/v1/usage，用 API Key），用于"今天/昨天/单日"按 2 小时分柱。
+            var hourlyTask = string.IsNullOrWhiteSpace(_settings.ApiKey)
+                ? Task.FromResult<HourlyUsage[]?>(null)
+                : FetchHourlyUsageAsync(_settings.ApiKey);
 
-            await Task.WhenAll(balanceTask, usageTask, costTask).ConfigureAwait(true);
+            await Task.WhenAll(balanceTask, usageTask, costTask, hourlyTask).ConfigureAwait(true);
             _usageDays = usageTask.Result;
             _costDays = costTask.Result;
+            _hourlyUsage = hourlyTask.Result;
             UpdateSnapshot(balanceTask.Result);
         }
         catch (TaskCanceledException)
@@ -464,6 +475,108 @@ internal sealed class BalanceSession : IPaperBodySession
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// 拉取小时粒度用量（公开接口 /v1/usage，用 API Key 认证）。
+    /// 用于"今天 / 昨天 / 自定义单日"时段按 2 小时分柱绘制柱状图。
+    /// 该端点字段可能随平台调整，解析做了容错；失败返回 null（前端回退单日柱）。
+    /// </summary>
+    private async Task<HourlyUsage[]?> FetchHourlyUsageAsync(string apiKey)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.deepseek.com/v1/usage");
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", apiKey);
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return ParseHourlyUsage(body);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 解析 /v1/usage 响应，把 items 转成 (日期, 小时, token 数)。
+    /// 字段名做多候选容错：时间戳尝试 timestamp/created/date 等，token 取 prompt+completion。
+    /// </summary>
+    private static HourlyUsage[]? ParseHourlyUsage(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("items", out var items) ||
+                items.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+            var list = new List<HourlyUsage>();
+            foreach (var item in items.EnumerateArray())
+            {
+                var time = TryReadTimestamp(item);
+                if (time == null)
+                {
+                    continue;
+                }
+                double tokens = 0;
+                TryReadTokens(item, ref tokens);
+                list.Add(new HourlyUsage(
+                    time.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    time.Value.Hour,
+                    tokens));
+            }
+            return list.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static DateTimeOffset? TryReadTimestamp(JsonElement item)
+    {
+        foreach (var key in new[] { "timestamp", "created_at", "created", "time", "date" })
+        {
+            if (!item.TryGetProperty(key, out var v))
+            {
+                continue;
+            }
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var raw))
+            {
+                // 毫秒或秒级 Unix 时间戳
+                return raw > 1_000_000_000_000
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(raw)
+                    : DateTimeOffset.FromUnixTimeSeconds(raw);
+            }
+            if (v.ValueKind == JsonValueKind.String &&
+                DateTimeOffset.TryParse(
+                    v.GetString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal,
+                    out var parsed))
+            {
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    private static void TryReadTokens(JsonElement item, ref double tokens)
+    {
+        foreach (var key in new[] { "prompt_tokens", "completion_tokens" })
+        {
+            if (item.TryGetProperty(key, out var v) &&
+                v.ValueKind == JsonValueKind.Number &&
+                v.TryGetDouble(out var n))
+            {
+                tokens += n;
+            }
         }
     }
 
@@ -1091,6 +1204,7 @@ internal sealed class BalanceSession : IPaperBodySession
                 : "",
             ["costToday"] = BuildCostTodayText(),
             ["cacheRate"] = BuildTodayCacheRate(),
+            ["hourly"] = BuildHourlyArray(),
             ["cost7d"] = BuildCost7dText(),
             ["costDays7"] = BuildCostDays7Array(),
             ["usage"] = BuildUsageArray()
@@ -1119,6 +1233,25 @@ internal sealed class BalanceSession : IPaperBodySession
             return "";
         }
         return _settings.CurrencySymbol + day.Cost.ToString("0.00", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// 小时粒度用量数组（date + hour + tokens），供前端单日时段按 2 小时分柱。
+    /// </summary>
+    private object[] BuildHourlyArray()
+    {
+        if (_hourlyUsage == null || _hourlyUsage.Length == 0)
+        {
+            return Array.Empty<object>();
+        }
+        return _hourlyUsage
+            .Select(h => (object)new Dictionary<string, object?>
+            {
+                ["date"] = h.Date,
+                ["hour"] = h.Hour,
+                ["tokens"] = h.Tokens
+            })
+            .ToArray();
     }
 
     /// <summary>
