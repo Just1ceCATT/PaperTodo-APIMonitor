@@ -701,14 +701,20 @@ internal sealed class BalanceSession : IPaperBodySession
             var pluginDirectory =
                 Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
                 ?? AppContext.BaseDirectory;
-            var htmlPath = Path.Combine(pluginDirectory, "web", "index.html");
-            if (!File.Exists(htmlPath))
+            if (!File.Exists(Path.Combine(pluginDirectory, "web", "index.html")))
             {
                 throw new InvalidOperationException("缺少 web/index.html。");
             }
 
+            // 对齐宿主 web 插件方式：虚拟主机映射到插件目录，避免 file:// 的潜在限制。
+            const string hostName = "papertodo.balance.monitor.local";
+            core.SetVirtualHostNameToFolderMapping(
+                hostName,
+                pluginDirectory,
+                CoreWebView2HostResourceAccessKind.DenyCors);
+
             _webViewReady = true;
-            core.Navigate(new Uri(htmlPath).AbsoluteUri);
+            core.Navigate($"https://{hostName}/web/index.html");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -798,13 +804,15 @@ internal sealed class BalanceSession : IPaperBodySession
     /// </summary>
     private void PushView()
     {
-        if (!_webViewReady || _disposed)
+        if (_disposed)
         {
             return;
         }
         var payload = BuildViewPayload();
-        if (!_documentReady)
+        if (!_webViewReady || !_documentReady)
         {
+            // WebView2 未初始化或页面未就绪时缓存最新数据，
+            // 就绪后由 OnWebViewNavigationCompleted 补发。
             _pendingPayload = payload;
             return;
         }
