@@ -222,6 +222,8 @@ window.chrome.webview.addEventListener("message", function (e) {
     // 忽略异常消息，保持面板稳定
   }
 });
+// 页面就绪后通知宿主，宿主收到后立即补发最新数据（不依赖导航完成时序）
+window.chrome.webview.postMessage({ type: "ready" });
 </script>
 </body>
 </html>

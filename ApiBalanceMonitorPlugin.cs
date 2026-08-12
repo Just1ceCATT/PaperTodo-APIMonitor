@@ -697,6 +697,7 @@ internal sealed class BalanceSession : IPaperBodySession
             core.Settings.IsStatusBarEnabled = false;
             core.NavigationCompleted += OnWebViewNavigationCompleted;
             core.ProcessFailed += OnWebViewProcessFailed;
+            core.WebMessageReceived += OnWebMessageReceived;
 
             var pluginDirectory =
                 Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
@@ -712,6 +713,16 @@ internal sealed class BalanceSession : IPaperBodySession
                 hostName,
                 pluginDirectory,
                 CoreWebView2HostResourceAccessKind.DenyCors);
+
+            // HTML body 是透明的，背景必须透明才能融入便签底色，否则显示白底块。
+            try
+            {
+                _webView.DefaultBackgroundColor = System.Drawing.Color.Transparent;
+            }
+            catch
+            {
+                // 个别环境不支持时忽略，仅影响背景色。
+            }
 
             _webViewReady = true;
             core.Navigate($"https://{hostName}/web/index.html");
@@ -795,6 +806,27 @@ internal sealed class BalanceSession : IPaperBodySession
             catch
             {
             }
+        }
+    }
+
+    private void OnWebMessageReceived(
+        object? sender,
+        CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        // 页面 JS 就绪后发送 {type:"ready"}，宿主立即补发最新数据。
+        try
+        {
+            if (e.WebMessageAsJson.IndexOf("\"ready\"", StringComparison.Ordinal) >= 0)
+            {
+                _pendingPayload = null;
+                if (_documentReady)
+                {
+                    PostPayload(BuildViewPayload());
+                }
+            }
+        }
+        catch
+        {
         }
     }
 
