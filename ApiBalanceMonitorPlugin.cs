@@ -814,15 +814,13 @@ internal sealed class BalanceSession : IPaperBodySession
         CoreWebView2WebMessageReceivedEventArgs e)
     {
         // 页面 JS 就绪后发送 {type:"ready"}，宿主立即补发最新数据。
+        // 页面能发出 ready 说明消息监听已挂载，无需再等 NavigationCompleted。
         try
         {
-            if (e.WebMessageAsJson.IndexOf("\"ready\"", StringComparison.Ordinal) >= 0)
+            if (e.WebMessageAsJson.IndexOf("\"ready\"", StringComparison.Ordinal) >= 0 &&
+                _webViewReady)
             {
-                _pendingPayload = null;
-                if (_documentReady)
-                {
-                    PostPayload(BuildViewPayload());
-                }
+                PostPayload(BuildViewPayload());
             }
         }
         catch
@@ -853,9 +851,19 @@ internal sealed class BalanceSession : IPaperBodySession
 
     private void PostPayload(string payload)
     {
+        // 主通道：postMessage 事件。
         try
         {
             _webView.CoreWebView2?.PostWebMessageAsJson(payload);
+        }
+        catch
+        {
+        }
+        // 备用通道：直接调用页面暴露的 __renderBalance，绕过消息监听。
+        try
+        {
+            _webView.CoreWebView2?.ExecuteScriptAsync(
+                $"window.__renderBalance && window.__renderBalance({payload});");
         }
         catch
         {

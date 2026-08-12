@@ -214,16 +214,29 @@ function renderChart(usage) {
   });
 }
 
-// 接收 C# 推送（主题 + 数据）
-window.chrome.webview.addEventListener("message", function (e) {
+// 暴露给宿主的直调渲染函数（备用通道，绕过 postMessage 监听）
+window.__renderBalance = function (msg) {
   try {
-    render(JSON.parse(e.data));
+    render(msg);
   } catch (err) {
     // 忽略异常消息，保持面板稳定
   }
-});
-// 页面就绪后通知宿主，宿主收到后立即补发最新数据（不依赖导航完成时序）
-window.chrome.webview.postMessage({ type: "ready" });
+};
+
+// 接收 C# 推送（主题 + 数据）。WebView2 注入的 window.chrome.webview 通常存在；
+// 加防护避免个别环境缺失时脚本中断。
+var bridge = window.chrome && window.chrome.webview;
+if (bridge) {
+  bridge.addEventListener("message", function (e) {
+    try {
+      render(JSON.parse(e.data));
+    } catch (err) {
+      // 忽略异常消息，保持面板稳定
+    }
+  });
+  // 页面就绪后通知宿主，宿主收到后立即补发最新数据（不依赖导航完成时序）
+  bridge.postMessage({ type: "ready" });
+}
 </script>
 </body>
 </html>
