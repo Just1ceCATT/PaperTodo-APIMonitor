@@ -1078,6 +1078,7 @@ internal sealed class BalanceSession : IPaperBodySession
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
             ["cost7d"] = BuildCost7dText(),
+            ["costDays7"] = BuildCostDays7Array(),
             ["usage"] = BuildUsageArray()
         };
 
@@ -1114,6 +1115,34 @@ internal sealed class BalanceSession : IPaperBodySession
             return "";
         }
         return _settings.CurrencySymbol + total.ToString("0.00", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// 近 7 天每日消费明细数组（date + 格式化金额），供"近 7 天消费"悬停展开。
+    /// </summary>
+    private object[] BuildCostDays7Array()
+    {
+        if (_costDays == null || _costDays.Length == 0)
+        {
+            return Array.Empty<object>();
+        }
+        var now = DateTime.Now;
+        var start = now.AddDays(-6).Date;
+        var items = new List<Dictionary<string, object?>>();
+        for (var d = start; d <= now.Date; d = d.AddDays(1))
+        {
+            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var day = Array.Find(_costDays, c => c.Date == key);
+            items.Add(new Dictionary<string, object?>
+            {
+                ["date"] = d.ToString("MM-dd", CultureInfo.InvariantCulture),
+                ["costText"] = _settings.CurrencySymbol +
+                    (day != null
+                        ? day.Cost.ToString("0.00", CultureInfo.CurrentCulture)
+                        : "0.00")
+            });
+        }
+        return items.Cast<object>().ToArray();
     }
 
     /// <summary>

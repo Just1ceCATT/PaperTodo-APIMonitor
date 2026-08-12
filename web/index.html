@@ -39,7 +39,27 @@
   .balance-row { display: flex; align-items: baseline; gap: calc(7px * var(--font-scale)); margin-top: calc(2px * var(--font-scale)); }
   #balanceValue { font-size: calc(32px * var(--font-scale)); font-weight: 700; line-height: 1.1; }
   #balanceCurrency { font-size: calc(15px * var(--font-scale)); color: var(--weak); }
-  .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; margin-top: calc(4px * var(--font-scale)); }
+  .cost-wrap { position: relative; margin-top: calc(4px * var(--font-scale)); }
+  .cost-line { font-size: calc(13px * var(--font-scale)); color: #4caf50; cursor: default; }
+  .cost-detail {
+    display: none;
+    position: absolute;
+    left: 0; top: calc(100% + 4px);
+    background: var(--paper);
+    border: 1px solid color-mix(in srgb, var(--weak) 30%, transparent);
+    border-radius: 6px;
+    padding: calc(6px * var(--font-scale)) calc(10px * var(--font-scale));
+    min-width: calc(132px * var(--font-scale));
+    z-index: 5;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  }
+  .cost-wrap:hover .cost-detail { display: block; }
+  .cost-detail-row {
+    display: flex; justify-content: space-between; gap: calc(12px * var(--font-scale));
+    font-size: calc(12px * var(--font-scale)); color: var(--text);
+    padding: 1px 0;
+  }
+  .cost-detail-row .cost-date { color: var(--weak); }
 
   /* ── 风险区 ── */
   .risk-row { display: flex; align-items: center; gap: calc(14px * var(--font-scale)); margin-top: calc(16px * var(--font-scale)); }
@@ -112,7 +132,10 @@
     <span id="balanceValue">—</span>
     <span id="balanceCurrency"></span>
   </div>
-  <div id="costLine" class="cost-line"></div>
+  <div id="costWrap" class="cost-wrap">
+    <div id="costLine" class="cost-line"></div>
+    <div id="costDetail" class="cost-detail"></div>
+  </div>
 
   <div class="risk-row">
     <div class="ring-wrap">
@@ -204,8 +227,24 @@ function render(msg) {
   // 余额
   $("balanceValue").textContent = d.hasBalance ? d.balance : "—";
   $("balanceCurrency").textContent = d.currency || "";
-  // 近 7 天消费
+  // 近 7 天消费（悬停展开 7 天明细）
   $("costLine").textContent = d.cost7d ? "近 7 天消费：" + d.cost7d : "";
+  var costDetail = $("costDetail");
+  costDetail.innerHTML = "";
+  if (d.cost7d && d.costDays7 && d.costDays7.length) {
+    d.costDays7.forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "cost-detail-row";
+      var date = document.createElement("span");
+      date.className = "cost-date";
+      date.textContent = c.date;
+      var val = document.createElement("span");
+      val.textContent = c.costText;
+      row.appendChild(date);
+      row.appendChild(val);
+      costDetail.appendChild(row);
+    });
+  }
 
   // 风险环
   var ratio = d.ratio || 0;
