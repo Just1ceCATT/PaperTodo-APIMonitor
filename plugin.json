@@ -22,6 +22,15 @@
       "default": ""
     },
     {
+      "id": "usageToken",
+      "type": "string",
+      "name": "用量 Token（可选）",
+      "description": "platform.deepseek.com 的用量查询 Token（非 API Key）。填写后监视面板显示近 7 天 Token 用量柱状图。留空则只监测余额。",
+      "placeholder": "platform 用量 token",
+      "maxLength": 400,
+      "default": ""
+    },
+    {
       "id": "pollSeconds",
       "type": "number",
       "name": "刷新间隔",

@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -42,6 +43,7 @@ public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
 
 internal sealed record BalanceSettings(
     string ApiKey,
+    string UsageToken,
     int PollSeconds,
     string CurrencySymbol,
     double BalanceThreshold,
@@ -64,6 +66,11 @@ internal sealed record BalanceSnapshot(
         new(remaining, total, !double.IsNaN(remaining), !double.IsNaN(total), string.Empty);
 }
 
+/// <summary>
+/// 单日 Token 用量（来自 platform.deepseek.com 用量接口的 days 汇总）。
+/// </summary>
+internal sealed record UsageDay(string Date, double Tokens);
+
 internal sealed class BalanceSession : IPaperBodySession
 {
     private readonly PaperBodyContext _context;
@@ -73,6 +80,7 @@ internal sealed class BalanceSession : IPaperBodySession
     private BalanceSnapshot _snapshot = BalanceSnapshot.Empty("尚未拉取");
     private string _lastCapsuleSignature = "";
     private int _polling;
+    private UsageDay[]? _usageDays;
     private PaperBodyTheme _theme;
 
     // 监视面板控件
@@ -86,6 +94,8 @@ internal sealed class BalanceSession : IPaperBodySession
     private TextBlock _riskStateText = null!;
     private TextBlock _thresholdText = null!;
     private TextBlock _updateTimeText = null!;
+    private TextBlock _usageChartLabel = null!;
+    private UsageChart _usageChart = null!;
 
     public BalanceSession(PaperBodyContext context)
     {
@@ -153,6 +163,7 @@ internal sealed class BalanceSession : IPaperBodySession
             var root = doc.RootElement;
             return new BalanceSettings(
                 ReadString(root, "apiKey", ""),
+                ReadString(root, "usageToken", ""),
                 ReadInt(root, "pollSeconds", 60),
                 ReadString(root, "currencySymbol", "¥"),
                 ReadDouble(root, "balanceThreshold", 20.0),
@@ -160,8 +171,7 @@ internal sealed class BalanceSession : IPaperBodySession
         }
         catch
         {
-            return new BalanceSettings(
-                "", 60, "¥", 20.0, true);
+            return new BalanceSettings("", "", 60, "¥", 20.0, true);
         }
     }
 
@@ -247,13 +257,16 @@ internal sealed class BalanceSession : IPaperBodySession
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, DeepSeekBalanceUrl);
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
-            using var response = await _http.SendAsync(request).ConfigureAwait(true);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(true);
-            UpdateSnapshot(ParseResponse(body));
+            // 余额与用量并行拉取（v3.1 收集方式）；用量 Token 未配置时只拉余额。
+            var now = DateTime.Now;
+            var balanceTask = FetchBalanceAsync();
+            var usageTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
+                ? Task.FromResult<UsageDay[]?>(null)
+                : FetchUsageAsync(_settings.UsageToken, now.Year, now.Month);
+
+            await Task.WhenAll(balanceTask, usageTask).ConfigureAwait(true);
+            _usageDays = usageTask.Result;
+            UpdateSnapshot(balanceTask.Result);
         }
         catch (TaskCanceledException)
         {
@@ -268,6 +281,120 @@ internal sealed class BalanceSession : IPaperBodySession
         finally
         {
             Interlocked.Exchange(ref _polling, 0);
+        }
+    }
+
+    private async Task<BalanceSnapshot> FetchBalanceAsync()
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, DeepSeekBalanceUrl);
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return ParseResponse(body);
+        }
+        catch (Exception ex)
+        {
+            return BalanceSnapshot.Error(ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// v3.1 收集方式：调用 platform.deepseek.com 用量接口拉取指定月份每日 Token 用量。
+    /// </summary>
+    private async Task<UsageDay[]?> FetchUsageAsync(string token, int year, int month)
+    {
+        try
+        {
+            var url =
+                $"https://platform.deepseek.com/api/v0/usage/amount?month={month:D2}&year={year}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.TryAddWithoutValidation("x-app-version", "1.0.0");
+            request.Headers.TryAddWithoutValidation("Accept", "*/*");
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return ParseUsageResponse(body);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 解析用量接口响应，汇总每天的 token 总量。
+    /// 响应：{ data: { biz_data: { days: [ { date, data: [ { model, usage: [ { type, amount } ] } ] } ] } } }
+    /// </summary>
+    private static UsageDay[]? ParseUsageResponse(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("biz_data", out var biz) ||
+                !biz.TryGetProperty("days", out var days) ||
+                days.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var result = new List<UsageDay>();
+            foreach (var day in days.EnumerateArray())
+            {
+                var date = day.TryGetProperty("date", out var d) &&
+                           d.ValueKind == JsonValueKind.String
+                    ? d.GetString()
+                    : null;
+                if (date == null)
+                {
+                    continue;
+                }
+                double total = 0;
+                if (day.TryGetProperty("data", out var dataArr) &&
+                    dataArr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var modelUsage in dataArr.EnumerateArray())
+                    {
+                        if (!modelUsage.TryGetProperty("usage", out var usageArr) ||
+                            usageArr.ValueKind != JsonValueKind.Array)
+                        {
+                            continue;
+                        }
+                        foreach (var entry in usageArr.EnumerateArray())
+                        {
+                            var type = entry.TryGetProperty("type", out var t) &&
+                                       t.ValueKind == JsonValueKind.String
+                                ? t.GetString()
+                                : null;
+                            if (type is not ("PROMPT_TOKEN" or "PROMPT_CACHE_HIT_TOKEN"
+                                or "PROMPT_CACHE_MISS_TOKEN" or "RESPONSE_TOKEN"))
+                            {
+                                continue;
+                            }
+                            if (entry.TryGetProperty("amount", out var a) &&
+                                a.ValueKind == JsonValueKind.String &&
+                                double.TryParse(a.GetString(), NumberStyles.Any,
+                                    CultureInfo.InvariantCulture, out var v))
+                            {
+                                total += v;
+                            }
+                        }
+                    }
+                }
+                result.Add(new UsageDay(date, total));
+            }
+            return result.ToArray();
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -373,37 +500,37 @@ internal sealed class BalanceSession : IPaperBodySession
 
         var text = BuildCapsuleText(snapshot, _settings, riskRatio);
         var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
-        if (string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
+        if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
-            return;
-        }
-        _lastCapsuleSignature = signature;
-
-        _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
-        {
-            PreferredWidth = PaperCapsulePresentation.AutomaticWidth,
-            PlainText = text,
-            ToolTip = string.IsNullOrEmpty(snapshot.StatusText)
-                ? text
-                : $"{text}\n{snapshot.StatusText}",
-            Components = new[]
+            // 胶囊只在内容真正变化时更新，避免无谓的宿主布局抖动。
+            _lastCapsuleSignature = signature;
+            _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
             {
-                new PaperCapsuleComponent
+                PreferredWidth = PaperCapsulePresentation.AutomaticWidth,
+                PlainText = text,
+                ToolTip = string.IsNullOrEmpty(snapshot.StatusText)
+                    ? text
+                    : $"{text}\n{snapshot.StatusText}",
+                Components = new[]
                 {
-                    Kind = PaperCapsuleComponentKind.ProgressRing,
-                    Value = ringArc,
-                    Color = ringColor,
-                    Width = 18
-                },
-                new PaperCapsuleComponent
-                {
-                    Kind = PaperCapsuleComponentKind.Text,
-                    Text = text,
-                    Fill = true
+                    new PaperCapsuleComponent
+                    {
+                        Kind = PaperCapsuleComponentKind.ProgressRing,
+                        Value = ringArc,
+                        Color = ringColor,
+                        Width = 18
+                    },
+                    new PaperCapsuleComponent
+                    {
+                        Kind = PaperCapsuleComponentKind.Text,
+                        Text = text,
+                        Fill = true
+                    }
                 }
-            }
-        });
+            });
+        }
 
+        // 面板（含用量柱状图）每次拉取后都刷新：余额可能不变但用量/时间变了。
         RefreshMonitorView();
     }
 
@@ -582,6 +709,17 @@ internal sealed class BalanceSession : IPaperBodySession
         riskRow.Children.Add(_riskRing);
         riskRow.Children.Add(riskPanel);
 
+        _usageChartLabel = new TextBlock
+        {
+            Text = "用量趋势（近 7 天）",
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 16, 0, 4)
+        };
+        _usageChart = new UsageChart
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+
         _updateTimeText = new TextBlock
         {
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -593,6 +731,8 @@ internal sealed class BalanceSession : IPaperBodySession
         stack.Children.Add(new TextBlock { Text = "可用余额", FontWeight = FontWeights.SemiBold });
         stack.Children.Add(balanceRow);
         stack.Children.Add(riskRow);
+        stack.Children.Add(_usageChartLabel);
+        stack.Children.Add(_usageChart);
         stack.Children.Add(_updateTimeText);
 
         _viewRoot = new ScrollViewer
@@ -626,11 +766,17 @@ internal sealed class BalanceSession : IPaperBodySession
         StyleText(_currencyText, font, 15 * scale, FontWeights.Normal, weak);
         StyleText(_riskStateText, font, 15 * scale, FontWeights.SemiBold, text);
         StyleText(_thresholdText, font, 12 * scale, FontWeights.Normal, weak);
+        StyleText(_usageChartLabel, font, 14 * scale, FontWeights.SemiBold, weak);
         StyleText(_updateTimeText, font, 12 * scale, FontWeights.Normal, weak);
 
         _riskRing.FontFamily = font;
         _riskRing.FontScale = scale;
         _riskRing.InvalidateVisual();
+
+        _usageChart.FontFamily = font;
+        _usageChart.FontScale = scale;
+        _usageChart.WeakBrush = weak;
+        _usageChart.InvalidateVisual();
     }
 
     private static void StyleText(
@@ -708,6 +854,37 @@ internal sealed class BalanceSession : IPaperBodySession
         _updateTimeText.Text = hasData
             ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
             : "";
+
+        UpdateUsageChart();
+    }
+
+    /// <summary>
+    /// 用最近 7 天（含今天）的每日用量刷新柱状图。无数据时清空图表。
+    /// </summary>
+    private void UpdateUsageChart()
+    {
+        if (_usageChart == null)
+        {
+            return;
+        }
+        if (_usageDays == null || _usageDays.Length == 0)
+        {
+            _usageChart.Update(Array.Empty<double>());
+            return;
+        }
+
+        var now = DateTime.Now;
+        var start = now.AddDays(-6).Date;
+        var values = new List<double>();
+        var labels = new List<string>();
+        for (var d = start; d <= now.Date; d = d.AddDays(1))
+        {
+            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var day = Array.Find(_usageDays, u => u.Date == key);
+            values.Add(day?.Tokens ?? 0);
+            labels.Add(d.Day.ToString(CultureInfo.InvariantCulture));
+        }
+        _usageChart.Update(values.ToArray(), labels.ToArray());
     }
 
     /// <summary>
@@ -863,6 +1040,184 @@ internal sealed class BalanceSession : IPaperBodySession
                 new SolidColorBrush(_foreColor),
                 96.0);
             dc.DrawText(ft, new Point(Center - ft.Width / 2, Center - ft.Height / 2));
+        }
+    }
+
+    /// <summary>
+    /// 简约趋势柱状图（v3.1 DeepSeekUsageChart 移植）：坐标轴 + 绿柱 + 悬停 ToolTip。
+    /// 主题字体 / 弱色 / 字号缩放由 ApplyMonitorTheme 注入，柱子布局按当前宽度实时计算。
+    /// </summary>
+    private sealed class UsageChart : FrameworkElement
+    {
+        private const double BarWidth = 14;
+        private const double BarGap = 20;
+        private const double ChartArea = 60;
+        private const double AxisWidth = 42;
+        private const double AxisHeight = 18;
+        private const double TotalHeight = ChartArea + AxisHeight + 4;
+
+        private static readonly Color BarColor = Color.FromRgb(0x4C, 0xAF, 0x50);
+        private static readonly Color HoverColor = Color.FromRgb(0x66, 0xBB, 0x6A);
+        private static readonly Color AxisColor = Color.FromRgb(0x9E, 0x9E, 0x9E);
+
+        public FontFamily FontFamily { get; set; } = new FontFamily("Microsoft YaHei UI");
+        public double FontScale { get; set; } = 1.0;
+        public Brush WeakBrush { get; set; } = Brushes.Gray;
+
+        private double[] _values = Array.Empty<double>();
+        private string[] _labels = Array.Empty<string>();
+        private double _maxVal = 1;
+        private int _hoverIndex = -1;
+
+        public UsageChart()
+        {
+            Height = TotalHeight;
+            ToolTipService.SetInitialShowDelay(this, 0);
+            ToolTipService.SetBetweenShowDelay(this, 0);
+            ToolTipService.SetShowDuration(this, 60000);
+        }
+
+        public void Update(double[] dailyTokens, string[]? dateLabels = null)
+        {
+            _values = dailyTokens ?? Array.Empty<double>();
+            _labels = dateLabels ?? Array.Empty<string>();
+            _maxVal = _values.Length == 0 ? 1 : Math.Max(_values.Max(), 1);
+            _hoverIndex = -1;
+            InvalidateVisual();
+        }
+
+        protected override void OnRender(DrawingContext dc)
+        {
+            var w = ActualWidth;
+            if (w <= 0 || _values.Length == 0)
+            {
+                return;
+            }
+
+            var bottom = ChartArea;
+            var axisPen = new Pen(new SolidColorBrush(AxisColor) { Opacity = 0.25 }, 1);
+            var axisFontSize = 11 * FontScale;
+            var axisX = AxisWidth - 4;
+
+            // Y 轴 / X 轴
+            dc.DrawLine(axisPen, new Point(axisX, 0), new Point(axisX, bottom));
+            dc.DrawLine(axisPen, new Point(axisX, bottom), new Point(w - 2, bottom));
+
+            // Y 轴刻度：0 / 50% / 100%
+            foreach (var tick in new[] { 0.0, _maxVal * 0.5, _maxVal })
+            {
+                var y = bottom - tick / _maxVal * ChartArea;
+                dc.DrawLine(axisPen, new Point(axisX - 4, y), new Point(axisX, y));
+                var ft = new FormattedText(
+                    FormatTokens((long)tick),
+                    CultureInfo.CurrentUICulture,
+                    FlowDirection.LeftToRight,
+                    new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
+                    axisFontSize,
+                    WeakBrush,
+                    96);
+                dc.DrawText(ft, new Point(axisX - 8 - ft.Width, y - ft.Height / 2));
+            }
+
+            // 柱子 + X 轴日期标签
+            var rects = ComputeBars();
+            for (var i = 0; i < rects.Length; i++)
+            {
+                var rect = rects[i];
+                var color = i == _hoverIndex ? HoverColor : BarColor;
+                var opacity = i == _hoverIndex ? 0.9 : 0.65;
+                var brush = new SolidColorBrush(color) { Opacity = opacity };
+                var geo = new RectangleGeometry(rect, BarWidth / 2, BarWidth / 2);
+                dc.DrawGeometry(brush, null, geo);
+
+                if (i < _labels.Length)
+                {
+                    var ft = new FormattedText(
+                        _labels[i],
+                        CultureInfo.CurrentUICulture,
+                        FlowDirection.LeftToRight,
+                        new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
+                        axisFontSize,
+                        WeakBrush,
+                        96);
+                    dc.DrawText(ft, new Point(rect.X + BarWidth / 2 - ft.Width / 2, bottom + 4));
+                }
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var pos = e.GetPosition(this);
+            var rects = ComputeBars();
+            var found = -1;
+            for (var i = 0; i < rects.Length; i++)
+            {
+                if (rects[i].Contains(pos))
+                {
+                    found = i;
+                    break;
+                }
+            }
+            if (found != _hoverIndex)
+            {
+                _hoverIndex = found;
+                ToolTip = found >= 0 && found < _labels.Length
+                    ? $"{_labels[found]}\n{FormatTokens((long)_values[found])} Token"
+                    : "";
+                InvalidateVisual();
+            }
+        }
+
+        protected override void OnMouseLeave(MouseEventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hoverIndex >= 0)
+            {
+                _hoverIndex = -1;
+                ToolTip = "";
+                InvalidateVisual();
+            }
+        }
+
+        /// <summary>
+        /// 按当前实际宽度计算柱子矩形（渲染与悬停共用，布局变化后自动校正）。
+        /// </summary>
+        private Rect[] ComputeBars()
+        {
+            if (_values.Length == 0 || ActualWidth <= 0)
+            {
+                return Array.Empty<Rect>();
+            }
+            var bottom = ChartArea;
+            var areaWidth = Math.Max(ActualWidth - AxisWidth, 10);
+            var totalBarArea = _values.Length * (BarWidth + BarGap) - BarGap;
+            var startX = AxisWidth + (areaWidth - totalBarArea) / 2;
+            var rects = new Rect[_values.Length];
+            for (var i = 0; i < _values.Length; i++)
+            {
+                var h = Math.Max(_values[i] / _maxVal * ChartArea, 2);
+                var x = startX + i * (BarWidth + BarGap);
+                rects[i] = new Rect(x, bottom - h, BarWidth, h);
+            }
+            return rects;
+        }
+
+        private static string FormatTokens(long tokens)
+        {
+            if (tokens >= 1_000_000_000)
+            {
+                return $"{tokens / 1_000_000_000.0:F2}B";
+            }
+            if (tokens >= 1_000_000)
+            {
+                return $"{tokens / 1_000_000.0:F1}M";
+            }
+            if (tokens >= 1_000)
+            {
+                return $"{tokens / 1_000.0:F1}K";
+            }
+            return tokens.ToString();
         }
     }
 }
