@@ -515,18 +515,30 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     /// <summary>
     /// 1.7 协议胶囊视图：横向 [风险圆环][文本]，整体占满宿主给的精确内容宽度。
-    /// 文本由插件自绘、字号跟随主题，不再经过宿主 1.6 模板的 CharacterEllipsis 截断；
-    /// 若内容超宽（极端情况）仍以省略号兜底，同时胶囊窗口宽度会随内容自适应变宽。
+    /// 文本由插件自绘、字号跟随主题；字重用 Normal 与宿主 1.6 测量一致，使渲染宽度
+    /// 不会超过宿主 slot；若字体/缩放差异仍造成超宽，则按可用宽度自动缩小字号（auto-fit），
+    /// 保证文本始终完整显示，CharacterEllipsis 仅作为极端兜底。
     /// </summary>
     private sealed class BalanceCapsuleView : Grid
     {
+        private const double RingSize = 16;
+        private const double MinFontSize = 6;
+
         private readonly RiskRingElement _ring;
         private readonly TextBlock _label;
         private readonly PaperCapsuleSurfaceKind _surface;
+        private readonly double _baseFontSize;
+        private readonly double _availableTextWidth;
 
         public BalanceCapsuleView(PaperCapsuleViewContext context)
         {
             _surface = context.Surface;
+            _baseFontSize = (_surface == PaperCapsuleSurfaceKind.Docked ? 11.5 : 12)
+                * Math.Clamp(context.Theme.FontScale, 0.85, 1.2);
+            // 可用文本宽 = 宿主给的精确内容宽 - 圆环列（左 margin 6 + 环 16 + 右 margin 5）
+            //              - 文本右 margin 6。
+            _availableTextWidth = Math.Max(10, context.Width - 6 - RingSize - 5 - 6);
+
             Background = Brushes.Transparent;
             ClipToBounds = true;
 
@@ -541,7 +553,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 TextTrimming = TextTrimming.CharacterEllipsis,
-                FontWeight = FontWeights.SemiBold
+                FontWeight = FontWeights.Normal
             };
 
             ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -558,15 +570,62 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             _label.Text = text;
             _ring.SetState(ratio, ringColor);
+            FitText();
         }
 
         public void ApplyTheme(PaperBodyTheme theme)
         {
-            var scale = Math.Clamp(theme.FontScale, 0.85, 1.2);
             _label.FontFamily = new FontFamily(theme.FontFamily);
-            _label.FontSize =
-                (_surface == PaperCapsuleSurfaceKind.Docked ? 11.5 : 12) * scale;
+            _label.FontSize = _baseFontSize;
             _label.Foreground = ToBrush(theme.TextColor, "#202020");
+            FitText();
+        }
+
+        /// <summary>
+        /// auto-fit：文本实际渲染宽度超过可用宽度时缩小字号，直到放得下；
+        /// 文本变短后恢复基准字号。
+        /// </summary>
+        private void FitText()
+        {
+            if (string.IsNullOrEmpty(_label.Text))
+            {
+                return;
+            }
+            var width = MeasureTextWidth(
+                _label.Text, _label.FontFamily, _label.FontSize, _label.FontWeight);
+            if (width > _availableTextWidth)
+            {
+                var factor = (_availableTextWidth * 0.98) / width;
+                _label.FontSize = Math.Max(MinFontSize, _label.FontSize * factor);
+            }
+            else if (_label.FontSize < _baseFontSize)
+            {
+                _label.FontSize = _baseFontSize;
+            }
+        }
+
+        private static double MeasureTextWidth(
+            string text,
+            FontFamily family,
+            double fontSize,
+            FontWeight weight)
+        {
+            try
+            {
+                var formatted = new FormattedText(
+                    text,
+                    CultureInfo.CurrentUICulture,
+                    FlowDirection.LeftToRight,
+                    new Typeface(family, FontStyles.Normal, weight, FontStretches.Normal),
+                    fontSize,
+                    Brushes.Black,
+                    96.0);
+                return formatted.WidthIncludingTrailingWhitespace;
+            }
+            catch
+            {
+                return 0;
+            }
         }
 
         private static SolidColorBrush ToBrush(string? value, string fallback)
