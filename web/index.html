@@ -45,6 +45,7 @@
     position: absolute;
     left: 50%;
     top: calc(100% + 6px);
+    transform: translateX(-50%);
     background: var(--paper);
     border: 1px solid color-mix(in srgb, var(--weak) 30%, transparent);
     border-radius: 6px;
@@ -54,24 +55,14 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.12);
     opacity: 0;
     visibility: hidden;
-    transform: translateX(-50%) translateY(-6px) scale(0.94);
-    transform-origin: top center;
-    transition: opacity .18s ease, transform .18s ease, visibility .18s;
-  }
-  /* 指向标签的小箭头，强化"以标签为焦点"的展开效果 */
-  .cost-detail::before {
-    content: "";
-    position: absolute;
-    top: -6px; left: 50%;
-    margin-left: -6px;
-    width: 0; height: 0;
-    border: 6px solid transparent;
-    border-bottom-color: var(--paper);
+    /* 顶部锚定矩形扩张：水平自两侧、垂直向下展开，顶部边固定，文字不缩放 */
+    clip-path: inset(0 50% 100% 50%);
+    transition: clip-path .25s ease, opacity .2s ease, visibility .25s;
   }
   .cost-wrap:hover .cost-detail {
     opacity: 1;
     visibility: visible;
-    transform: translateX(-50%) translateY(0) scale(1);
+    clip-path: inset(0 0 0 0);
   }
   .cost-detail-row {
     display: flex; justify-content: space-between; gap: calc(12px * var(--font-scale));
