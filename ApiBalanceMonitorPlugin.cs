@@ -826,12 +826,36 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 估算胶囊内容宽度（DIP）并给足余量。
+    /// 动态测量胶囊内容宽度（DIP）并给足余量。
     /// 宿主 1.6 模板固定占位约 35px（左右 padding 12 + ProgressRing 18 + 间距 5），
-    /// 文本按平均字符宽 7px 估算 + 6px 余量，既避免边缘胶囊截断，又保持胶囊紧凑。
+    /// 文本用 FormattedText 按主题字体 12px 精确测量，+10px 余量防御宿主字体/渲染差异；
+    /// 测量失败时回退到线性估算。这样胶囊宽度随实际内容动态伸缩。
     /// </summary>
-    private static double EstimateCapsuleWidth(string text) =>
-        Math.Ceiling(35 + text.Length * 7.0 + 6);
+    private double EstimateCapsuleWidth(string text)
+    {
+        var textWidth = text.Length * 7.0;
+        try
+        {
+            var formatted = new FormattedText(
+                text,
+                CultureInfo.CurrentUICulture,
+                FlowDirection.LeftToRight,
+                new Typeface(
+                    new FontFamily(_theme.FontFamily),
+                    FontStyles.Normal,
+                    FontWeights.Normal,
+                    FontStretches.Normal),
+                12.0,
+                Brushes.Black,
+                96.0);
+            textWidth = formatted.WidthIncludingTrailingWhitespace;
+        }
+        catch
+        {
+            // 测量失败时保留线性估算兜底。
+        }
+        return Math.Ceiling(35 + textWidth + 10);
+    }
 
     /// <summary>
     /// 胶囊文本：货币符号 + 余额 +（可选）百分比，v3.1 风格 "¥12.34 · 6%"。
