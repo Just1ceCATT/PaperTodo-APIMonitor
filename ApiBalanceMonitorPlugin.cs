@@ -1329,7 +1329,7 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 近 7 天日均消费文案（"日均 ¥X.XX"），无数据返回空。
+    /// 近 7 天日均消费文案（"日均 ¥X.X"），无消费数据返回空。
     /// </summary>
     private string BuildCost7dFoot()
     {
@@ -1340,7 +1340,6 @@ internal sealed class BalanceSession : IPaperBodySession
         var now = DateTime.Now;
         var start = now.AddDays(-6).Date;
         double total = 0;
-        int days = 0;
         for (var d = start; d <= now.Date; d = d.AddDays(1))
         {
             var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -1349,15 +1348,14 @@ internal sealed class BalanceSession : IPaperBodySession
             {
                 total += day.Cost;
             }
-            days++;
         }
-        if (days <= 0 || total <= 0)
+        if (total <= 0)
         {
             return "";
         }
-        var avg = total / days;
+        var avg = total / 7.0;
         return "日均 " + _settings.CurrencySymbol +
-            avg.ToString("0.00", CultureInfo.CurrentCulture);
+            avg.ToString("0.0", CultureInfo.CurrentCulture);
     }
 
     /// <summary>
