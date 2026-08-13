@@ -247,12 +247,22 @@ function render(msg) {
   setText("costToday", d.costToday || "—");
   var tFoot = document.getElementById("costTodayFoot");
   if (d.costTodayFoot) {
-    tFoot.textContent = d.costTodayFoot;
     tFoot.style.display = "";
-    // 上升 ↑ 红色，下降 ↓ 绿色，持平 → 弱灰
-    if (d.costTodayFoot.indexOf("↑") >= 0) tFoot.style.color = "var(--danger)";
-    else if (d.costTodayFoot.indexOf("↓") >= 0) tFoot.style.color = "var(--green)";
-    else tFoot.style.color = "var(--dim)";
+    tFoot.innerHTML = "";
+    // "相较昨日" 用正常弱色，箭头单独用 SVG（更明显），颜色按趋势
+    var m = String(d.costTodayFoot).match(/^(相较昨日 )([↑↓→])(.*)$/);
+    if (m) {
+      var lbl = document.createElement("span");
+      lbl.style.color = "var(--dim)";
+      lbl.textContent = m[1];
+      var arrow = document.createElement("span");
+      arrow.style.color = m[2] === "↑" ? "var(--danger)" : (m[2] === "↓" ? "var(--green)" : "var(--dim)");
+      arrow.innerHTML = trendSvg(m[2]) + m[3];
+      tFoot.appendChild(lbl);
+      tFoot.appendChild(arrow);
+    } else {
+      tFoot.textContent = d.costTodayFoot;
+    }
   } else { tFoot.style.display = "none"; }
   setText("cost7d", d.cost7d || "—");
   var f7 = document.getElementById("cost7dFoot");
@@ -403,6 +413,21 @@ function fmtDay(d) {
   if (ds === fmtDateLocal(t)) return "今";
   if (ds === fmtDateLocal(y)) return "昨";
   return String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// 趋势 SVG 箭头（三角 + 柄），比文本 ↑/↓ 更明显、贴合深色主题
+function trendSvg(dir) {
+  var body;
+  if (dir === "↑") {
+    body = '<path d="M6 1 L10 5.6 L6 4.2 L2 5.6 Z" fill="currentColor"/>' +
+           '<line x1="6" y1="4.2" x2="6" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
+  } else if (dir === "↓") {
+    body = '<path d="M6 9 L10 4.4 L6 5.8 L2 4.4 Z" fill="currentColor"/>' +
+           '<line x1="6" y1="5.8" x2="6" y2="0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
+  } else {
+    body = '<line x1="2" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
+  }
+  return '<svg width="12" height="11" viewBox="0 0 12 11" style="display:inline-block;vertical-align:-1px;margin-right:3px">' + body + '</svg>';
 }
 
 // 短格式："06-15" → "15"；"今"/"昨" 原样返回（用于大量柱时横轴标签）
