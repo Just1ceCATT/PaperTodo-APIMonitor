@@ -249,10 +249,30 @@ function render(msg) {
 }
 
 // 选定时段重新过滤渲染（不重新请求 C#）
-document.getElementById("rangeSelect").addEventListener("change", function () {
-  currentRange = this.value;
-  renderChart();
-});
+function bindRange() {
+  var sel = document.getElementById("rangeSelect");
+  if (!sel) return;
+  // 同步 DOM 当前选中值到 currentRange（首次加载）
+  currentRange = sel.value;
+  function sync() { currentRange = sel.value; renderChart(); }
+  // 多事件触发，确保 WebView2 / 其它环境都能响应
+  sel.addEventListener("change", sync);
+  sel.addEventListener("input", sync);
+  sel.addEventListener("click", sync);
+  sel.addEventListener("focus", function () { sel.style.borderColor = "var(--green)"; });
+  sel.addEventListener("blur", function () { sel.style.borderColor = ""; });
+  // 键盘事件（鼠标点击受限时可键盘切换）
+  sel.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown" ||
+        e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      setTimeout(sync, 0);
+    }
+  });
+}
+bindRange();
+if (document.readyState !== "complete") {
+  window.addEventListener("load", bindRange);
+}
 
 function renderChart() {
   var byDate = {};
