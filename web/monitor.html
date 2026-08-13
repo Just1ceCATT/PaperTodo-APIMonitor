@@ -46,6 +46,7 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .metric-value{font:500 clamp(24px,4.5vw,28.6px) var(--serif)}
 .green{color:var(--green)}
 .metric-foot{margin-top:clamp(5px,0.9vw,6px);color:var(--dim);font-family:var(--serif);font-size:clamp(12px,2vw,13px)}
+.metric-foot + .metric-foot{margin-top:clamp(2px,0.5vw,3px)}
 .chart-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:13px}
 .chart-title{font:600 15px var(--serif)}
 .chart-caption{color:var(--dim);font:10px var(--serif);margin-top:3px}
@@ -117,9 +118,10 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
       <div class="metric-foot" id="cost7dFoot">—</div>
     </div>
     <div class="metric">
-      <div class="metric-label">缓存命中</div>
-      <div class="metric-value" id="cacheRate">—</div>
-      <div class="metric-foot" id="cacheRateFoot">API Cache</div>
+      <div class="metric-label">今日消耗</div>
+      <div class="metric-value" id="todayTokens">—</div>
+      <div class="metric-foot" id="todayTokensFoot"></div>
+      <div class="metric-foot" id="todayCacheFoot"></div>
     </div>
   </section>
 
@@ -171,6 +173,18 @@ function fmtTokens(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
   if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return "" + n;
+}
+
+// 千分位："1234567" → "1,234,567"
+function fmtThousands(n) {
+  return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// 万/亿简写："12345" → "1.2万"；"345000000" → "3.4亿"
+function fmtWanYi(n) {
+  if (n >= 1e8) return (n / 1e8).toFixed(1) + "亿";
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + "万";
   return "" + n;
 }
 
@@ -247,8 +261,16 @@ function render(msg) {
   var f7 = document.getElementById("cost7dFoot");
   if (d.cost7dFoot) { f7.textContent = d.cost7dFoot; f7.style.display = ""; }
   else { f7.style.display = "none"; }
-  setText("cacheRate", d.cacheRate != null ? Math.round(d.cacheRate * 100) + "%" : "—");
-  setText("cacheRateFoot", "API Cache · " + (d.cacheRate != null ? ("今日") : "无数据"));
+  // 今日消耗（Token 单位）
+  setText("todayTokens", d.todayTokens > 0 ? fmtThousands(d.todayTokens) + " Tokens" : "—");
+  var ttFoot = document.getElementById("todayTokensFoot");
+  if (d.todayTokens > 0) { ttFoot.textContent = "≈ " + fmtWanYi(d.todayTokens); ttFoot.style.display = ""; }
+  else { ttFoot.style.display = "none"; }
+  var tcFoot = document.getElementById("todayCacheFoot");
+  if (d.todayTokens > 0 && d.cacheRate != null) {
+    tcFoot.textContent = "缓存命中: " + fmtThousands(d.todayHit || 0) + " Tokens · 缓存命中率 " + (d.cacheRate * 100).toFixed(2) + "%";
+    tcFoot.style.display = "";
+  } else { tcFoot.style.display = "none"; }
 
   // 用量柱状图
   currentUsage = d.usage || [];

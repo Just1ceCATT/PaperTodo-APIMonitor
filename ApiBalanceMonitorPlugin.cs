@@ -1243,6 +1243,8 @@ internal sealed class BalanceSession : IPaperBodySession
             ["cost7d"] = BuildCost7dText(),
             ["cost7dFoot"] = BuildCost7dFoot(),
             ["costDays7"] = BuildCostDays7Array(),
+            ["todayTokens"] = BuildTodayTokens(),
+            ["todayHit"] = BuildTodayHit(),
             ["cacheRate"] = BuildTodayCacheRate(),
             ["hourly"] = BuildHourlyArray(),
             ["usage"] = BuildUsageArray()
@@ -1315,6 +1317,34 @@ internal sealed class BalanceSession : IPaperBodySession
                 ["tokens"] = h.Tokens
             })
             .ToArray();
+    }
+
+    /// <summary>
+    /// 今日总 Token 用量；当天无数据返回 0。
+    /// </summary>
+    private double BuildTodayTokens()
+    {
+        if (_usageDays == null || _usageDays.Length == 0)
+        {
+            return 0;
+        }
+        var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var day = Array.Find(_usageDays, u => u.Date == key);
+        return day?.Tokens ?? 0;
+    }
+
+    /// <summary>
+    /// 今日缓存命中 Token 数；当天无数据返回 0。
+    /// </summary>
+    private double BuildTodayHit()
+    {
+        if (_usageDays == null || _usageDays.Length == 0)
+        {
+            return 0;
+        }
+        var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var day = Array.Find(_usageDays, u => u.Date == key);
+        return day?.CacheHit ?? 0;
     }
 
     /// <summary>
