@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>API 余额监测</title>
+<style>
+:root{
+  --bg:#11110f;--s:#181815;--line:#30302a;
+  --text:#ebe9e1;--muted:#918f86;--dim:#65645d;
+  --green:#78d47d;--warn:#e6c66a;--danger:#e28787;
+  --serif:"Iowan Old Style","Palatino Linotype","Book Antiqua","Noto Serif SC","Songti SC","STSong",serif;
+  --sans:Inter,"Segoe UI","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;min-height:100%;background:transparent;color:var(--text);font-family:var(--sans);font-size:13px}
+body{padding:0}
+.panel{width:100%;background:var(--s);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+header{height:46px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+.title{display:flex;align-items:center;gap:9px;font:600 13px var(--serif)}
+.pin{width:6px;height:6px;border-radius:50%;background:#b5a27c}
+.actions{color:#66665f;font-size:14px;letter-spacing:7px}
+main{padding:25px 26px 20px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:30px}
+.label{color:var(--muted);font:12px var(--serif);margin-bottom:8px}
+.balance{display:flex;align-items:baseline;gap:5px}
+.symbol{font:24px var(--serif);color:#c8c6bd}
+.number{font:500 54px/1 var(--serif);letter-spacing:-2px}
+.currency{color:var(--muted);font:12px var(--serif);margin-left:3px}
+.updated{margin-top:9px;color:var(--dim);font-size:10px}
+.status{text-align:right;padding-top:4px}
+.status-main{display:flex;align-items:center;justify-content:flex-end;gap:7px;color:var(--green);font:600 13px var(--serif)}
+.status-main.err{color:var(--danger)}
+.status-main.warn{color:var(--warn)}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.status-dot.err{background:var(--danger)}
+.status-dot.warn{background:var(--warn)}
+.status-sub{margin-top:6px;color:var(--dim);font-size:10px}
+.health{display:grid;grid-template-columns:72px 1fr;gap:16px;align-items:center;padding:15px 0 18px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:20px}
+.ring{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--green) 0 0%,#383833 0% 100%);position:relative}
+.ring:after{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--s)}
+.ring span{position:relative;z-index:1;font:600 14px var(--serif);color:var(--green)}
+.ring.warn span,.ring.warn{color:var(--warn)}
+.ring.danger span,.ring.danger{color:var(--danger)}
+.health-title{display:flex;justify-content:space-between;margin-bottom:5px}
+.health-title strong{font:600 14px var(--serif)}
+.health-title span,.health-desc{color:var(--muted);font:11px var(--serif)}
+.progress{margin-top:10px;height:3px;background:#30302c;overflow:hidden}
+.progress i{display:block;width:0%;height:100%;background:var(--green);transition:width .25s ease, background-color .2s ease}
+.progress.warn i{background:var(--warn)}
+.progress.danger i{background:var(--danger)}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);margin-bottom:27px}
+.metric{padding:0 18px;border-left:1px solid var(--line)}
+.metric:first-child{border-left:0;padding-left:0}
+.metric:last-child{padding-right:0}
+.metric-label{color:var(--muted);font:11px var(--serif);margin-bottom:7px}
+.metric-value{font:500 18px var(--serif)}
+.green{color:var(--green)}
+.metric-foot{margin-top:5px;color:var(--dim);font-size:9px}
+.chart-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:13px}
+.chart-title{font:600 15px var(--serif)}
+.chart-caption{color:var(--dim);font:10px var(--serif);margin-top:3px}
+.select{appearance:none;-webkit-appearance:none;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--muted);padding:4px 18px 4px 2px;font:11px var(--serif);outline:none;cursor:pointer}
+.select:hover{color:var(--text)}
+.chart{height:178px;position:relative;border-bottom:1px solid var(--line);padding:20px 8px 27px 37px;background:linear-gradient(to bottom,transparent 49.5%,rgba(255,255,255,.035) 50%,transparent 50.5%)}
+.y-axis{position:absolute;left:0;top:17px;bottom:29px;display:flex;flex-direction:column;justify-content:space-between;color:var(--dim);font:9px var(--serif);width:34px}
+.bars{height:100%;display:grid;grid-template-columns:repeat(7,1fr);gap:10px;align-items:end}
+.bar-wrap{height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative}
+.bar-value{margin-bottom:5px;color:#aaa89f;font:9px var(--serif)}
+.bar{width:26px;max-width:70%;min-height:2px;border-radius:2px 2px 0 0;background:#4e824f}
+.bar.current{background:var(--green)}
+.bar-label{position:absolute;bottom:-20px;color:var(--dim);font:9px var(--serif)}
+.bar-label.current{color:var(--text)}
+.bottom{display:flex;justify-content:space-between;margin-top:13px;color:var(--dim);font:9px var(--serif)}
+@media(max-width:520px){
+  main{padding:21px 18px 17px}
+  .top{display:block}
+  .status{text-align:left;margin-top:14px}
+  .status-main{justify-content:flex-start}
+  .number{font-size:47px}
+  .metrics{grid-template-columns:1fr;gap:14px}
+  .metric{border-left:0!important;padding:0!important}
+  .metric-foot{display:none}
+}
+</style>
+</head>
+<body>
+<section class="panel">
+<header>
+  <div class="title"><i class="pin"></i> API 余额监测</div>
+  <div class="actions">· · ·</div>
+</header>
+<main>
+  <!-- 余额 + 状态 -->
+  <section class="top">
+    <div>
+      <div class="label">可用余额</div>
+      <div class="balance">
+        <span class="symbol" id="symbol">¥</span>
+        <span class="number" id="number">—</span>
+        <span class="currency" id="currency"></span>
+      </div>
+      <div class="updated" id="updated">最后检测 · —</div>
+    </div>
+    <div class="status">
+      <div class="status-main" id="statusMain"><i class="status-dot" id="statusDot"></i><span id="statusText">等待数据…</span></div>
+      <div class="status-sub" id="statusSub">—</div>
+    </div>
+  </section>
+
+  <!-- 健康度：圆环 + 进度条 -->
+  <section class="health">
+    <div class="ring" id="ring"><span id="ringPct">--%</span></div>
+    <div>
+      <div class="health-title">
+        <strong>余额健康度</strong>
+        <span id="thresholdText">安全线 ¥0.00</span>
+      </div>
+      <div class="health-desc" id="healthDesc">当前余额低于最低风险阈值</div>
+      <div class="progress" id="progress"><i></i></div>
+    </div>
+  </section>
+
+  <!-- 三指标卡 -->
+  <section class="metrics">
+    <div class="metric">
+      <div class="metric-label">今日消耗</div>
+      <div class="metric-value green" id="costToday">—</div>
+      <div class="metric-foot" id="costTodayFoot">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">近 7 日</div>
+      <div class="metric-value" id="cost7d">—</div>
+      <div class="metric-foot" id="cost7dFoot">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">缓存命中</div>
+      <div class="metric-value" id="cacheRate">—</div>
+      <div class="metric-foot" id="cacheRateFoot">API Cache</div>
+    </div>
+  </section>
+
+  <!-- 用量趋势：7 根柱 + 纵轴 -->
+  <section>
+    <div class="chart-head">
+      <div>
+        <div class="chart-title">用量趋势</div>
+        <div class="chart-caption" id="chartCaption">过去 7 日 API Token 使用量</div>
+      </div>
+      <select class="select" id="rangeSelect">
+        <option value="7d" selected>近 7 天</option>
+        <option value="30d">近 30 天</option>
+        <option value="month">本月</option>
+        <option value="lastMonth">上月</option>
+      </select>
+    </div>
+    <div class="chart">
+      <div class="y-axis" id="yAxis"><span>—</span><span>—</span><span>0</span></div>
+      <div class="bars" id="bars"></div>
+    </div>
+    <footer class="bottom">
+      <span>API Usage Monitor</span>
+      <span id="updateTime">—</span>
+    </footer>
+  </section>
+</main>
+</section>
+<script>
+"use strict";
+
+// ── 数据桥：宿主通过 window.chrome.webview.postMessage 推送 {theme, data} ──
+// 页面自身不发任何网络请求（CORS 限制），数据全部来自 C# 拉取并推送。
+var bridge = window.chrome && window.chrome.webview;
+var currentUsage = [];
+var currentRange = "7d";
+
+function fmtTokens(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return "" + n;
+}
+
+function applyRiskTone(el, ratio) {
+  el.classList.remove("warn", "danger");
+  if (ratio >= 1) el.classList.add("danger");
+  else if (ratio >= 0.8) el.classList.add("warn");
+}
+
+function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
+
+function render(msg) {
+  if (!msg) return;
+  var d = msg.data || {};
+
+  // 顶部：余额
+  var sym = d.currencySymbol || "";
+  var amt = d.hasBalance ? d.balance : "—";
+  setText("symbol", sym);
+  setText("number", amt);
+  setText("currency", d.currency || "");
+  setText("updated", "最后检测 · " + (d.updateTime || "—"));
+
+  // 状态点 + 文字
+  var main = document.getElementById("statusMain");
+  var dot = document.getElementById("statusDot");
+  main.classList.remove("err", "warn");
+  dot.classList.remove("err", "warn");
+  if (d.statusKind === "ok") {
+    setText("statusText", "在线");
+    setText("statusSub", "当前状态正常");
+  } else if (d.statusKind === "error") {
+    main.classList.add("err"); dot.classList.add("err");
+    setText("statusText", d.status || "错误");
+    setText("statusSub", "请求异常");
+  } else {
+    main.classList.add("warn"); dot.classList.add("warn");
+    setText("statusText", d.status || "未配置");
+    setText("statusSub", "请在设置页填写");
+  }
+
+  // 健康度：圆环 + 进度条 + 颜色
+  var ratio = d.ratio || 0;
+  var pct = Math.round(Math.max(0, Math.min(ratio, 1)) * 100);
+  setText("ringPct", (d.hasBalance && ratio > 0) ? pct + "%" : "--");
+  var ring = document.getElementById("ring");
+  ring.style.background = "conic-gradient(" +
+    (d.riskColor || "#78d47d") + " 0 " + pct + "%, #383833 " + pct + "% 100%)";
+  applyRiskTone(ring, ratio);
+  document.getElementById("ring").firstElementChild && (document.getElementById("ring").firstElementChild.style.color = d.riskColor || "#78d47d");
+  var bar = document.querySelector(".progress i");
+  bar.style.width = pct + "%";
+  bar.style.background = d.riskColor || "#78d47d";
+  applyRiskTone(document.getElementById("progress"), ratio);
+  setText("thresholdText", "安全线 " + (d.threshold || "—"));
+  setText("healthDesc", d.riskState || "—");
+
+  // 三指标卡
+  setText("costToday", d.costToday || "—");
+  setText("cost7d", d.cost7d || "—");
+  setText("cost7dFoot", d.cost7dFoot || "—");
+  setText("cacheRate", d.cacheRate != null ? d.cacheRate + "%" : "—");
+  setText("cacheRateFoot", "API Cache · " + (d.cacheRate != null ? ("今日") : "无数据"));
+
+  // 用量柱状图
+  currentUsage = d.usage || [];
+  renderChart();
+  setText("updateTime", d.updateTime || "—");
+}
+
+// 选定时段重新过滤渲染（不重新请求 C#）
+document.getElementById("rangeSelect").addEventListener("change", function () {
+  currentRange = this.value;
+  renderChart();
+});
+
+function renderChart() {
+  var byDate = {};
+  currentUsage.forEach(function (u) { byDate[u.date] = u.tokens; });
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var items = [];
+  function push(d, label, isCurrent) {
+    items.push({ date: d, tokens: byDate[d] || 0, label: label, current: isCurrent });
+  }
+  if (currentRange === "30d") {
+    var start = new Date(today); start.setDate(start.getDate() - 29);
+    while (start <= today) { push(fmtDateLocal(start), fmtDay(start), false); start.setDate(start.getDate() + 1); }
+    setText("chartCaption", "过去 30 日 API Token 使用量");
+  } else if (currentRange === "month") {
+    var f = new Date(today.getFullYear(), today.getMonth(), 1);
+    while (f <= today) { push(fmtDateLocal(f), fmtDay(f), false); f.setDate(f.getDate() + 1); }
+    setText("chartCaption", "本月 API Token 使用量");
+  } else if (currentRange === "lastMonth") {
+    var f2 = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    var l2 = new Date(today.getFullYear(), today.getMonth(), 0);
+    while (f2 <= l2) { push(fmtDateLocal(f2), fmtDay(f2), false); f2.setDate(f2.getDate() + 1); }
+    setText("chartCaption", "上月 API Token 使用量");
+  } else {
+    for (var i = 6; i >= 0; i--) {
+      var d = new Date(today); d.setDate(d.getDate() - i);
+      var ds = fmtDateLocal(d);
+      var isToday = (i === 0);
+      push(ds, fmtDay(d), isToday);
+    }
+    setText("chartCaption", "过去 7 日 API Token 使用量");
+  }
+
+  // 末尾 7 根（30d/month/lastMonth 太多时只显示最近 7 根并按日均缩放）
+  var show = items;
+  if (items.length > 7) {
+    show = items.slice(Math.max(0, items.length - 7));
+  }
+  var max = 1;
+  show.forEach(function (it) { if (it.tokens > max) max = it.tokens; });
+
+  // 纵轴
+  var y = document.getElementById("yAxis");
+  y.innerHTML = "<span>" + fmtTokens(max) + "</span>" +
+    "<span>" + fmtTokens(Math.round(max / 2)) + "</span>" +
+    "<span>0</span>";
+
+  var bars = document.getElementById("bars");
+  bars.innerHTML = "";
+  show.forEach(function (it) {
+    var wrap = document.createElement("div");
+    wrap.className = "bar-wrap";
+    var val = document.createElement("div");
+    val.className = "bar-value";
+    val.textContent = fmtTokens(it.tokens);
+    var bar = document.createElement("div");
+    bar.className = "bar" + (it.current ? " current" : "");
+    bar.style.height = Math.max(2, it.tokens / max * 100) + "%";
+    var lbl = document.createElement("div");
+    lbl.className = "bar-label" + (it.current ? " current" : "");
+    lbl.textContent = it.label;
+    wrap.appendChild(val);
+    wrap.appendChild(bar);
+    wrap.appendChild(lbl);
+    bars.appendChild(wrap);
+  });
+}
+
+function fmtDateLocal(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function fmtDay(d) {
+  var t = new Date(); t.setHours(0,0,0,0);
+  var y = new Date(t); y.setDate(t.getDate() - 1);
+  var ds = fmtDateLocal(d);
+  if (ds === fmtDateLocal(t)) return "今";
+  if (ds === fmtDateLocal(y)) return "昨";
+  return String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// 直调渲染函数（备用通道，绕过 postMessage 监听）
+window.__renderBalance = function (msg) {
+  try { render(msg); } catch (e) {}
+};
+
+// 监听 postMessage
+if (bridge) {
+  bridge.addEventListener("message", function (e) {
+    try { render(JSON.parse(e.data)); } catch (e) {}
+  });
+  bridge.postMessage({ type: "ready" });
+}
+
+// 自适应：宿主主题注入 CSS 变量
+function applyTheme(t) {
+  if (!t) return;
+  var r = document.documentElement.style;
+  r.setProperty("--text", t.text || "#ebe9e1");
+  r.setProperty("--muted", t.weak || "#918f86");
+  r.setProperty("--green", t.accent || "#78d47d");
+  r.setProperty("--bg", t.paper || "#181815");
+}
+</script>
+</body>
+</html>

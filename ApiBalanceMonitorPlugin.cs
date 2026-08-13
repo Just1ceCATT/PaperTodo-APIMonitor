@@ -986,9 +986,9 @@ internal sealed class BalanceSession : IPaperBodySession
             var pluginDirectory =
                 Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
                 ?? AppContext.BaseDirectory;
-            if (!File.Exists(Path.Combine(pluginDirectory, "web", "index.html")))
+            if (!File.Exists(Path.Combine(pluginDirectory, "web", "monitor.html")))
             {
-                throw new InvalidOperationException("缺少 web/index.html。");
+                throw new InvalidOperationException("缺少 web/monitor.html。");
             }
 
             // 对齐宿主 web 插件方式：虚拟主机映射到插件目录，避免 file:// 的潜在限制。
@@ -1009,7 +1009,7 @@ internal sealed class BalanceSession : IPaperBodySession
             }
 
             _webViewReady = true;
-            core.Navigate($"https://{hostName}/web/index.html");
+            core.Navigate($"https://{hostName}/web/monitor.html");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -1301,6 +1301,38 @@ internal sealed class BalanceSession : IPaperBodySession
             return "";
         }
         return _settings.CurrencySymbol + total.ToString("0.00", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// 近 7 天日均消费文案（"日均 ¥X.XX"），无数据返回空。
+    /// </summary>
+    private string BuildCost7dFoot()
+    {
+        if (_costDays == null || _costDays.Length == 0)
+        {
+            return "";
+        }
+        var now = DateTime.Now;
+        var start = now.AddDays(-6).Date;
+        double total = 0;
+        int days = 0;
+        for (var d = start; d <= now.Date; d = d.AddDays(1))
+        {
+            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var day = Array.Find(_costDays, c => c.Date == key);
+            if (day != null)
+            {
+                total += day.Cost;
+            }
+            days++;
+        }
+        if (days <= 0 || total <= 0)
+        {
+            return "";
+        }
+        var avg = total / days;
+        return "日均 " + _settings.CurrencySymbol +
+            avg.ToString("0.00", CultureInfo.CurrentCulture);
     }
 
     /// <summary>
