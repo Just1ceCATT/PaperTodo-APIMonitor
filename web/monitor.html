@@ -71,7 +71,7 @@ main{padding:25px 26px 20px}
 .bar-value{margin-bottom:5px;color:#aaa89f;font:9px var(--serif)}
 .bar{width:26px;max-width:70%;min-height:2px;border-radius:2px 2px 0 0;background:#4e824f}
 .bar.current{background:var(--green)}
-.bar-label{position:absolute;bottom:-20px;color:var(--dim);font:9px var(--serif)}
+.bar-label{position:absolute;bottom:-21px;color:var(--dim);font:9px var(--serif);background:var(--s);padding:1px 3px;border-radius:3px;white-space:nowrap;line-height:1.2;z-index:2}
 .bar-label.current{color:var(--text)}
 .bottom{display:flex;justify-content:space-between;margin-top:13px;color:var(--dim);font:9px var(--serif)}
 @media(max-width:520px){
@@ -357,9 +357,10 @@ function renderChart() {
   var bars = document.getElementById("bars");
   bars.style.gridTemplateColumns = "repeat(" + n + ", 1fr)";
   bars.innerHTML = "";
-  // ≤15 天保留柱顶数值；>15 天压缩柱宽、隐藏数值、抽稀标签，观察趋势
+  // ≤15 天保留柱顶数值；>15 天压缩柱宽、隐藏数值、抽稀并缩短标签，观察趋势
   var showValue = n <= 15;
-  var labelStep = n > 15 ? Math.ceil(n / 15) : 1;
+  var shortLabel = n > 15;
+  var labelStep = n > 15 ? Math.ceil(n / 10) : 1;
   items.forEach(function (it, i) {
     var wrap = document.createElement("div");
     wrap.className = "bar-wrap";
@@ -376,7 +377,8 @@ function renderChart() {
     if (i % labelStep === 0) {
       var lbl = document.createElement("div");
       lbl.className = "bar-label" + (it.current ? " current" : "");
-      lbl.textContent = it.label;
+      // 大量柱时用短格式（"06-15" → "15"），减小标签宽度避免与柱子重叠
+      lbl.textContent = shortLabel ? shortDay(it.label) : it.label;
       wrap.appendChild(lbl);
     }
     wrap.appendChild(bar);
@@ -394,6 +396,12 @@ function fmtDay(d) {
   if (ds === fmtDateLocal(t)) return "今";
   if (ds === fmtDateLocal(y)) return "昨";
   return String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// 短格式："06-15" → "15"；"今"/"昨" 原样返回（用于大量柱时横轴标签）
+function shortDay(label) {
+  var p = label.split("-");
+  return p.length === 2 ? p[1] : label;
 }
 
 // 直调渲染函数（备用通道，绕过 postMessage 监听）
