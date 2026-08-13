@@ -60,18 +60,16 @@ main{padding:25px 26px 20px}
 .chart-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:13px}
 .chart-title{font:600 15px var(--serif)}
 .chart-caption{color:var(--dim);font:10px var(--serif);margin-top:3px}
-.select{appearance:none;-webkit-appearance:none;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--muted);padding:4px 18px 4px 2px;font:11px var(--serif);outline:none;cursor:pointer}
-.select:hover{color:var(--text)}
+.select{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:#11110f;color:var(--muted);padding:5px 10px;border-radius:6px;font:11px var(--serif);outline:none;cursor:pointer;color-scheme:dark}
+.select:hover{color:var(--text);border-color:#44443b}
+.custom-range{display:flex;align-items:center;gap:8px;margin-bottom:10px;font:11px var(--serif);color:var(--dim)}
+.custom-range input{background:#11110f;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:11px var(--serif);color-scheme:dark}
 .chart{height:178px;position:relative;border-bottom:1px solid var(--line);padding:20px 8px 27px 37px;background:linear-gradient(to bottom,transparent 49.5%,rgba(255,255,255,.035) 50%,transparent 50.5%)}
 .y-axis{position:absolute;left:0;top:17px;bottom:29px;display:flex;flex-direction:column;justify-content:space-between;color:var(--dim);font:9px var(--serif);width:34px}
 .bars{height:100%;display:grid;grid-template-columns:repeat(7,1fr);gap:10px;align-items:end}
-.bars.thin{grid-template-columns:repeat(31,1fr);gap:2px}
 .bar-wrap{height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative}
 .bar-value{margin-bottom:5px;color:#aaa89f;font:9px var(--serif)}
 .bar{width:26px;max-width:70%;min-height:2px;border-radius:2px 2px 0 0;background:#4e824f}
-.bars.thin .bar{width:auto;max-width:100%;min-height:2px;border-radius:1px 1px 0 0}
-.bars.thin .bar-value{display:none}
-.bars.thin .bar-label{font:8px var(--serif)}
 .bar.current{background:var(--green)}
 .bar-label{position:absolute;bottom:-20px;color:var(--dim);font:9px var(--serif)}
 .bar-label.current{color:var(--text)}
@@ -152,18 +150,19 @@ main{padding:25px 26px 20px}
         <div class="chart-caption" id="chartCaption">过去 7 日 API Token 使用量</div>
       </div>
       <select class="select" id="rangeSelect">
+        <option value="today">今天</option>
+        <option value="yesterday">昨天</option>
         <option value="7d" selected>近 7 天</option>
         <option value="30d">近 30 天</option>
         <option value="month">本月</option>
         <option value="lastMonth">上月</option>
-        <option value="custom">自定义…</option>
+        <option value="custom">自定义</option>
       </select>
     </div>
     <div class="custom-range" id="customRange" style="display:none">
-      <span>从</span>
-      <input type="date" id="customFrom">
+      <input type="date" id="fromDate">
       <span>至</span>
-      <input type="date" id="customTo">
+      <input type="date" id="toDate">
     </div>
     <div class="chart">
       <div class="y-axis" id="yAxis"><span>—</span><span>—</span><span>0</span></div>
@@ -184,6 +183,8 @@ main{padding:25px 26px 20px}
 var bridge = window.chrome && window.chrome.webview;
 var currentUsage = [];
 var currentRange = "7d";
+var customFrom = "";
+var customTo = "";
 
 function fmtTokens(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -262,132 +263,129 @@ function render(msg) {
 // 选定时段重新过滤渲染（不重新请求 C#）
 function bindRange() {
   var sel = document.getElementById("rangeSelect");
-  var customRange = document.getElementById("customRange");
-  var customFrom = document.getElementById("customFrom");
-  var customTo = document.getElementById("customTo");
   if (!sel) return;
+  // 同步 DOM 当前选中值到 currentRange（首次加载）
   currentRange = sel.value;
   function sync() {
     currentRange = sel.value;
-    if (customRange) customRange.style.display = currentRange === "custom" ? "flex" : "none";
+    var cr = document.getElementById("customRange");
+    if (cr) cr.style.display = (currentRange === "custom") ? "flex" : "none";
     renderChart();
   }
+  // 多事件触发，确保 WebView2 / 其它环境都能响应
   sel.addEventListener("change", sync);
   sel.addEventListener("input", sync);
   sel.addEventListener("click", sync);
   sel.addEventListener("focus", function () { sel.style.borderColor = "var(--green)"; });
   sel.addEventListener("blur", function () { sel.style.borderColor = ""; });
+  // 键盘事件（鼠标点击受限时可键盘切换）
   sel.addEventListener("keydown", function (e) {
     if (e.key === "ArrowUp" || e.key === "ArrowDown" ||
         e.key === "ArrowLeft" || e.key === "ArrowRight") {
       setTimeout(sync, 0);
     }
   });
-  if (customFrom) customFrom.addEventListener("change", function () { if (currentRange === "custom") renderChart(); });
-  if (customTo) customTo.addEventListener("change", function () { if (currentRange === "custom") renderChart(); });
+  // 自定义日期
+  document.getElementById("fromDate").addEventListener("change", function () { customFrom = this.value; renderChart(); });
+  document.getElementById("toDate").addEventListener("change", function () { customTo = this.value; renderChart(); });
 }
 bindRange();
 if (document.readyState !== "complete") {
   window.addEventListener("load", bindRange);
 }
 
+function parseDate(s) {
+  var p = s.split("-");
+  return new Date(+p[0], +p[1] - 1, +p[2]);
+}
+
 function renderChart() {
   var byDate = {};
   currentUsage.forEach(function (u) { byDate[u.date] = u.tokens; });
   var today = new Date(); today.setHours(0, 0, 0, 0);
+  var todayStr = fmtDateLocal(today);
   var items = [];
-  function push(d, label, isCurrent) {
-    items.push({ date: d, tokens: byDate[d] || 0, label: label, current: isCurrent });
+  function push(d, label) {
+    items.push({ date: d, tokens: byDate[d] || 0, label: label, current: (d === todayStr) });
   }
-
-  if (currentRange === "30d") {
-    var start = new Date(today); start.setDate(start.getDate() - 29);
-    while (start <= today) { push(fmtDateLocal(start), fmtDay(start), false); start.setDate(start.getDate() + 1); }
-    setText("chartCaption", "过去 30 日 API Token 使用量");
+  var caption = "";
+  if (currentRange === "today") {
+    push(todayStr, "今");
+    caption = "今日 API Token 使用量";
+  } else if (currentRange === "yesterday") {
+    var y = new Date(today); y.setDate(today.getDate() - 1);
+    push(fmtDateLocal(y), "昨");
+    caption = "昨日 API Token 使用量";
+  } else if (currentRange === "30d") {
+    var s30 = new Date(today); s30.setDate(today.getDate() - 29);
+    while (s30 <= today) { push(fmtDateLocal(s30), fmtDay(s30)); s30.setDate(s30.getDate() + 1); }
+    caption = "过去 30 日 API Token 使用量";
   } else if (currentRange === "month") {
     var f = new Date(today.getFullYear(), today.getMonth(), 1);
-    while (f <= today) { push(fmtDateLocal(f), fmtDay(f), false); f.setDate(f.getDate() + 1); }
-    setText("chartCaption", "本月 API Token 使用量");
+    while (f <= today) { push(fmtDateLocal(f), fmtDay(f)); f.setDate(f.getDate() + 1); }
+    caption = "本月 API Token 使用量";
   } else if (currentRange === "lastMonth") {
     var f2 = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     var l2 = new Date(today.getFullYear(), today.getMonth(), 0);
-    while (f2 <= l2) { push(fmtDateLocal(f2), fmtDay(f2), false); f2.setDate(f2.getDate() + 1); }
-    setText("chartCaption", "上月 API Token 使用量");
+    while (f2 <= l2) { push(fmtDateLocal(f2), fmtDay(f2)); f2.setDate(f2.getDate() + 1); }
+    caption = "上月 API Token 使用量";
   } else if (currentRange === "custom") {
-    var fromStr = document.getElementById("customFrom").value;
-    var toStr = document.getElementById("customTo").value;
-    if (fromStr && toStr) {
-      var a = parseDateStr(fromStr), b = parseDateStr(toStr);
-      if (a > b) { var t = a; a = b; b = t; }
-      var d = new Date(a);
-      while (d <= b) { push(fmtDateLocal(d), fmtDay(d), false); d.setDate(d.getDate() + 1); }
-      setText("chartCaption", fromStr + " 至 " + toStr + " 用量");
-    } else {
-      items = [];
-      setText("chartCaption", "请选择起止日期");
+    if (customFrom && customTo) {
+      var a = parseDate(customFrom), b = parseDate(customTo);
+      if (a <= b) { while (a <= b) { push(fmtDateLocal(a), fmtDay(a)); a.setDate(a.getDate() + 1); } }
+      caption = "自定义时段 API Token 使用量";
     }
-  } else {
+  } else { // 7d 默认
     for (var i = 6; i >= 0; i--) {
-      var d = new Date(today); d.setDate(d.getDate() - i);
-      var ds = fmtDateLocal(d);
-      var isToday = (i === 0);
-      push(ds, fmtDay(d), isToday);
+      var d = new Date(today); d.setDate(today.getDate() - i);
+      push(fmtDateLocal(d), fmtDay(d));
     }
-    setText("chartCaption", "过去 7 日 API Token 使用量");
+    caption = "过去 7 日 API Token 使用量";
   }
+  setText("chartCaption", caption);
 
-  // 15 天以内用粗柱（最多 15 根，超过则切细柱）
+  var n = items.length;
   var max = 1;
   items.forEach(function (it) { if (it.tokens > max) max = it.tokens; });
 
-  var bars = document.getElementById("bars");
-  bars.innerHTML = "";
-  // 细柱：超过 15 天且非近 7 天默认样式时启用
-  var useThin = items.length > 15;
-  bars.className = "bars" + (useThin ? " thin" : "");
-
-  // 标签抽稀：细柱超 15 时按等距抽稀显示
-  var labelStep = useThin ? Math.max(1, Math.ceil(items.length / 10)) : 1;
-
+  // 纵轴
   var y = document.getElementById("yAxis");
   y.innerHTML = "<span>" + fmtTokens(max) + "</span>" +
     "<span>" + fmtTokens(Math.round(max / 2)) + "</span>" +
     "<span>0</span>";
 
+  var bars = document.getElementById("bars");
+  bars.style.gridTemplateColumns = "repeat(" + n + ", 1fr)";
+  bars.innerHTML = "";
+  // ≤15 天保留柱顶数值；>15 天压缩柱宽、隐藏数值、抽稀标签，观察趋势
+  var showValue = n <= 15;
+  var labelStep = n > 15 ? Math.ceil(n / 15) : 1;
   items.forEach(function (it, i) {
     var wrap = document.createElement("div");
     wrap.className = "bar-wrap";
-    var val = document.createElement("div");
-    val.className = "bar-value";
-    val.textContent = fmtTokens(it.tokens);
+    if (showValue) {
+      var val = document.createElement("div");
+      val.className = "bar-value";
+      val.textContent = fmtTokens(it.tokens);
+      wrap.appendChild(val);
+    }
     var bar = document.createElement("div");
     bar.className = "bar" + (it.current ? " current" : "");
     bar.style.height = Math.max(2, it.tokens / max * 100) + "%";
-    var lbl = document.createElement("div");
-    lbl.className = "bar-label" + (it.current ? " current" : "");
-    // 粗柱样式下，非首根隐藏柱顶数值（保持原有 7 根风格）；细柱强制隐藏
-    if (useThin || items.length > 10) {
-      val.style.display = "none";
-    }
-    // 标签抽稀
-    if (i === items.length - 1 || (labelStep > 1 && i % labelStep === 0)) {
+    if (n > 15) bar.style.width = "55%"; // 压缩柱宽，突出趋势
+    if (i % labelStep === 0) {
+      var lbl = document.createElement("div");
+      lbl.className = "bar-label" + (it.current ? " current" : "");
       lbl.textContent = it.label;
-    } else {
-      lbl.textContent = "";
+      wrap.appendChild(lbl);
     }
-    wrap.appendChild(val);
     wrap.appendChild(bar);
-    wrap.appendChild(lbl);
     bars.appendChild(wrap);
   });
 }
 
 function fmtDateLocal(d) {
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-}
-function parseDateStr(s) {
-  var p = s.split("-");
-  return new Date(+p[0], +p[1] - 1, +p[2]);
 }
 function fmtDay(d) {
   var t = new Date(); t.setHours(0,0,0,0);
