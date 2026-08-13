@@ -119,8 +119,8 @@ main{padding:25px 26px 20px}
   <section class="metrics">
     <div class="metric">
       <div class="metric-label">今日消耗</div>
-      <div class="metric-value green" id="costToday">—</div>
-      <div class="metric-foot" id="costTodayFoot">—</div>
+      <div class="metric-value" id="costToday" style="color:#fff">—</div>
+      <div class="metric-foot" id="costTodayFoot" style="color:var(--dim)"></div>
     </div>
     <div class="metric">
       <div class="metric-label">近 7 日</div>
@@ -242,8 +242,15 @@ function render(msg) {
   // 三指标卡
   setText("costToday", d.costToday || "—");
   var tFoot = document.getElementById("costTodayFoot");
-  if (d.costTodayFoot) { tFoot.textContent = d.costTodayFoot; tFoot.style.display = ""; }
-  else { tFoot.style.display = "none"; }
+  if (d.costTodayFoot) {
+    tFoot.textContent = d.costTodayFoot;
+    tFoot.style.display = "";
+    // 上升 ↑ 红色，下降 ↓ 绿色，持平 → 弱灰
+    var arrow = d.costTodayFoot.charAt(0);
+    if (arrow === "↑") tFoot.style.color = "var(--danger)";
+    else if (arrow === "↓") tFoot.style.color = "var(--green)";
+    else tFoot.style.color = "var(--dim)";
+  } else { tFoot.style.display = "none"; }
   setText("cost7d", d.cost7d || "—");
   var f7 = document.getElementById("cost7dFoot");
   if (d.cost7dFoot) { f7.textContent = d.cost7dFoot; f7.style.display = ""; }

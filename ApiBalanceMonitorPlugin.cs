@@ -1240,7 +1240,8 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// "较昨日 ±X%" 文案（今日 vs 昨日消费变化）；无数据或昨日为 0 时返回空。
+    /// 今日 vs 昨日消费变化箭头文案：上升"↑xx.x%"，下降"↓xx.x%"，持平"→0.0%"。
+    /// 无数据或昨日为 0 时返回空。
     /// </summary>
     private string BuildCostTodayFoot()
     {
@@ -1258,8 +1259,8 @@ internal sealed class BalanceSession : IPaperBodySession
             return "";
         }
         var diff = (today.Cost - yesterday.Cost) / yesterday.Cost * 100.0;
-        var sign = diff > 0 ? "+" : "";
-        return "较昨日 " + sign + diff.ToString("0.0", CultureInfo.CurrentCulture) + "%";
+        var arrow = diff > 0 ? "↑" : (diff < 0 ? "↓" : "→");
+        return arrow + Math.Abs(diff).ToString("0.0", CultureInfo.CurrentCulture) + "%";
     }
 
     /// <summary>
