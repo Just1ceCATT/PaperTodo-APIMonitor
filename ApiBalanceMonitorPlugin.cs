@@ -1261,7 +1261,8 @@ internal sealed class BalanceSession : IPaperBodySession
         }
         var diff = (today.Cost - yesterday.Cost) / yesterday.Cost * 100.0;
         var arrow = diff > 0 ? "↑" : (diff < 0 ? "↓" : "→");
-        return arrow + Math.Abs(diff).ToString("0.0", CultureInfo.CurrentCulture) + "%";
+        return "相较昨日 · " + arrow +
+            Math.Abs(diff).ToString("0.0", CultureInfo.CurrentCulture) + "%";
     }
 
     /// <summary>

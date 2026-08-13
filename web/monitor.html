@@ -250,9 +250,8 @@ function render(msg) {
     tFoot.textContent = d.costTodayFoot;
     tFoot.style.display = "";
     // 上升 ↑ 红色，下降 ↓ 绿色，持平 → 弱灰
-    var arrow = d.costTodayFoot.charAt(0);
-    if (arrow === "↑") tFoot.style.color = "var(--danger)";
-    else if (arrow === "↓") tFoot.style.color = "var(--green)";
+    if (d.costTodayFoot.indexOf("↑") >= 0) tFoot.style.color = "var(--danger)";
+    else if (d.costTodayFoot.indexOf("↓") >= 0) tFoot.style.color = "var(--green)";
     else tFoot.style.color = "var(--dim)";
   } else { tFoot.style.display = "none"; }
   setText("cost7d", d.cost7d || "—");
