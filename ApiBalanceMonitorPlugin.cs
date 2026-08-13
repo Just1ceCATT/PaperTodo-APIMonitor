@@ -797,7 +797,7 @@ internal sealed class BalanceSession : IPaperBodySession
             _lastCapsuleSignature = signature;
             _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
             {
-                PreferredWidth = PaperCapsulePresentation.AutomaticWidth,
+                PreferredWidth = EstimateCapsuleWidth(text),
                 PlainText = text,
                 ToolTip = string.IsNullOrEmpty(snapshot.StatusText)
                     ? text
@@ -826,9 +826,18 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
+    /// 估算胶囊内容宽度（DIP）并给足余量。
+    /// 宿主 1.6 模板固定占位约 35px（左右 padding 12 + ProgressRing 18 + 间距 5），
+    /// 文本按平均字符宽 8px 估算，额外 +12px 余量——避免边缘胶囊（内容区 = 精确测量宽、
+    /// 无普通胶囊关闭按钮的 reflow 冗余）因测量/渲染微小差异而截断。
+    /// </summary>
+    private static double EstimateCapsuleWidth(string text) =>
+        Math.Ceiling(35 + text.Length * 8.0 + 12);
+
+    /// <summary>
     /// 胶囊文本：货币符号 + 余额 +（可选）百分比，v3.1 风格 "¥12.34 · 6%"。
-    /// 文本由宿主 1.6 模板用宿主胶囊字体渲染；宿主支持胶囊宽度随内容自适应，
-    /// 因此 " · " 分隔不会截断。
+    /// 文本由宿主 1.6 模板用宿主胶囊字体渲染；宿主按 PreferredWidth 给定内容宽度，
+    /// 配合估算余量，" · " 分隔不会截断。
     /// </summary>
     private static string BuildCapsuleText(
         BalanceSnapshot snapshot,
