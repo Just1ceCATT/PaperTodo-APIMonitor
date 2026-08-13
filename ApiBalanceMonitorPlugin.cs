@@ -1206,6 +1206,7 @@ internal sealed class BalanceSession : IPaperBodySession
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
             ["costToday"] = BuildCostTodayText(),
+            ["costTodayFoot"] = BuildCostTodayFoot(),
             ["cacheRate"] = BuildTodayCacheRate(),
             ["hourly"] = BuildHourlyArray(),
             ["cost7d"] = BuildCost7dText(),
@@ -1236,6 +1237,29 @@ internal sealed class BalanceSession : IPaperBodySession
             return "";
         }
         return _settings.CurrencySymbol + day.Cost.ToString("0.00", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// "较昨日 ±X%" 文案（今日 vs 昨日消费变化）；无数据或昨日为 0 时返回空。
+    /// </summary>
+    private string BuildCostTodayFoot()
+    {
+        if (_costDays == null || _costDays.Length == 0)
+        {
+            return "";
+        }
+        var now = DateTime.Now;
+        var todayKey = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var yesterdayKey = now.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var today = Array.Find(_costDays, c => c.Date == todayKey);
+        var yesterday = Array.Find(_costDays, c => c.Date == yesterdayKey);
+        if (today == null || yesterday == null || yesterday.Cost <= 0)
+        {
+            return "";
+        }
+        var diff = (today.Cost - yesterday.Cost) / yesterday.Cost * 100.0;
+        var sign = diff > 0 ? "+" : "";
+        return "较昨日 " + sign + diff.ToString("0.0", CultureInfo.CurrentCulture) + "%";
     }
 
     /// <summary>

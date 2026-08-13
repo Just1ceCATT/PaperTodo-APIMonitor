@@ -241,8 +241,13 @@ function render(msg) {
 
   // 三指标卡
   setText("costToday", d.costToday || "—");
+  var tFoot = document.getElementById("costTodayFoot");
+  if (d.costTodayFoot) { tFoot.textContent = d.costTodayFoot; tFoot.style.display = ""; }
+  else { tFoot.style.display = "none"; }
   setText("cost7d", d.cost7d || "—");
-  setText("cost7dFoot", d.cost7dFoot || "—");
+  var f7 = document.getElementById("cost7dFoot");
+  if (d.cost7dFoot) { f7.textContent = d.cost7dFoot; f7.style.display = ""; }
+  else { f7.style.display = "none"; }
   setText("cacheRate", d.cacheRate != null ? d.cacheRate + "%" : "—");
   setText("cacheRateFoot", "API Cache · " + (d.cacheRate != null ? ("今日") : "无数据"));
 
