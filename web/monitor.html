@@ -43,7 +43,8 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .metric:first-child{border-left:0;padding-left:0}
 .metric:last-child{padding-right:0}
 .metric-label{color:var(--muted);font:clamp(14px,2.4vw,15.6px) var(--serif);margin-bottom:clamp(6px,1.2vw,8px)}
-.metric-value{font:500 clamp(24px,4.5vw,28.6px) var(--serif)}
+.metric-value{font:500 clamp(24px,4.5vw,28.6px) var(--serif);white-space:nowrap}
+.tokens-suffix{font:500 clamp(11px,1.8vw,13px) var(--serif);color:var(--muted);margin-left:3px}
 .green{color:var(--green)}
 .metric-foot{margin-top:clamp(5px,0.9vw,6px);color:var(--dim);font-family:var(--serif);font-size:clamp(12px,2vw,13px)}
 .metric-foot + .metric-foot{margin-top:clamp(2px,0.5vw,3px)}
@@ -119,9 +120,10 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
     </div>
     <div class="metric">
       <div class="metric-label">今日消耗</div>
-      <div class="metric-value" id="todayTokens">—</div>
+      <div class="metric-value"><span id="todayTokens">—</span><span class="tokens-suffix"> Tokens</span></div>
       <div class="metric-foot" id="todayTokensFoot"></div>
-      <div class="metric-foot" id="todayCacheFoot"></div>
+      <div class="metric-foot" id="todayHitFoot"></div>
+      <div class="metric-foot" id="todayRateFoot"></div>
     </div>
   </section>
 
@@ -262,15 +264,23 @@ function render(msg) {
   if (d.cost7dFoot) { f7.textContent = d.cost7dFoot; f7.style.display = ""; }
   else { f7.style.display = "none"; }
   // 今日消耗（Token 单位）
-  setText("todayTokens", d.todayTokens > 0 ? fmtThousands(d.todayTokens) + " Tokens" : "—");
+  var hasTokens = d.todayTokens > 0;
+  setText("todayTokens", hasTokens ? fmtThousands(d.todayTokens) : "—");
+  var tSuffix = document.querySelector(".tokens-suffix");
+  if (tSuffix) tSuffix.style.display = hasTokens ? "" : "none";
   var ttFoot = document.getElementById("todayTokensFoot");
-  if (d.todayTokens > 0) { ttFoot.textContent = "≈ " + fmtWanYi(d.todayTokens); ttFoot.style.display = ""; }
+  if (hasTokens) { ttFoot.textContent = "≈ " + fmtWanYi(d.todayTokens); ttFoot.style.display = ""; }
   else { ttFoot.style.display = "none"; }
-  var tcFoot = document.getElementById("todayCacheFoot");
-  if (d.todayTokens > 0 && d.cacheRate != null) {
-    tcFoot.textContent = "缓存命中: " + fmtThousands(d.todayHit || 0) + " Tokens · 缓存命中率 " + (d.cacheRate * 100).toFixed(2) + "%";
-    tcFoot.style.display = "";
-  } else { tcFoot.style.display = "none"; }
+  var thFoot = document.getElementById("todayHitFoot");
+  if (hasTokens) {
+    thFoot.textContent = "缓存命中: " + fmtThousands(d.todayHit || 0) + " Tokens";
+    thFoot.style.display = "";
+  } else { thFoot.style.display = "none"; }
+  var trFoot = document.getElementById("todayRateFoot");
+  if (hasTokens && d.cacheRate != null) {
+    trFoot.textContent = "缓存命中率 " + (d.cacheRate * 100).toFixed(2) + "%";
+    trFoot.style.display = "";
+  } else { trFoot.style.display = "none"; }
 
   // 用量柱状图
   currentUsage = d.usage || [];
