@@ -826,10 +826,11 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 动态测量胶囊内容宽度（DIP）并给足余量。
-    /// 宿主 1.6 模板固定占位约 35px（左右 padding 12 + ProgressRing 18 + 间距 5），
-    /// 文本用 FormattedText 按主题字体 12px 精确测量，+10px 余量防御宿主字体/渲染差异；
-    /// 测量失败时回退到线性估算。这样胶囊宽度随实际内容动态伸缩。
+    /// 动态测量胶囊内容宽度（DIP），比截断临界值多 1px 最贴合。
+    /// 宿主截断是 TextTrimming.CharacterEllipsis：文本渲染宽 &gt; 可用宽（= PreferredWidth − 35
+    /// 结构占位：左右 padding 12 + ProgressRing 18 + 间距 5）时截断。
+    /// 这里用 FormattedText 按主题字体 12px 精确测量文本宽，内容宽 = 35 + 文本宽 + 1px，
+    /// 恰好容纳不浪费；测量失败回退线性估算。
     /// </summary>
     private double EstimateCapsuleWidth(string text)
     {
@@ -854,7 +855,7 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             // 测量失败时保留线性估算兜底。
         }
-        return Math.Ceiling(35 + textWidth + 10);
+        return Math.Ceiling(35 + textWidth + 1);
     }
 
     /// <summary>
