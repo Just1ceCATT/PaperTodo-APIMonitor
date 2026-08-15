@@ -91,7 +91,7 @@ internal sealed class BalanceSession : IPaperBodySession
     // 今日各模型消费明细：model -> cost（元）。仅保留今日与昨日，便于卡片展示。
     private Dictionary<string, double>? _costTodayByModel;
     private double? _minimaxRemainingPercent;
-    private List<(string Model, double Percent, double Hours)>? _minimaxModelRemains;
+    private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours, long WeeklyStart, long WeeklyEnd)>? _minimaxModelRemains;
     private PaperBodyTheme _theme;
 
     // WebView2 监视面板
@@ -404,7 +404,9 @@ internal sealed class BalanceSession : IPaperBodySession
             }
             JsonElement best = default;
             var found = false;
-            var modelList = new List<(string Model, double Percent, double Hours)>();
+            var modelList = new List<(
+                string Model, double Percent, double Hours,
+                double WeeklyPercent, double WeeklyHours, long WeeklyStart, long WeeklyEnd)>();
             foreach (var m in remains.EnumerateArray())
             {
                 if (m.ValueKind != JsonValueKind.Object)
@@ -417,21 +419,26 @@ internal sealed class BalanceSession : IPaperBodySession
                     : "";
                 var ms = TryReadNumber(m, "remains_time");
                 var pct = TryReadNumber(m, "current_interval_remaining_percent");
+                var weeklyPct = TryReadNumber(m, "current_weekly_remaining_percent");
+                var weeklyMs = TryReadNumber(m, "weekly_remains_time");
+                var weeklyStart = TryReadNumber(m, "weekly_start_time");
+                var weeklyEnd = TryReadNumber(m, "weekly_end_time");
                 if (ms.HasValue)
                 {
                     modelList.Add((
                         string.IsNullOrEmpty(name) ? "model" : name,
                         pct ?? 100,
-                        ms.Value / 3600000.0));
+                        ms.Value / 3600000.0,
+                        weeklyPct ?? 100,
+                        (weeklyMs ?? 0) / 3600000.0,
+                        weeklyStart.HasValue ? (long)weeklyStart.Value : 0,
+                        weeklyEnd.HasValue ? (long)weeklyEnd.Value : 0));
                 }
+                // 收集所有模型（不 break）；best 优先取 general。
                 if (!found || name == "general")
                 {
                     best = m;
                     found = true;
-                }
-                if (name == "general")
-                {
-                    break;
                 }
             }
             _minimaxModelRemains = modelList;
@@ -1452,7 +1459,11 @@ internal sealed class BalanceSession : IPaperBodySession
             {
                 ["model"] = x.Model,
                 ["percent"] = Math.Clamp(x.Percent, 0, 100),
-                ["hours"] = Math.Round(x.Hours, 1)
+                ["hours"] = Math.Round(x.Hours, 1),
+                ["weeklyPercent"] = Math.Clamp(x.WeeklyPercent, 0, 100),
+                ["weeklyHours"] = Math.Round(x.WeeklyHours, 1),
+                ["weeklyStart"] = x.WeeklyStart,
+                ["weeklyEnd"] = x.WeeklyEnd
             })
             .ToArray();
     }

@@ -1,202 +1,277 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MiniMax 额度监测</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token Plan — Monitor</title>
 <style>
 :root{
-  --bg:#11110f;--s:#181815;--line:#30302a;
-  --text:#ebe9e1;--muted:#918f86;--dim:#65645d;
-  --green:#78d47d;--warn:#e6c66a;--danger:#e28787;
-  --serif:"Iowan Old Style","Palatino Linotype","Book Antiqua","Noto Serif SC","Songti SC","STSong",serif;
-  --sans:Inter,"Segoe UI","Microsoft YaHei",sans-serif;
+  --paper:#f3efe7; --paper-deep:#e9e3d7;
+  --ink:#24211d; --muted:#81796e;
+  --line:#cfc7ba; --soft-line:#ddd6ca;
+  --accent:#9b493d; --accent-soft:#ead8d3;
+  --ok:#526b58; --bg:#d9d3c8;
+}
+[data-dark]{
+  --paper:#181815; --paper-deep:#1f1f1b;
+  --ink:#ebe9e1; --muted:#918f86;
+  --line:#30302a; --soft-line:#3a3a33;
+  --accent:#e28787; --accent-soft:#3a2626;
+  --ok:#78d47d; --bg:#11110f;
 }
 *{box-sizing:border-box}
 html{height:100%}
-body{margin:0;width:100%;height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;overflow-y:auto}
-.panel{width:100%;min-height:100vh;background:var(--s);border:0;border-radius:0 0 18px 18px;overflow:hidden}
-main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px)}
-.top{display:flex;align-items:center;gap:clamp(14px,2.6vw,22px);margin-bottom:clamp(16px,3vw,24px)}
-.balance-block{flex:1;min-width:0;display:flex;justify-content:space-between;align-items:flex-start;gap:clamp(10px,2vw,16px)}
-.label{color:var(--muted);font:clamp(11px,1.9vw,12px) var(--serif);margin-bottom:8px}
-.balance{display:flex;align-items:baseline;gap:6px}
-.number{font:500 clamp(42px,7vw,54px)/1 var(--serif);letter-spacing:-2px}
-.currency{color:var(--muted);font:clamp(13px,2.2vw,16px) var(--serif);margin-left:3px}
-.updated{margin-top:9px;color:var(--dim);font-size:clamp(10px,1.7vw,11px)}
-.status{text-align:right;padding-top:4px}
-.status-main{display:flex;align-items:center;justify-content:flex-end;gap:7px;color:var(--green);font:600 13px var(--serif)}
-.status-main.err{color:var(--danger)}
-.status-main.warn{color:var(--warn)}
-.status-dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
-.status-dot.err{background:var(--danger)}
-.status-dot.warn{background:var(--warn)}
-.status-sub{margin-top:6px;color:var(--dim);font-size:10px}
-.ring{width:clamp(54px,9.5vw,64px);height:clamp(54px,9.5vw,64px);border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--green) 0 0%,#383833 0% 100%);position:relative;flex:none}
-.ring:after{content:"";position:absolute;inset:clamp(5px,0.9vw,6px);border-radius:50%;background:var(--s)}
-.ring span{position:relative;z-index:1;font:600 clamp(11px,2.1vw,14px) var(--serif);color:var(--green)}
-.ring.warn span,.ring.warn{color:var(--warn)}
-.ring.danger span,.ring.danger{color:var(--danger)}
-.health{display:flex;justify-content:space-between;align-items:center;padding:clamp(12px,2vw,15px) 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:clamp(16px,3vw,22px)}
-.health-title strong{font:600 clamp(13px,2.4vw,14px) var(--serif)}
-.health-title span{color:var(--muted);font:clamp(11px,1.9vw,11px) var(--serif)}
-.progress{margin-top:clamp(8px,1.4vw,10px);height:4px;background:#30302c;overflow:hidden}
-.progress i{display:block;width:0%;height:100%;background:var(--green);transition:width .25s ease, background-color .2s ease}
-.progress.warn i{background:var(--warn)}
-.progress.danger i{background:var(--danger)}
-.models{font-family:var(--serif)}
-.models-title{font:600 clamp(14px,2.6vw,16px) var(--serif);margin-bottom:clamp(10px,1.8vw,14px)}
-.model-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:clamp(8px,1.4vw,11px) 0;border-bottom:1px solid var(--line)}
-.model-row:last-child{border-bottom:0}
-.model-name{color:var(--text);font-size:clamp(12px,2.1vw,14px)}
-.model-info{color:var(--muted);font-size:clamp(11px,1.9vw,12px);text-align:right}
-.model-info b{color:var(--text)}
-.model-bar{margin-top:4px;height:3px;background:#30302c;overflow:hidden}
-.model-bar i{display:block;height:100%;background:var(--green)}
-.bottom{display:flex;justify-content:space-between;margin-top:clamp(12px,2.2vw,16px);color:var(--dim);font:clamp(9px,1.6vw,10px) var(--serif)}
-@media(max-width:520px){
-  main{padding:21px 18px 17px}
-  .top{display:block}
-  .status{text-align:left;margin-top:14px}
-  .status-main{justify-content:flex-start}
-  .number{font-size:47px}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
+.page{width:100%;min-height:100vh;background:linear-gradient(rgba(255,255,255,.08),rgba(255,255,255,.08)),var(--paper);padding:clamp(22px,4vw,42px) clamp(18px,4vw,40px)}
+.header{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:clamp(18px,3vw,28px);border-bottom:1px solid var(--ink)}
+.kicker{font-size:11px;letter-spacing:4px;color:var(--muted);margin-bottom:12px}
+h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;letter-spacing:-1px}
+.header-meta{text-align:right;color:var(--muted);font-size:12px;line-height:1.9}
+.header-meta .status strong{color:var(--ok);font-weight:600}
+.header-meta .status.err strong{color:var(--accent)}
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:5px;vertical-align:1px}
+.status-dot.err{background:var(--accent)}
+.hero{display:grid;grid-template-columns:1.25fr .75fr;min-height:clamp(220px,30vh,280px);border-bottom:1px solid var(--line)}
+.hero-main{padding:clamp(28px,5vw,45px) clamp(20px,4vw,55px) clamp(26px,4vw,42px) 0;border-right:1px solid var(--line)}
+.hero-label{color:var(--muted);font-size:12px;letter-spacing:2px;margin-bottom:13px}
+.hero-value{display:flex;align-items:baseline;gap:10px}
+.hero-value strong{font-size:clamp(64px,9vw,104px);line-height:.9;font-weight:500;letter-spacing:-6px}
+.hero-value span{font-size:17px;color:var(--muted)}
+.hero-title{margin-top:clamp(14px,2.5vw,20px);font-size:clamp(15px,2vw,18px);font-weight:600}
+.hero-desc{margin-top:6px;color:var(--muted);font-size:13px}
+.hero-side{padding:clamp(28px,5vw,45px) 0 clamp(26px,4vw,42px) clamp(22px,4vw,48px);display:flex;flex-direction:column;justify-content:center}
+.alert-mark{width:8px;height:8px;background:var(--accent);display:inline-block;margin-right:8px}
+.alert-title{font-size:14px;font-weight:600;margin-bottom:16px}
+.alert-text{color:var(--muted);font-size:13px;line-height:2}
+.alert-text em{color:var(--accent);font-style:normal}
+.section{padding:clamp(22px,4vw,36px) 0;border-bottom:1px solid var(--line)}
+.section-heading{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:clamp(16px,3vw,25px)}
+.section-heading h2{margin:0;font-size:19px;font-weight:600}
+.section-heading span{color:var(--muted);font-size:11px}
+.model{display:grid;grid-template-columns:clamp(90px,14vw,145px) 1fr clamp(90px,14vw,145px);gap:clamp(16px,3vw,30px);align-items:center;padding:clamp(16px,3vw,25px) 0;border-top:1px solid var(--soft-line)}
+.model:first-of-type{border-top:0;padding-top:0}
+.model-name{font-size:clamp(20px,3vw,25px);font-weight:600}
+.model-type{color:var(--muted);font-size:11px;margin-top:4px}
+.meter-label{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:8px}
+.meter{height:4px;background:var(--soft-line)}
+.meter i{display:block;height:100%;background:var(--ink)}
+.meter i.warning{background:var(--accent)}
+.model-number{text-align:right}
+.model-number strong{display:block;font-size:clamp(26px,4vw,34px);font-weight:500;line-height:1}
+.model-number span{display:block;color:var(--muted);font-size:11px;margin-top:7px}
+.periods{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,5vw,48px)}
+.period-title{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.period-title strong{font-size:15px;font-weight:600}
+.period-title span{font-size:clamp(20px,3vw,24px);font-weight:500}
+.period-line{position:relative;height:1px;background:var(--line)}
+.period-line i{position:absolute;left:0;top:-2px;height:5px;background:var(--ink)}
+.period-line i.warning{background:var(--accent)}
+.period-info{display:flex;justify-content:space-between;margin-top:10px;color:var(--muted);font-size:10px}
+.footer{padding-top:clamp(16px,3vw,22px);display:flex;justify-content:space-between;color:var(--muted);font-size:10px}
+@media(max-width:760px){
+  .page{padding:26px 22px}
+  .header{display:block}
+  .header-meta{text-align:left;margin-top:15px}
+  .hero{grid-template-columns:1fr}
+  .hero-main{padding-right:0;border-right:0;padding-bottom:24px}
+  .hero-side{padding:20px 0 26px;border-top:1px solid var(--line)}
+  .model{grid-template-columns:90px 1fr;gap:16px}
+  .model-number{grid-column:2;text-align:left;margin-top:-4px}
+  .periods{grid-template-columns:1fr;gap:26px}
 }
 </style>
 </head>
 <body>
-<section class="panel">
-<main>
-  <!-- 剩余额度 + 状态 -->
-  <div class="top">
-    <div class="ring" id="ring"><span id="ringPct">--%</span></div>
-    <div class="balance-block">
-      <div>
-        <div class="label">剩余额度</div>
-        <div class="balance">
-          <span class="number" id="number">—</span>
-          <span class="currency" id="currency">小时</span>
-        </div>
-        <div class="updated" id="updated">最后检测 · —</div>
-      </div>
-      <div class="status">
-        <div class="status-main" id="statusMain"><i class="status-dot" id="statusDot"></i><span id="statusText">等待数据…</span></div>
-        <div class="status-sub" id="statusSub">—</div>
-      </div>
-    </div>
-  </div>
+<main class="page">
 
-  <!-- 额度使用进度 -->
-  <div class="health">
-    <div class="health-title">
-      <strong>额度使用</strong>
-      <span id="remainText">剩余 --%</span>
+  <header class="header">
+    <div>
+      <div class="kicker">TOKEN PLAN · MONITOR</div>
+      <h1>MiniMax Coding Plan</h1>
     </div>
-  </div>
-  <div class="progress" id="progress"><i></i></div>
+    <div class="header-meta">
+      <div class="status" id="statusMain"><i class="status-dot" id="statusDot"></i><strong id="statusText">API 正常</strong></div>
+      <div>最后更新 · <span id="updated">—</span></div>
+    </div>
+  </header>
 
-  <!-- 各模型额度 -->
-  <section class="models" style="margin-top:clamp(16px,3vw,22px)">
-    <div class="models-title">模型额度</div>
+  <section class="hero">
+    <div class="hero-main">
+      <div class="hero-label">GENERAL · WEEKLY REMAINING</div>
+      <div class="hero-value">
+        <strong id="heroPct">--</strong>
+        <span>% remaining</span>
+      </div>
+      <div class="hero-title" id="heroTitle">—</div>
+      <div class="hero-desc" id="heroDesc">—</div>
+    </div>
+    <div class="hero-side">
+      <div class="alert-title"><i class="alert-mark"></i>需要关注</div>
+      <div class="alert-text" id="alertText">—</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-heading">
+      <h2>Models</h2>
+      <span id="modelCount">0 MODELS</span>
+    </div>
     <div id="modelList"></div>
   </section>
 
-  <div class="bottom">
-    <span>MiniMax Coding Plan</span>
-    <span id="updateTime">—</span>
-  </div>
+  <section class="section">
+    <div class="section-heading">
+      <h2>Weekly Cycle</h2>
+      <span id="cycleRange">—</span>
+    </div>
+    <div class="periods" id="periods"></div>
+  </section>
+
+  <footer class="footer">
+    <span>MiniMax Coding Plan · Usage Monitor</span>
+    <span id="footerStatus">STATUS —</span>
+  </footer>
+
 </main>
-</section>
 <script>
 "use strict";
 var bridge = window.chrome && window.chrome.webview;
-
 function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
 
-function applyRiskTone(el, ratio) {
-  el.classList.remove("warn", "danger");
-  if (ratio >= 1) el.classList.add("danger");
-  else if (ratio >= 0.8) el.classList.add("warn");
+// 小时 → "3h 45m"
+function fmtHM(hours) {
+  if (hours == null || isNaN(hours) || hours < 0) return "--";
+  var h = Math.floor(hours);
+  var m = Math.round((hours - h) * 60);
+  if (m >= 60) { h += 1; m -= 60; }
+  return h + "h " + m + "m";
 }
+// 小时 → "27 小时 45 分钟"
+function fmtHMZh(hours) {
+  if (hours == null || isNaN(hours) || hours < 0) return "--";
+  var h = Math.floor(hours);
+  var m = Math.round((hours - h) * 60);
+  if (m >= 60) { h += 1; m -= 60; }
+  return h + " 小时 " + m + " 分钟";
+}
+// Unix 毫秒 → "MM.DD HH:MM"
+function fmtDate(ms) {
+  if (!ms) return "--";
+  var d = new Date(ms);
+  return ("0" + (d.getMonth() + 1)).slice(-2) + "." +
+    ("0" + d.getDate()).slice(-2) + " " +
+    ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+}
+// 相对日期 → "MM.DD"
+function fmtDateShort(ms) {
+  if (!ms) return "--";
+  var d = new Date(ms);
+  return ("0" + (d.getMonth() + 1)).slice(-2) + "." + ("0" + d.getDate()).slice(-2);
+}
+function warning(pct) { return pct < 30; }
 
 function applyTheme(t) {
   if (!t) return;
+  if (t.dark) document.body.setAttribute("data-dark", "");
+  else document.body.removeAttribute("data-dark");
   var r = document.documentElement.style;
-  r.setProperty("--text", t.text || "#ebe9e1");
+  r.setProperty("--ink", t.text || (t.dark ? "#ebe9e1" : "#24211d"));
   r.setProperty("--muted", t.weak || "#918f86");
-  r.setProperty("--green", t.accent || "#78d47d");
-  r.setProperty("--bg", t.paper || "#181815");
+  r.setProperty("--accent", t.accent || "#9b493d");
+  r.setProperty("--paper", t.paper || (t.dark ? "#181815" : "#f3efe7"));
 }
 
 function render(msg) {
   if (!msg) return;
-  var d = msg.data || {};
   applyTheme(msg.theme);
+  var d = msg.data || {};
+  var models = d.modelRemains || [];
+  var general = null;
+  models.forEach(function (m) { if (m.model === "general" && !general) general = m; });
+  if (!general && models.length) general = models[0];
 
   // 状态
   var main = document.getElementById("statusMain");
   var dot = document.getElementById("statusDot");
-  main.classList.remove("err", "warn");
-  dot.classList.remove("err", "warn");
-  if (d.statusKind === "ok") {
-    setText("statusText", "在线"); setText("statusSub", "额度正常");
-  } else if (d.statusKind === "error") {
-    main.classList.add("err"); dot.classList.add("err");
-    setText("statusText", d.status || "错误"); setText("statusSub", "请求异常");
+  main.classList.remove("err"); dot.classList.remove("err");
+  if (d.statusKind === "ok") { setText("statusText", "API 正常"); }
+  else { main.classList.add("err"); dot.classList.add("err"); setText("statusText", d.status || "异常"); }
+  setText("updated", d.updateTime || "—");
+  setText("footerStatus", "STATUS " + (d.statusKind === "ok" ? "0 · SUCCESS" : "ERROR"));
+
+  // Hero：general weekly
+  if (general) {
+    var wp = Math.round(general.weeklyPercent || 0);
+    setText("heroPct", wp);
+    setText("heroTitle", warning(wp) ? "本周额度进入低余量状态" : "本周额度充足");
+    setText("heroDesc", "Weekly 周期剩余约 " + fmtHMZh(general.weeklyHours));
+    var cur = Math.round(general.percent || 0);
+    setText("alertText",
+      "当前 <em>" + general.model + "</em> Weekly 仅剩 " + wp + "%。<br>" +
+      "当前周期仍有 " + cur + "% 可用额度，<br>" +
+      "两种周期的消耗状态并不一致。");
   } else {
-    main.classList.add("warn"); dot.classList.add("warn");
-    setText("statusText", d.status || "未配置"); setText("statusSub", "请在设置页填写");
+    setText("heroPct", "--");
+    setText("heroDesc", "—");
+    setText("alertText", "暂无模型数据");
   }
 
-  // 剩余额度（小时）
-  var has = d.balance !== "—";
-  setText("number", d.balance !== "—" ? d.balance : "—");
-  setText("currency", d.currency || "小时");
-  setText("updated", "最后检测 · " + (d.updateTime || "—"));
-
-  // 环 + 进度：消耗比例
-  var ratio = d.ratio || 0;
-  var pct = Math.round(Math.max(0, Math.min(ratio, 1)) * 100);
-  setText("ringPct", has && d.remainingPercent != null ? Math.round(d.remainingPercent) + "%" : "--");
-  var ring = document.getElementById("ring");
-  ring.style.background = "conic-gradient(" + (d.riskColor || "#78d47d") + " 0 " + pct + "%, #383833 " + pct + "% 100%)";
-  applyRiskTone(ring, ratio);
-  ring.firstElementChild && (ring.firstElementChild.style.color = d.riskColor || "#78d47d");
-  var bar = document.querySelector(".progress i");
-  bar.style.width = pct + "%";
-  bar.style.background = d.riskColor || "#78d47d";
-  applyRiskTone(document.getElementById("progress"), ratio);
-  setText("remainText", d.remainingPercent != null ? "剩余 " + Math.round(d.remainingPercent) + "%" : "剩余 --%");
-
-  // 各模型额度
+  // Models
+  setText("modelCount", models.length + " MODELS");
   var box = document.getElementById("modelList");
   box.innerHTML = "";
-  (d.modelRemains || []).forEach(function (m) {
-    var row = document.createElement("div");
-    row.className = "model-row";
-    var name = document.createElement("div");
-    name.className = "model-name";
-    name.textContent = m.model;
-    var info = document.createElement("div");
-    info.className = "model-info";
-    var mb = document.createElement("div");
-    mb.className = "model-bar";
+  models.forEach(function (m) {
+    var art = document.createElement("article");
+    art.className = "model";
+    var nameBox = document.createElement("div");
+    var nm = document.createElement("div"); nm.className = "model-name"; nm.textContent = m.model;
+    var tp = document.createElement("div"); tp.className = "model-type"; tp.textContent = (m.model || "").toUpperCase() + " MODEL";
+    nameBox.appendChild(nm); nameBox.appendChild(tp);
+    var meterBox = document.createElement("div");
+    var ml = document.createElement("div"); ml.className = "meter-label";
+    var s1 = document.createElement("span"); s1.textContent = "Weekly remaining";
+    var s2 = document.createElement("span"); s2.textContent = Math.round(m.weeklyPercent || 0) + "%";
+    ml.appendChild(s1); ml.appendChild(s2);
+    var meter = document.createElement("div"); meter.className = "meter";
     var fill = document.createElement("i");
-    fill.style.width = Math.max(0, Math.min(100, m.percent || 0)) + "%";
-    mb.appendChild(fill);
-    info.innerHTML = "剩余 <b>" + m.hours + "</b> 小时 · " + Math.round(m.percent || 0) + "%";
-    var left = document.createElement("div");
-    left.style.flex = "1";
-    left.appendChild(name);
-    left.appendChild(mb);
-    row.appendChild(left);
-    row.appendChild(info);
-    box.appendChild(row);
+    var wpv = Math.max(0, Math.min(100, m.weeklyPercent || 0));
+    fill.style.width = wpv + "%";
+    if (warning(wpv)) fill.className = "warning";
+    meter.appendChild(fill);
+    meterBox.appendChild(ml); meterBox.appendChild(meter);
+    var num = document.createElement("div"); num.className = "model-number";
+    var b = document.createElement("strong"); b.textContent = fmtHM(m.hours);
+    var sp = document.createElement("span"); sp.textContent = "当前周期剩余";
+    num.appendChild(b); num.appendChild(sp);
+    art.appendChild(nameBox); art.appendChild(meterBox); art.appendChild(num);
+    box.appendChild(art);
   });
-  if (!(d.modelRemains || []).length) {
-    box.innerHTML = '<div class="model-row"><span class="model-name">—</span></div>';
-  }
 
-  setText("updateTime", d.updateTime || "—");
+  // Weekly Cycle
+  var cyc = document.getElementById("cycleRange");
+  if (general) { cyc.textContent = fmtDateShort(general.weeklyStart) + " — " + fmtDateShort(general.weeklyEnd); }
+  else { cyc.textContent = "—"; }
+  var periods = document.getElementById("periods");
+  periods.innerHTML = "";
+  models.forEach(function (m) {
+    var col = document.createElement("div");
+    var pt = document.createElement("div"); pt.className = "period-title";
+    var b = document.createElement("strong"); b.textContent = m.model;
+    var v = document.createElement("span"); v.textContent = Math.round(m.weeklyPercent || 0) + "%";
+    pt.appendChild(b); pt.appendChild(v);
+    var pl = document.createElement("div"); pl.className = "period-line";
+    var fill = document.createElement("i");
+    var wpv = Math.max(0, Math.min(100, m.weeklyPercent || 0));
+    fill.style.width = wpv + "%";
+    if (warning(wpv)) fill.className = "warning";
+    pl.appendChild(fill);
+    var pi = document.createElement("div"); pi.className = "period-info";
+    var a = document.createElement("span"); a.textContent = fmtDate(m.weeklyStart);
+    var b2 = document.createElement("span"); b2.textContent = fmtDate(m.weeklyEnd);
+    pi.appendChild(a); pi.appendChild(b2);
+    col.appendChild(pt); col.appendChild(pl); col.appendChild(pi);
+    periods.appendChild(col);
+  });
 }
 
 window.__renderBalance = function (msg) { try { render(msg); } catch (e) {} };
