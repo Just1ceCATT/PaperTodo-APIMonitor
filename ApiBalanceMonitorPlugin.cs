@@ -950,9 +950,16 @@ internal sealed class BalanceSession : IPaperBodySession
         // v3.1 算法：risk = threshold / balance（"阈值占余额的比例"）。
         // 例：余额=120、阈值=20 → 0.167 Safe（绿）；余额=40、阈值=20 → 0.5 Warming 边缘（黄）；
         //     余额=20、阈值=20 → 1.0 Overrun（红，满圆）。
-        double riskRatio = ComputeRiskRatio(snapshot.Remaining, _settings.BalanceThreshold);
+        // MiniMax：额度按时长计费，风险用"已消耗比例"（100 − 剩余百分比），
+        // 圆环弧值用剩余百分比（current_interval_remaining_percent / 100）。
+        var isMiniMax = string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal);
+        double riskRatio = isMiniMax && _minimaxRemainingPercent.HasValue
+            ? Finite((100 - _minimaxRemainingPercent.Value) / 100.0)
+            : Finite(ComputeRiskRatio(snapshot.Remaining, _settings.BalanceThreshold));
         var ringColor = RingColor(riskRatio);
-        var ringArc = RingArcValue(riskRatio);
+        var ringArc = isMiniMax
+            ? Math.Clamp(_minimaxRemainingPercent ?? 100, 0, 100) / 100.0
+            : RingArcValue(riskRatio);
 
         var text = BuildCapsuleText(snapshot, _settings, riskRatio);
         var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
@@ -1034,18 +1041,32 @@ internal sealed class BalanceSession : IPaperBodySession
         double riskRatio)
     {
         var sb = new StringBuilder();
-        // MiniMax：余额是时长额度，不用货币符号，显示剩余小时 + 剩余百分比。
+        // MiniMax：胶囊显示 "xx% · xx时xx分"——百分比为 current_interval_remaining_percent，
+        // 时长为 remains_time 转换的时分。圆环弧值由 UpdateSnapshot 用剩余百分比计算。
         if (string.Equals(settings.Provider, "minimax", StringComparison.Ordinal))
         {
-            sb.Append(FormatAmount(snapshot.Remaining));
-            sb.Append("小时");
-            if (settings.ShowPercentage && snapshot.HasRemaining && !double.IsNaN(snapshot.Remaining))
+            if (!double.IsNaN(snapshot.Remaining) && snapshot.Remaining > 0)
             {
                 var remain = (int)Math.Round(
                     Math.Clamp(1 - riskRatio, 0, 1) * 100.0, MidpointRounding.AwayFromZero);
-                sb.Append(" · ");
+                var hours = snapshot.Remaining;
+                var h = (int)Math.Floor(hours);
+                var m = (int)Math.Round((hours - h) * 60);
+                if (m == 60)
+                {
+                    h += 1;
+                    m = 0;
+                }
                 sb.Append(remain.ToString(CultureInfo.CurrentCulture));
-                sb.Append('%');
+                sb.Append("% · ");
+                sb.Append(h.ToString(CultureInfo.CurrentCulture));
+                sb.Append("时");
+                sb.Append(m.ToString(CultureInfo.CurrentCulture));
+                sb.Append("分");
+            }
+            else
+            {
+                sb.Append("—");
             }
             return sb.ToString();
         }
