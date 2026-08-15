@@ -45,7 +45,6 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .metric-label{color:var(--muted);font:clamp(14px,2.4vw,15.6px) var(--serif);margin-bottom:clamp(6px,1.2vw,8px)}
 .metric-value{font:500 clamp(24px,4.5vw,28.6px) var(--serif);white-space:nowrap}
 .tokens-suffix{font:500 clamp(11px,1.8vw,13px) var(--serif);color:var(--muted);margin-left:3px}
-.green{color:var(--green)}
 .metric-foot{margin-top:clamp(5px,0.9vw,6px);color:var(--dim);font-family:var(--serif);font-size:clamp(12px,2vw,13px)}
 .metric-foot + .metric-foot{margin-top:clamp(2px,0.5vw,3px)}
 .metric-models{margin-top:clamp(4px,0.8vw,6px);display:flex;flex-direction:column;gap:clamp(2px,0.4vw,3px);font-family:var(--serif);font-size:clamp(10px,1.6vw,11px);color:var(--muted)}
@@ -205,6 +204,7 @@ function setText(id, t) { var el = document.getElementById(id); if (el) el.textC
 
 function render(msg) {
   if (!msg) return;
+  applyTheme(msg.theme);
   var d = msg.data || {};
 
   // 顶部：余额
@@ -341,10 +341,8 @@ function bindRange() {
   document.getElementById("fromDate").addEventListener("change", function () { customFrom = this.value; renderChart(); });
   document.getElementById("toDate").addEventListener("change", function () { customTo = this.value; renderChart(); });
 }
+// script 位于 body 末尾，DOM 已就绪，只绑定一次。
 bindRange();
-if (document.readyState !== "complete") {
-  window.addEventListener("load", bindRange);
-}
 
 function parseDate(s) {
   var p = s.split("-");

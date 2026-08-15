@@ -53,19 +53,17 @@ internal sealed record BalanceSettings(
 
 internal sealed record BalanceSnapshot(
     double Remaining,
-    double Total,
     bool HasRemaining,
-    bool HasTotal,
     string StatusText)
 {
     public static BalanceSnapshot Empty(string status) =>
-        new(double.NaN, double.NaN, false, false, status);
+        new(double.NaN, false, status);
 
     public static BalanceSnapshot Error(string status) =>
-        new(double.NaN, double.NaN, false, false, "错误：" + status);
+        new(double.NaN, false, "错误：" + status);
 
-    public static BalanceSnapshot Ok(double remaining, double total) =>
-        new(remaining, total, !double.IsNaN(remaining), !double.IsNaN(total), string.Empty);
+    public static BalanceSnapshot Ok(double remaining) =>
+        new(remaining, !double.IsNaN(remaining), string.Empty);
 }
 
 /// <summary>
@@ -78,11 +76,6 @@ internal sealed record UsageDay(string Date, double Tokens, double CacheHit = 0,
 /// 单日消费金额（元，来自 platform.deepseek.com 消费接口的 days 汇总）。
 /// </summary>
 internal sealed record CostDay(string Date, double Cost);
-
-/// <summary>
-/// 单小时 Token 用量（来自 /v1/usage 接口的小时粒度明细）。
-/// </summary>
-internal sealed record HourlyUsage(string Date, int Hour, double Tokens);
 
 internal sealed class BalanceSession : IPaperBodySession
 {
@@ -97,10 +90,8 @@ internal sealed class BalanceSession : IPaperBodySession
     private CostDay[]? _costDays;
     // 今日各模型消费明细：model -> cost（元）。仅保留今日与昨日，便于卡片展示。
     private Dictionary<string, double>? _costTodayByModel;
-    private Dictionary<string, double>? _costYesterdayByModel;
     private double? _minimaxRemainingPercent;
     private List<(string Model, double Percent, double Hours)>? _minimaxModelRemains;
-    private HourlyUsage[]? _hourlyUsage;
     private PaperBodyTheme _theme;
 
     // WebView2 监视面板
@@ -155,6 +146,7 @@ internal sealed class BalanceSession : IPaperBodySession
         }
         catch
         {
+            // 释放阶段不应抛异常干扰宿主卸载。
         }
     }
 
@@ -315,22 +307,13 @@ internal sealed class BalanceSession : IPaperBodySession
                 ? Task.FromResult<UsageDay[]?>(null)
                 : FetchUsageForRecentMonthsAsync(_settings.UsageToken, now);
             var costTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
-                ? Task.FromResult<(CostDay[]? Days, Dictionary<string, double>? TodayByModel, Dictionary<string, double>? YesterdayByModel)>((null, null, null))
+                ? Task.FromResult<(CostDay[]? Days, Dictionary<string, double>? TodayByModel)>((null, null))
                 : FetchCostForRecentMonthsAsync(_settings.UsageToken, now);
-            // 小时粒度用量（/v1/usage，用 API Key），用于"今天/昨天/单日"按 2 小时分柱。
-            // 小时粒度用量：探测过所有常用端点均无小时粒度数据（只 /v1/usage 返回 404，
-            // platform/usage/amount 无论是否带 hour/granularity 等参数都返回日粒度），
-            // 因此这里保留调用链与容错，失败时单日时段自动回退到单根日柱。
-            var hourlyTask = string.IsNullOrWhiteSpace(_settings.ApiKey)
-                ? Task.FromResult<HourlyUsage[]?>(null)
-                : FetchHourlyUsageAsync(_settings.ApiKey);
 
-            await Task.WhenAll(balanceTask, usageTask, costTask, hourlyTask).ConfigureAwait(true);
+            await Task.WhenAll(balanceTask, usageTask, costTask).ConfigureAwait(true);
             _usageDays = usageTask.Result;
             _costDays = costTask.Result.Days;
             _costTodayByModel = costTask.Result.TodayByModel;
-            _costYesterdayByModel = costTask.Result.YesterdayByModel;
-            _hourlyUsage = hourlyTask.Result;
             UpdateSnapshot(balanceTask.Result);
         }
         catch (TaskCanceledException)
@@ -349,9 +332,34 @@ internal sealed class BalanceSession : IPaperBodySession
         }
     }
 
+    /// <summary>
+    /// 通用 GET + Bearer 请求：成功返回响应体，请求/网络异常返回 null。
+    /// platform 接口需额外加 x-app-version 头（platformHeader: true）。
+    /// </summary>
+    private async Task<string?> FetchJsonAsync(string url, string token, bool platformHeader = false)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            if (platformHeader)
+            {
+                request.Headers.TryAddWithoutValidation("x-app-version", "1.0.0");
+                request.Headers.TryAddWithoutValidation("Accept", "*/*");
+            }
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private async Task<BalanceSnapshot> FetchBalanceAsync()
     {
-        // 按供应商分发余额接口。
         if (string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal))
         {
             return await FetchMiniMaxBalanceAsync().ConfigureAwait(false);
@@ -361,46 +369,20 @@ internal sealed class BalanceSession : IPaperBodySession
             return BalanceSnapshot.Error("尚未适配该供应商");
         }
         // DeepSeek（默认）
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, DeepSeekBalanceUrl);
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return ParseResponse(body);
-        }
-        catch (Exception ex)
-        {
-            return BalanceSnapshot.Error(ex.GetType().Name);
-        }
+        var body = await FetchJsonAsync(DeepSeekBalanceUrl, _settings.ApiKey);
+        return body == null ? BalanceSnapshot.Error("请求失败") : ParseResponse(body);
     }
 
     /// <summary>
     /// MiniMax Coding Plan 用量接口：GET /v1/api/openplatform/coding_plan/remains。
-    /// 返回 current_interval_total_count（总额度）与 current_interval_usage_count（已用），
-    /// 剩余 = 总额 - 已用。
+    /// 返回各模型的剩余时长（remains_time）与剩余百分比。
     /// </summary>
     private async Task<BalanceSnapshot> FetchMiniMaxBalanceAsync()
     {
-        try
-        {
-            using var request = new HttpRequestMessage(
-                HttpMethod.Get,
-                "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains");
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
-            request.Headers.TryAddWithoutValidation("Accept", "application/json");
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return ParseMiniMaxBalanceResponse(body);
-        }
-        catch (Exception ex)
-        {
-            return BalanceSnapshot.Error(ex.GetType().Name);
-        }
+        var body = await FetchJsonAsync(
+            "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+            _settings.ApiKey);
+        return body == null ? BalanceSnapshot.Error("请求失败") : ParseMiniMaxBalanceResponse(body);
     }
 
     /// <summary>
@@ -465,7 +447,7 @@ internal sealed class BalanceSession : IPaperBodySession
             }
             _minimaxRemainingPercent = percent ?? 100;
             var hours = remainsMs.Value / 3600000.0;
-            return BalanceSnapshot.Ok(hours, double.NaN);
+            return BalanceSnapshot.Ok(hours);
         }
         catch
         {
@@ -496,9 +478,9 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 拉取上个月 + 本月的每日消费并合并，同时保留今日/昨日各模型明细。
+    /// 拉取上个月 + 本月的每日消费并合并，同时保留今日各模型明细。
     /// </summary>
-    private async Task<(CostDay[]? Days, Dictionary<string, double>? TodayByModel, Dictionary<string, double>? YesterdayByModel)>
+    private async Task<(CostDay[]? Days, Dictionary<string, double>? TodayByModel)>
         FetchCostForRecentMonthsAsync(string token, DateTime now)
     {
         var thisMonth = new DateTime(now.Year, now.Month, 1);
@@ -510,12 +492,12 @@ internal sealed class BalanceSession : IPaperBodySession
         var last = lastTask.Result;
         if (current == null && last == null)
         {
-            return (null, null, null);
+            return (null, null);
         }
         var list = new List<CostDay>();
         if (last != null) list.AddRange(last.Days);
         if (current != null) list.AddRange(current.Days);
-        return (list.ToArray(), current?.TodayByModel, current?.YesterdayByModel);
+        return (list.ToArray(), current?.TodayByModel);
     }
 
     /// <summary>
@@ -524,36 +506,21 @@ internal sealed class BalanceSession : IPaperBodySession
     /// </summary>
     private async Task<CostParseResult?> FetchCostAsync(string token, int year, int month)
     {
-        try
-        {
-            var url =
-                $"https://platform.deepseek.com/api/v0/usage/cost?month={month:D2}&year={year}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.TryAddWithoutValidation("x-app-version", "1.0.0");
-            request.Headers.TryAddWithoutValidation("Accept", "*/*");
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return ParseCostResponse(body);
-        }
-        catch
-        {
-            return null;
-        }
+        var url =
+            $"https://platform.deepseek.com/api/v0/usage/cost?month={month:D2}&year={year}";
+        var body = await FetchJsonAsync(url, token, platformHeader: true);
+        return body == null ? null : ParseCostResponse(body);
     }
 
     /// <summary>
-    /// 消费接口解析结果：每日总额 + 今日/昨日各模型明细。
+    /// 消费接口解析结果：每日总额 + 今日各模型明细。
     /// </summary>
     private sealed record CostParseResult(
         CostDay[] Days,
-        Dictionary<string, double>? TodayByModel,
-        Dictionary<string, double>? YesterdayByModel);
+        Dictionary<string, double>? TodayByModel);
 
     /// <summary>
-    /// 解析消费接口响应，汇总每天的金额；同时保留今日/昨日各模型明细。
+    /// 解析消费接口响应，汇总每天的金额；同时保留今日各模型明细。
     /// 响应：{ data: { biz_data: [ { days: [ { date, data: [ { model, usage: [ { type, amount } ] } ] } ] } ] } }
     /// amount 为元；费用类型与用量一致，逐条汇总即可。
     /// </summary>
@@ -573,9 +540,7 @@ internal sealed class BalanceSession : IPaperBodySession
             var biz = bizArr.EnumerateArray().First();
             var daily = new List<CostDay>();
             Dictionary<string, double>? todayByModel = null;
-            Dictionary<string, double>? yesterdayByModel = null;
             var todayKey = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var yesterdayKey = DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             if (!biz.TryGetProperty("days", out var days) ||
                 days.ValueKind != JsonValueKind.Array)
             {
@@ -614,8 +579,7 @@ internal sealed class BalanceSession : IPaperBodySession
                                        t.ValueKind == JsonValueKind.String
                                 ? t.GetString()
                                 : null;
-                            if (type is not ("PROMPT_TOKEN" or "PROMPT_CACHE_HIT_TOKEN"
-                                or "PROMPT_CACHE_MISS_TOKEN" or "RESPONSE_TOKEN"))
+                            if (!IsTokenType(type))
                             {
                                 continue;
                             }
@@ -635,116 +599,16 @@ internal sealed class BalanceSession : IPaperBodySession
                     }
                 }
                 daily.Add(new CostDay(date, total));
-                if (date == todayKey) todayByModel = perModel;
-                else if (date == yesterdayKey) yesterdayByModel = perModel;
-            }
-            return new CostParseResult(daily.ToArray(), todayByModel, yesterdayByModel);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 拉取小时粒度用量（公开接口 /v1/usage，用 API Key 认证）。
-    /// 用于"今天 / 昨天 / 自定义单日"时段按 2 小时分柱绘制柱状图。
-    /// 该端点字段可能随平台调整，解析做了容错；失败返回 null（前端回退单日柱）。
-    /// </summary>
-    private async Task<HourlyUsage[]?> FetchHourlyUsageAsync(string apiKey)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.deepseek.com/v1/usage");
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", apiKey);
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return ParseHourlyUsage(body);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 解析 /v1/usage 响应，把 items 转成 (日期, 小时, token 数)。
-    /// 字段名做多候选容错：时间戳尝试 timestamp/created/date 等，token 取 prompt+completion。
-    /// </summary>
-    private static HourlyUsage[]? ParseHourlyUsage(string body)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("items", out var items) ||
-                items.ValueKind != JsonValueKind.Array)
-            {
-                return null;
-            }
-            var list = new List<HourlyUsage>();
-            foreach (var item in items.EnumerateArray())
-            {
-                var time = TryReadTimestamp(item);
-                if (time == null)
+                if (date == todayKey)
                 {
-                    continue;
+                    todayByModel = perModel;
                 }
-                double tokens = 0;
-                TryReadTokens(item, ref tokens);
-                list.Add(new HourlyUsage(
-                    time.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    time.Value.Hour,
-                    tokens));
             }
-            return list.ToArray();
+            return new CostParseResult(daily.ToArray(), todayByModel);
         }
         catch
         {
             return null;
-        }
-    }
-
-    private static DateTimeOffset? TryReadTimestamp(JsonElement item)
-    {
-        foreach (var key in new[] { "timestamp", "created_at", "created", "time", "date" })
-        {
-            if (!item.TryGetProperty(key, out var v))
-            {
-                continue;
-            }
-            if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var raw))
-            {
-                // 毫秒或秒级 Unix 时间戳
-                return raw > 1_000_000_000_000
-                    ? DateTimeOffset.FromUnixTimeMilliseconds(raw)
-                    : DateTimeOffset.FromUnixTimeSeconds(raw);
-            }
-            if (v.ValueKind == JsonValueKind.String &&
-                DateTimeOffset.TryParse(
-                    v.GetString(),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AssumeLocal,
-                    out var parsed))
-            {
-                return parsed;
-            }
-        }
-        return null;
-    }
-
-    private static void TryReadTokens(JsonElement item, ref double tokens)
-    {
-        foreach (var key in new[] { "prompt_tokens", "completion_tokens" })
-        {
-            if (item.TryGetProperty(key, out var v) &&
-                v.ValueKind == JsonValueKind.Number &&
-                v.TryGetDouble(out var n))
-            {
-                tokens += n;
-            }
         }
     }
 
@@ -753,24 +617,10 @@ internal sealed class BalanceSession : IPaperBodySession
     /// </summary>
     private async Task<UsageDay[]?> FetchUsageAsync(string token, int year, int month)
     {
-        try
-        {
-            var url =
-                $"https://platform.deepseek.com/api/v0/usage/amount?month={month:D2}&year={year}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.TryAddWithoutValidation("x-app-version", "1.0.0");
-            request.Headers.TryAddWithoutValidation("Accept", "*/*");
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return ParseUsageResponse(body);
-        }
-        catch
-        {
-            return null;
-        }
+        var url =
+            $"https://platform.deepseek.com/api/v0/usage/amount?month={month:D2}&year={year}";
+        var body = await FetchJsonAsync(url, token, platformHeader: true);
+        return body == null ? null : ParseUsageResponse(body);
     }
 
     /// <summary>
@@ -821,8 +671,7 @@ internal sealed class BalanceSession : IPaperBodySession
                                        t.ValueKind == JsonValueKind.String
                                 ? t.GetString()
                                 : null;
-                            if (type is not ("PROMPT_TOKEN" or "PROMPT_CACHE_HIT_TOKEN"
-                                or "PROMPT_CACHE_MISS_TOKEN" or "RESPONSE_TOKEN"))
+                            if (!IsTokenType(type))
                             {
                                 continue;
                             }
@@ -905,7 +754,7 @@ internal sealed class BalanceSession : IPaperBodySession
         if (!picked.HasValue) picked = firstNonZero;
         if (picked.HasValue)
         {
-            return BalanceSnapshot.Ok(picked.Value, double.NaN);
+            return BalanceSnapshot.Ok(picked.Value);
         }
         return BalanceSnapshot.Error("未找到 total_balance");
     }
@@ -926,6 +775,12 @@ internal sealed class BalanceSession : IPaperBodySession
             value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var s) => s,
         _ => null
     };
+
+    /// <summary>
+    /// 是否为计入用量/消费的 token 类型（输入 / 缓存命中 / 缓存未命中 / 输出）。
+    /// </summary>
+    private static bool IsTokenType(string? type) => type is
+        "PROMPT_TOKEN" or "PROMPT_CACHE_HIT_TOKEN" or "PROMPT_CACHE_MISS_TOKEN" or "RESPONSE_TOKEN";
 
     /// <summary>
     /// 把设置里的货币符号映射为 DeepSeek balance_infos[*].currency 的币种代码。
@@ -952,10 +807,8 @@ internal sealed class BalanceSession : IPaperBodySession
         //     余额=20、阈值=20 → 1.0 Overrun（红，满圆）。
         // MiniMax：额度按时长计费，风险用"已消耗比例"（100 − 剩余百分比），
         // 圆环弧值用剩余百分比（current_interval_remaining_percent / 100）。
-        var isMiniMax = string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal);
-        double riskRatio = isMiniMax && _minimaxRemainingPercent.HasValue
-            ? Finite((100 - _minimaxRemainingPercent.Value) / 100.0)
-            : Finite(ComputeRiskRatio(snapshot.Remaining, _settings.BalanceThreshold));
+        var isMiniMax = IsMiniMax;
+        double riskRatio = ComputeRiskRatioForCurrent();
         var ringColor = RingColor(riskRatio);
         var ringArc = isMiniMax
             ? Math.Clamp(_minimaxRemainingPercent ?? 100, 0, 100) / 100.0
@@ -1097,22 +950,45 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             return 0;
         }
-        var raw = threshold / balance;
-        return raw < 0 ? 0 : raw;
+        return threshold / balance;
     }
 
-    private enum RiskState { NoThreshold, Safe, Warming, Danger, Overrun }
+    /// <summary>
+    /// 当前供应商是否为 MiniMax（额度按时长计费）。
+    /// </summary>
+    private bool IsMiniMax =>
+        string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 当前供应商的风险比例：MiniMax 用"已消耗比例"（100 − 剩余百分比），
+    /// DeepSeek 用阈值/余额；统一过滤 NaN/Infinity。
+    /// </summary>
+    private double ComputeRiskRatioForCurrent()
+    {
+        if (IsMiniMax && _minimaxRemainingPercent.HasValue)
+        {
+            return Finite((100 - _minimaxRemainingPercent.Value) / 100.0);
+        }
+        return Finite(ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold));
+    }
+
+    // v3.1 风险档位阈值（ClassifyRisk 与 RiskColor 共用）。
+    private const double RiskWarmingRatio = 0.5;
+    private const double RiskDangerRatio = 0.8;
+    private const double RiskOverrunRatio = 1.0;
+
+    private enum RiskState { Safe, Warming, Danger, Overrun }
 
     private static RiskState ClassifyRisk(double ratio)
     {
-        if (ratio >= 1.0) return RiskState.Overrun;
-        if (ratio >= 0.8) return RiskState.Danger;
-        if (ratio >= 0.5) return RiskState.Warming;
+        if (ratio >= RiskOverrunRatio) return RiskState.Overrun;
+        if (ratio >= RiskDangerRatio) return RiskState.Danger;
+        if (ratio >= RiskWarmingRatio) return RiskState.Warming;
         return RiskState.Safe;
     }
 
     /// <summary>
-    /// v3.1 颜色：Safe 绿 / Warming 黄 / Danger 橙 / Overrun 红 / NoThreshold 灰。
+    /// v3.1 颜色：Safe 绿 / Warming 黄 / Danger 橙 / Overrun 红。
     /// 宿主 ProgressRing 只接受单色，放弃 v3.1 的颜色渐变。
     /// </summary>
     private static string RingColor(double ratio) => ClassifyRisk(ratio) switch
@@ -1259,7 +1135,6 @@ internal sealed class BalanceSession : IPaperBodySession
             var pluginDirectory =
                 Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
                 ?? AppContext.BaseDirectory;
-            // 按供应商加载对应面板 HTML（DeepSeek / MiniMax / OpenCode Go 各自独立）。
             var htmlFile = HtmlFileNameFor(_settings.Provider);
             if (!File.Exists(Path.Combine(pluginDirectory, "web", htmlFile)))
             {
@@ -1364,6 +1239,7 @@ internal sealed class BalanceSession : IPaperBodySession
             }
             catch
             {
+                // 重载失败静默，页面将在下次导航尝试恢复。
             }
         }
     }
@@ -1384,6 +1260,7 @@ internal sealed class BalanceSession : IPaperBodySession
         }
         catch
         {
+            // 页面消息解析异常不影响面板主体，静默。
         }
     }
 
@@ -1400,8 +1277,7 @@ internal sealed class BalanceSession : IPaperBodySession
         var payload = BuildViewPayload();
         if (!_webViewReady || !_documentReady)
         {
-            // WebView2 未初始化或页面未就绪时缓存最新数据，
-            // 就绪后由 OnWebViewNavigationCompleted 补发。
+            // WebView2 未就绪时缓存，页面加载完成后由 OnWebViewNavigationCompleted 补发。
             _pendingPayload = payload;
             return;
         }
@@ -1410,7 +1286,7 @@ internal sealed class BalanceSession : IPaperBodySession
 
     private void PostPayload(string payload)
     {
-        // 主通道：postMessage 事件。
+        // 主通道 postMessage + 备用通道 ExecuteScriptAsync；WebView2 可能已销毁，吞异常。
         try
         {
             _webView.CoreWebView2?.PostWebMessageAsJson(payload);
@@ -1418,7 +1294,6 @@ internal sealed class BalanceSession : IPaperBodySession
         catch
         {
         }
-        // 备用通道：直接调用页面暴露的 __renderBalance，绕过消息监听。
         try
         {
             _webView.CoreWebView2?.ExecuteScriptAsync(
@@ -1437,11 +1312,8 @@ internal sealed class BalanceSession : IPaperBodySession
         var status = _snapshot.StatusText ?? "";
         var hasData = _snapshot.HasRemaining && !double.IsNaN(_snapshot.Remaining);
         // MiniMax：余额是时长额度，风险环用"已消耗比例"（100 − 剩余百分比）。
-        var isMiniMax = string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal);
-        // 防御：余额接口异常可能产生 NaN/Infinity，JSON 序列化会抛异常导致宿主崩溃，必须过滤。
-        var ratio = isMiniMax && _minimaxRemainingPercent.HasValue
-            ? Finite((100 - _minimaxRemainingPercent.Value) / 100.0)
-            : Finite(ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold));
+        var isMiniMax = IsMiniMax;
+        var ratio = ComputeRiskRatioForCurrent();
         var riskColor = ToHex(RiskColor(ratio));
 
         string statusKind;
@@ -1478,10 +1350,6 @@ internal sealed class BalanceSession : IPaperBodySession
             ["currencySymbol"] = isMiniMax ? "" : _settings.CurrencySymbol,
             ["ratio"] = ratio,
             ["riskColor"] = riskColor,
-            ["riskState"] = RiskStateText(ratio),
-            ["threshold"] = _settings.BalanceThreshold > 0
-                ? $"{_settings.CurrencySymbol}{FormatAmount(_settings.BalanceThreshold)}"
-                : "未设置提醒阈值，可在设置页配置",
             ["updateTime"] = hasData
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
@@ -1490,7 +1358,6 @@ internal sealed class BalanceSession : IPaperBodySession
             ["costTodayModels"] = BuildCostTodayByModels(),
             ["cost7d"] = BuildCost7dText(),
             ["cost7dFoot"] = BuildCost7dFoot(),
-            ["costDays7"] = BuildCostDays7Array(),
             ["todayTokens"] = Finite(BuildTodayTokens()),
             ["todayHit"] = Finite(BuildTodayHit()),
             ["cacheRate"] = FiniteOrNull(BuildTodayCacheRate()),
@@ -1498,7 +1365,6 @@ internal sealed class BalanceSession : IPaperBodySession
             ["remainingPercent"] = _minimaxRemainingPercent.HasValue
                 ? (double?)Math.Clamp(_minimaxRemainingPercent.Value, 0, 100)
                 : null,
-            ["hourly"] = BuildHourlyArray(),
             ["usage"] = BuildUsageArray()
         };
 
@@ -1553,25 +1419,6 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 小时粒度用量数组（date + hour + tokens），供前端单日时段按 2 小时分柱。
-    /// </summary>
-    private object[] BuildHourlyArray()
-    {
-        if (_hourlyUsage == null || _hourlyUsage.Length == 0)
-        {
-            return Array.Empty<object>();
-        }
-        return _hourlyUsage
-            .Select(h => (object)new Dictionary<string, object?>
-            {
-                ["date"] = h.Date,
-                ["hour"] = h.Hour,
-                ["tokens"] = Finite(h.Tokens)
-            })
-            .ToArray();
-    }
-
-    /// <summary>
     /// 今日各模型消费明细数组（按金额降序），用于"今日消费金额"卡片下方的模型分布。
     /// </summary>
     private object[] BuildCostTodayByModels()
@@ -1611,44 +1458,28 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 今日总 Token 用量；当天无数据返回 0。
+    /// 今日用量明细；当天无数据返回 null。
     /// </summary>
-    private double BuildTodayTokens()
-    {
-        if (_usageDays == null || _usageDays.Length == 0)
-        {
-            return 0;
-        }
-        var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var day = Array.Find(_usageDays, u => u.Date == key);
-        return day?.Tokens ?? 0;
-    }
-
-    /// <summary>
-    /// 今日缓存命中 Token 数；当天无数据返回 0。
-    /// </summary>
-    private double BuildTodayHit()
-    {
-        if (_usageDays == null || _usageDays.Length == 0)
-        {
-            return 0;
-        }
-        var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var day = Array.Find(_usageDays, u => u.Date == key);
-        return day?.CacheHit ?? 0;
-    }
-
-    /// <summary>
-    /// 今日缓存命中率（0~1）；当天无缓存数据返回 null。
-    /// </summary>
-    private double? BuildTodayCacheRate()
+    private UsageDay? FindTodayUsage()
     {
         if (_usageDays == null || _usageDays.Length == 0)
         {
             return null;
         }
         var key = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var day = Array.Find(_usageDays, u => u.Date == key);
+        return Array.Find(_usageDays, u => u.Date == key);
+    }
+
+    /// <summary>今日总 Token 用量；无数据返回 0。</summary>
+    private double BuildTodayTokens() => FindTodayUsage()?.Tokens ?? 0;
+
+    /// <summary>今日缓存命中 Token 数；无数据返回 0。</summary>
+    private double BuildTodayHit() => FindTodayUsage()?.CacheHit ?? 0;
+
+    /// <summary>今日缓存命中率（0~1）；当天无缓存数据返回 null。</summary>
+    private double? BuildTodayCacheRate()
+    {
+        var day = FindTodayUsage();
         if (day == null || (day.CacheHit + day.CacheMiss) <= 0)
         {
             return null;
@@ -1657,13 +1488,13 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 近 7 天（含今天）消费总额文本；无数据返回空字符串。
+    /// 近 7 天（含今天）消费总额；无数据返回 0。
     /// </summary>
-    private string BuildCost7dText()
+    private double SumLast7DaysCost()
     {
         if (_costDays == null || _costDays.Length == 0)
         {
-            return "";
+            return 0;
         }
         var now = DateTime.Now;
         var start = now.AddDays(-6).Date;
@@ -1677,6 +1508,13 @@ internal sealed class BalanceSession : IPaperBodySession
                 total += day.Cost;
             }
         }
+        return total;
+    }
+
+    /// <summary>近 7 天消费总额文本；无数据返回空。</summary>
+    private string BuildCost7dText()
+    {
+        var total = SumLast7DaysCost();
         if (total <= 0)
         {
             return "";
@@ -1685,8 +1523,7 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 近 7 天日均消费文案（"日均 ¥X.XX"，两位小数）。
-    /// 只要消费数据源存在就返回（可能为 ¥0.00）；完全无数据时才隐藏。
+    /// 近 7 天日均消费文案（"日均 ¥X.XX"）；数据源存在即返回（可能为 ¥0.00）。
     /// </summary>
     private string BuildCost7dFoot()
     {
@@ -1694,49 +1531,9 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             return "";
         }
-        var now = DateTime.Now;
-        var start = now.AddDays(-6).Date;
-        double total = 0;
-        for (var d = start; d <= now.Date; d = d.AddDays(1))
-        {
-            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var day = Array.Find(_costDays, c => c.Date == key);
-            if (day != null)
-            {
-                total += day.Cost;
-            }
-        }
-        var avg = total / 7.0;
+        var avg = SumLast7DaysCost() / 7.0;
         return "日均 " + _settings.CurrencySymbol +
             avg.ToString("0.00", CultureInfo.CurrentCulture);
-    }
-
-    /// <summary>
-    /// 近 7 天每日消费明细数组（date + 格式化金额），供"近 7 天消费"悬停展开。
-    /// </summary>
-    private object[] BuildCostDays7Array()
-    {
-        if (_costDays == null || _costDays.Length == 0)
-        {
-            return Array.Empty<object>();
-        }
-        var now = DateTime.Now;
-        var start = now.AddDays(-6).Date;
-        var items = new List<Dictionary<string, object?>>();
-        for (var d = start; d <= now.Date; d = d.AddDays(1))
-        {
-            var key = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var day = Array.Find(_costDays, c => c.Date == key);
-            items.Add(new Dictionary<string, object?>
-            {
-                ["date"] = d.ToString("MM-dd", CultureInfo.InvariantCulture),
-                ["costText"] = _settings.CurrencySymbol +
-                    (day != null
-                        ? day.Cost.ToString("0.00", CultureInfo.CurrentCulture)
-                        : "0.00")
-            });
-        }
-        return items.Cast<object>().ToArray();
     }
 
     /// <summary>
@@ -1781,17 +1578,17 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             return RiskGray;
         }
-        if (ratio >= 1.0)
+        if (ratio >= RiskOverrunRatio)
         {
             return RiskRed;
         }
-        if (ratio >= 0.8)
+        if (ratio >= RiskDangerRatio)
         {
-            return Lerp(RiskYellow, RiskOrange, (ratio - 0.8) / 0.2);
+            return Lerp(RiskYellow, RiskOrange, (ratio - RiskDangerRatio) / 0.2);
         }
-        if (ratio >= 0.5)
+        if (ratio >= RiskWarmingRatio)
         {
-            return Lerp(RiskGreen, RiskYellow, (ratio - 0.5) / 0.3);
+            return Lerp(RiskGreen, RiskYellow, (ratio - RiskWarmingRatio) / 0.3);
         }
         return RiskGreen;
     }
@@ -1804,17 +1601,5 @@ internal sealed class BalanceSession : IPaperBodySession
             (byte)(from.G + (to.G - from.G) * t),
             (byte)(from.B + (to.B - from.B) * t));
     }
-
-    /// <summary>
-    /// 风险状态文案（v3.1 语义）。
-    /// </summary>
-    private static string RiskStateText(double ratio) => ratio switch
-    {
-        <= 0 => "未配置提醒阈值",
-        >= 1.0 => "余额低于提醒阈值",
-        >= 0.8 => "余额偏低",
-        >= 0.5 => "接近提醒阈值",
-        _ => "余额充足"
-    };
 
 }
