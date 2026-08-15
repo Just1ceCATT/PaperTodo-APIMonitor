@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MiniMax 额度监测</title>
+<style>
+:root{
+  --bg:#11110f;--s:#181815;--line:#30302a;
+  --text:#ebe9e1;--muted:#918f86;--dim:#65645d;
+  --green:#78d47d;--warn:#e6c66a;--danger:#e28787;
+  --serif:"Iowan Old Style","Palatino Linotype","Book Antiqua","Noto Serif SC","Songti SC","STSong",serif;
+  --sans:Inter,"Segoe UI","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html{height:100%}
+body{margin:0;width:100%;height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;overflow-y:auto}
+.panel{width:100%;min-height:100vh;background:var(--s);border:0;border-radius:0 0 18px 18px;overflow:hidden}
+main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px)}
+.top{display:flex;align-items:center;gap:clamp(14px,2.6vw,22px);margin-bottom:clamp(16px,3vw,24px)}
+.balance-block{flex:1;min-width:0;display:flex;justify-content:space-between;align-items:flex-start;gap:clamp(10px,2vw,16px)}
+.label{color:var(--muted);font:clamp(11px,1.9vw,12px) var(--serif);margin-bottom:8px}
+.balance{display:flex;align-items:baseline;gap:6px}
+.number{font:500 clamp(42px,7vw,54px)/1 var(--serif);letter-spacing:-2px}
+.currency{color:var(--muted);font:clamp(13px,2.2vw,16px) var(--serif);margin-left:3px}
+.updated{margin-top:9px;color:var(--dim);font-size:clamp(10px,1.7vw,11px)}
+.status{text-align:right;padding-top:4px}
+.status-main{display:flex;align-items:center;justify-content:flex-end;gap:7px;color:var(--green);font:600 13px var(--serif)}
+.status-main.err{color:var(--danger)}
+.status-main.warn{color:var(--warn)}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.status-dot.err{background:var(--danger)}
+.status-dot.warn{background:var(--warn)}
+.status-sub{margin-top:6px;color:var(--dim);font-size:10px}
+.ring{width:clamp(54px,9.5vw,64px);height:clamp(54px,9.5vw,64px);border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--green) 0 0%,#383833 0% 100%);position:relative;flex:none}
+.ring:after{content:"";position:absolute;inset:clamp(5px,0.9vw,6px);border-radius:50%;background:var(--s)}
+.ring span{position:relative;z-index:1;font:600 clamp(11px,2.1vw,14px) var(--serif);color:var(--green)}
+.ring.warn span,.ring.warn{color:var(--warn)}
+.ring.danger span,.ring.danger{color:var(--danger)}
+.health{display:flex;justify-content:space-between;align-items:center;padding:clamp(12px,2vw,15px) 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:clamp(16px,3vw,22px)}
+.health-title strong{font:600 clamp(13px,2.4vw,14px) var(--serif)}
+.health-title span{color:var(--muted);font:clamp(11px,1.9vw,11px) var(--serif)}
+.progress{margin-top:clamp(8px,1.4vw,10px);height:4px;background:#30302c;overflow:hidden}
+.progress i{display:block;width:0%;height:100%;background:var(--green);transition:width .25s ease, background-color .2s ease}
+.progress.warn i{background:var(--warn)}
+.progress.danger i{background:var(--danger)}
+.models{font-family:var(--serif)}
+.models-title{font:600 clamp(14px,2.6vw,16px) var(--serif);margin-bottom:clamp(10px,1.8vw,14px)}
+.model-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:clamp(8px,1.4vw,11px) 0;border-bottom:1px solid var(--line)}
+.model-row:last-child{border-bottom:0}
+.model-name{color:var(--text);font-size:clamp(12px,2.1vw,14px)}
+.model-info{color:var(--muted);font-size:clamp(11px,1.9vw,12px);text-align:right}
+.model-info b{color:var(--text)}
+.model-bar{margin-top:4px;height:3px;background:#30302c;overflow:hidden}
+.model-bar i{display:block;height:100%;background:var(--green)}
+.bottom{display:flex;justify-content:space-between;margin-top:clamp(12px,2.2vw,16px);color:var(--dim);font:clamp(9px,1.6vw,10px) var(--serif)}
+@media(max-width:520px){
+  main{padding:21px 18px 17px}
+  .top{display:block}
+  .status{text-align:left;margin-top:14px}
+  .status-main{justify-content:flex-start}
+  .number{font-size:47px}
+}
+</style>
+</head>
+<body>
+<section class="panel">
+<main>
+  <!-- 剩余额度 + 状态 -->
+  <div class="top">
+    <div class="ring" id="ring"><span id="ringPct">--%</span></div>
+    <div class="balance-block">
+      <div>
+        <div class="label">剩余额度</div>
+        <div class="balance">
+          <span class="number" id="number">—</span>
+          <span class="currency" id="currency">小时</span>
+        </div>
+        <div class="updated" id="updated">最后检测 · —</div>
+      </div>
+      <div class="status">
+        <div class="status-main" id="statusMain"><i class="status-dot" id="statusDot"></i><span id="statusText">等待数据…</span></div>
+        <div class="status-sub" id="statusSub">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 额度使用进度 -->
+  <div class="health">
+    <div class="health-title">
+      <strong>额度使用</strong>
+      <span id="remainText">剩余 --%</span>
+    </div>
+  </div>
+  <div class="progress" id="progress"><i></i></div>
+
+  <!-- 各模型额度 -->
+  <section class="models" style="margin-top:clamp(16px,3vw,22px)">
+    <div class="models-title">模型额度</div>
+    <div id="modelList"></div>
+  </section>
+
+  <div class="bottom">
+    <span>MiniMax Coding Plan</span>
+    <span id="updateTime">—</span>
+  </div>
+</main>
+</section>
+<script>
+"use strict";
+var bridge = window.chrome && window.chrome.webview;
+
+function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
+
+function applyRiskTone(el, ratio) {
+  el.classList.remove("warn", "danger");
+  if (ratio >= 1) el.classList.add("danger");
+  else if (ratio >= 0.8) el.classList.add("warn");
+}
+
+function applyTheme(t) {
+  if (!t) return;
+  var r = document.documentElement.style;
+  r.setProperty("--text", t.text || "#ebe9e1");
+  r.setProperty("--muted", t.weak || "#918f86");
+  r.setProperty("--green", t.accent || "#78d47d");
+  r.setProperty("--bg", t.paper || "#181815");
+}
+
+function render(msg) {
+  if (!msg) return;
+  var d = msg.data || {};
+  applyTheme(msg.theme);
+
+  // 状态
+  var main = document.getElementById("statusMain");
+  var dot = document.getElementById("statusDot");
+  main.classList.remove("err", "warn");
+  dot.classList.remove("err", "warn");
+  if (d.statusKind === "ok") {
+    setText("statusText", "在线"); setText("statusSub", "额度正常");
+  } else if (d.statusKind === "error") {
+    main.classList.add("err"); dot.classList.add("err");
+    setText("statusText", d.status || "错误"); setText("statusSub", "请求异常");
+  } else {
+    main.classList.add("warn"); dot.classList.add("warn");
+    setText("statusText", d.status || "未配置"); setText("statusSub", "请在设置页填写");
+  }
+
+  // 剩余额度（小时）
+  var has = d.balance !== "—";
+  setText("number", d.balance !== "—" ? d.balance : "—");
+  setText("currency", d.currency || "小时");
+  setText("updated", "最后检测 · " + (d.updateTime || "—"));
+
+  // 环 + 进度：消耗比例
+  var ratio = d.ratio || 0;
+  var pct = Math.round(Math.max(0, Math.min(ratio, 1)) * 100);
+  setText("ringPct", has && d.remainingPercent != null ? Math.round(d.remainingPercent) + "%" : "--");
+  var ring = document.getElementById("ring");
+  ring.style.background = "conic-gradient(" + (d.riskColor || "#78d47d") + " 0 " + pct + "%, #383833 " + pct + "% 100%)";
+  applyRiskTone(ring, ratio);
+  ring.firstElementChild && (ring.firstElementChild.style.color = d.riskColor || "#78d47d");
+  var bar = document.querySelector(".progress i");
+  bar.style.width = pct + "%";
+  bar.style.background = d.riskColor || "#78d47d";
+  applyRiskTone(document.getElementById("progress"), ratio);
+  setText("remainText", d.remainingPercent != null ? "剩余 " + Math.round(d.remainingPercent) + "%" : "剩余 --%");
+
+  // 各模型额度
+  var box = document.getElementById("modelList");
+  box.innerHTML = "";
+  (d.modelRemains || []).forEach(function (m) {
+    var row = document.createElement("div");
+    row.className = "model-row";
+    var name = document.createElement("div");
+    name.className = "model-name";
+    name.textContent = m.model;
+    var info = document.createElement("div");
+    info.className = "model-info";
+    var mb = document.createElement("div");
+    mb.className = "model-bar";
+    var fill = document.createElement("i");
+    fill.style.width = Math.max(0, Math.min(100, m.percent || 0)) + "%";
+    mb.appendChild(fill);
+    info.innerHTML = "剩余 <b>" + m.hours + "</b> 小时 · " + Math.round(m.percent || 0) + "%";
+    var left = document.createElement("div");
+    left.style.flex = "1";
+    left.appendChild(name);
+    left.appendChild(mb);
+    row.appendChild(left);
+    row.appendChild(info);
+    box.appendChild(row);
+  });
+  if (!(d.modelRemains || []).length) {
+    box.innerHTML = '<div class="model-row"><span class="model-name">—</span></div>';
+  }
+
+  setText("updateTime", d.updateTime || "—");
+}
+
+window.__renderBalance = function (msg) { try { render(msg); } catch (e) {} };
+if (bridge) {
+  bridge.addEventListener("message", function (e) { try { render(JSON.parse(e.data)); } catch (e) {} });
+  bridge.postMessage({ type: "ready" });
+}
+</script>
+</body>
+</html>

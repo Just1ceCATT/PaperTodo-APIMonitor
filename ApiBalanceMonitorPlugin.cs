@@ -99,6 +99,7 @@ internal sealed class BalanceSession : IPaperBodySession
     private Dictionary<string, double>? _costTodayByModel;
     private Dictionary<string, double>? _costYesterdayByModel;
     private double? _minimaxRemainingPercent;
+    private List<(string Model, double Percent, double Hours)>? _minimaxModelRemains;
     private HourlyUsage[]? _hourlyUsage;
     private PaperBodyTheme _theme;
 
@@ -261,10 +262,17 @@ internal sealed class BalanceSession : IPaperBodySession
 
     private void ApplySettings(BalanceSettings s)
     {
+        var providerChanged = !string.Equals(
+            _settings.Provider, s.Provider, StringComparison.Ordinal);
         _settings = s;
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
         _timer.Interval = interval;
+        // 供应商切换：重新加载对应面板 HTML（若 WebView2 已就绪）。
+        if (providerChanged && _webViewReady)
+        {
+            ReloadPanelForProvider();
+        }
         if (!_timer.IsEnabled)
         {
             _timer.Start();
@@ -414,6 +422,7 @@ internal sealed class BalanceSession : IPaperBodySession
             }
             JsonElement best = default;
             var found = false;
+            var modelList = new List<(string Model, double Percent, double Hours)>();
             foreach (var m in remains.EnumerateArray())
             {
                 if (m.ValueKind != JsonValueKind.Object)
@@ -424,6 +433,15 @@ internal sealed class BalanceSession : IPaperBodySession
                            n.ValueKind == JsonValueKind.String
                     ? n.GetString()
                     : "";
+                var ms = TryReadNumber(m, "remains_time");
+                var pct = TryReadNumber(m, "current_interval_remaining_percent");
+                if (ms.HasValue)
+                {
+                    modelList.Add((
+                        string.IsNullOrEmpty(name) ? "model" : name,
+                        pct ?? 100,
+                        ms.Value / 3600000.0));
+                }
                 if (!found || name == "general")
                 {
                     best = m;
@@ -434,6 +452,7 @@ internal sealed class BalanceSession : IPaperBodySession
                     break;
                 }
             }
+            _minimaxModelRemains = modelList;
             if (!found)
             {
                 return BalanceSnapshot.Error("无模型数据");
@@ -1149,6 +1168,34 @@ internal sealed class BalanceSession : IPaperBodySession
         _viewRoot.SizeChanged += OnViewRootSizeChanged;
     }
 
+    /// <summary>
+    /// 按供应商选择面板 HTML 文件。DeepSeek / MiniMax / OpenCode Go 各自独立面板。
+    /// </summary>
+    private static string HtmlFileNameFor(string provider) => provider switch
+    {
+        "minimax" => "minimax.html",
+        "opencode" => "opencode.html",
+        _ => "monitor.html"
+    };
+
+    /// <summary>
+    /// 供应商切换后重新导航 WebView2 到对应供应商的面板 HTML。
+    /// </summary>
+    private void ReloadPanelForProvider()
+    {
+        _documentReady = false;
+        _pendingPayload = null;
+        const string hostName = "papertodo.balance.monitor.local";
+        var htmlFile = HtmlFileNameFor(_settings.Provider);
+        try
+        {
+            _webView.CoreWebView2?.Navigate($"https://{hostName}/web/{htmlFile}");
+        }
+        catch
+        {
+        }
+    }
+
     private void OnViewRootLoaded(object sender, RoutedEventArgs e) => TryStartWebView();
 
     private void OnViewRootSizeChanged(object sender, SizeChangedEventArgs e) => TryStartWebView();
@@ -1191,9 +1238,11 @@ internal sealed class BalanceSession : IPaperBodySession
             var pluginDirectory =
                 Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
                 ?? AppContext.BaseDirectory;
-            if (!File.Exists(Path.Combine(pluginDirectory, "web", "monitor.html")))
+            // 按供应商加载对应面板 HTML（DeepSeek / MiniMax / OpenCode Go 各自独立）。
+            var htmlFile = HtmlFileNameFor(_settings.Provider);
+            if (!File.Exists(Path.Combine(pluginDirectory, "web", htmlFile)))
             {
-                throw new InvalidOperationException("缺少 web/monitor.html。");
+                throw new InvalidOperationException($"缺少 web/{htmlFile}。");
             }
 
             // 对齐宿主 web 插件方式：虚拟主机映射到插件目录，避免 file:// 的潜在限制。
@@ -1214,7 +1263,7 @@ internal sealed class BalanceSession : IPaperBodySession
             }
 
             _webViewReady = true;
-            core.Navigate($"https://{hostName}/web/monitor.html");
+            core.Navigate($"https://{hostName}/web/{htmlFile}");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -1424,6 +1473,10 @@ internal sealed class BalanceSession : IPaperBodySession
             ["todayTokens"] = Finite(BuildTodayTokens()),
             ["todayHit"] = Finite(BuildTodayHit()),
             ["cacheRate"] = FiniteOrNull(BuildTodayCacheRate()),
+            ["modelRemains"] = BuildMiniMaxModelRemains(),
+            ["remainingPercent"] = _minimaxRemainingPercent.HasValue
+                ? (double?)Math.Clamp(_minimaxRemainingPercent.Value, 0, 100)
+                : null,
             ["hourly"] = BuildHourlyArray(),
             ["usage"] = BuildUsageArray()
         };
@@ -1513,6 +1566,25 @@ internal sealed class BalanceSession : IPaperBodySession
             {
                 ["model"] = kv.Key,
                 ["costText"] = sym + kv.Value.ToString("0.00", CultureInfo.CurrentCulture)
+            })
+            .ToArray();
+    }
+
+    /// <summary>
+    /// MiniMax 各模型剩余额度数组（供 minimax.html 渲染）：model + 剩余百分比 + 剩余小时。
+    /// </summary>
+    private object[] BuildMiniMaxModelRemains()
+    {
+        if (_minimaxModelRemains == null || _minimaxModelRemains.Count == 0)
+        {
+            return Array.Empty<object>();
+        }
+        return _minimaxModelRemains
+            .Select(x => (object)new Dictionary<string, object?>
+            {
+                ["model"] = x.Model,
+                ["percent"] = Math.Clamp(x.Percent, 0, 100),
+                ["hours"] = Math.Round(x.Hours, 1)
             })
             .ToArray();
     }
