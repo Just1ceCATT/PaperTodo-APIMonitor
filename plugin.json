@@ -13,11 +13,41 @@
   ],
   "settings": [
     {
-      "id": "apiKey",
+      "id": "provider",
+      "type": "select",
+      "name": "模型供应商",
+      "description": "切换供应商后，余额监测使用对应供应商的 API Key。各供应商的 Key 独立存储。",
+      "default": "deepseek",
+      "options": [
+        { "value": "deepseek", "name": "DeepSeek" },
+        { "value": "minimax", "name": "MiniMax" },
+        { "value": "opencode", "name": "OpenCode Go" }
+      ]
+    },
+    {
+      "id": "deepseekApiKey",
       "type": "string",
-      "name": "API Key（Bearer）",
-      "description": "⚠️ 本地明文存储。建议使用仅具备只读权限的子 key。重启 PaperTodo 后会自动从此设置读回。",
+      "name": "DeepSeek API Key",
+      "description": "⚠️ 本地明文存储。仅 DeepSeek 供应商使用；切换供应商时不会复用它。",
       "placeholder": "sk-…",
+      "maxLength": 400,
+      "default": ""
+    },
+    {
+      "id": "minimaxApiKey",
+      "type": "string",
+      "name": "MiniMax API Key",
+      "description": "⚠️ 本地明文存储。仅 MiniMax 供应商使用；切换供应商时不会复用它。",
+      "placeholder": "MiniMax key",
+      "maxLength": 400,
+      "default": ""
+    },
+    {
+      "id": "opencodeApiKey",
+      "type": "string",
+      "name": "OpenCode Go API Key",
+      "description": "⚠️ 本地明文存储。仅 OpenCode Go 供应商使用；切换供应商时不会复用它。",
+      "placeholder": "opencode key",
       "maxLength": 400,
       "default": ""
     },

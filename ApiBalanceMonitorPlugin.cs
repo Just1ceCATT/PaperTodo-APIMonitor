@@ -43,6 +43,7 @@ public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
 }
 
 internal sealed record BalanceSettings(
+    string Provider,
     string ApiKey,
     string UsageToken,
     int PollSeconds,
@@ -184,8 +185,25 @@ internal sealed class BalanceSession : IPaperBodySession
         {
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
             var root = doc.RootElement;
+            var provider = ReadString(root, "provider", "deepseek");
+            // 各供应商的 Key 独立存储；切换供应商读取对应 Key（未填则为空）。
+            // 旧版单一 apiKey 字段作为 DeepSeek 的兼容迁移来源。
+            var deepseekKey = ReadString(root, "deepseekApiKey", "");
+            if (string.IsNullOrEmpty(deepseekKey))
+            {
+                deepseekKey = ReadString(root, "apiKey", "");
+            }
+            var minimaxKey = ReadString(root, "minimaxApiKey", "");
+            var opencodeKey = ReadString(root, "opencodeApiKey", "");
+            var apiKey = provider switch
+            {
+                "minimax" => minimaxKey,
+                "opencode" => opencodeKey,
+                _ => deepseekKey
+            };
             return new BalanceSettings(
-                ReadString(root, "apiKey", ""),
+                provider,
+                apiKey,
                 ReadString(root, "usageToken", ""),
                 ReadInt(root, "pollSeconds", 60),
                 ReadString(root, "currencySymbol", "¥"),
@@ -194,7 +212,7 @@ internal sealed class BalanceSession : IPaperBodySession
         }
         catch
         {
-            return new BalanceSettings("", "", 60, "¥", 20.0, true);
+            return new BalanceSettings("deepseek", "", "", 60, "¥", 20.0, true);
         }
     }
 
