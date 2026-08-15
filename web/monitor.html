@@ -48,6 +48,10 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .green{color:var(--green)}
 .metric-foot{margin-top:clamp(5px,0.9vw,6px);color:var(--dim);font-family:var(--serif);font-size:clamp(12px,2vw,13px)}
 .metric-foot + .metric-foot{margin-top:clamp(2px,0.5vw,3px)}
+.metric-models{margin-top:clamp(4px,0.8vw,6px);display:flex;flex-direction:column;gap:clamp(2px,0.4vw,3px);font-family:var(--serif);font-size:clamp(10px,1.6vw,11px);color:var(--muted)}
+.metric-model-row{display:flex;justify-content:space-between;gap:8px}
+.metric-model-row .m-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.metric-model-row .m-val{color:var(--text);font-variant-numeric:tabular-nums}
 .chart-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:13px}
 .chart-title{font:600 15px var(--serif)}
 .chart-caption{color:var(--dim);font:10px var(--serif);margin-top:3px}
@@ -109,9 +113,10 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
   <!-- 三指标卡 -->
   <section class="metrics">
     <div class="metric">
-      <div class="metric-label">今日消耗</div>
+      <div class="metric-label">今日消费金额</div>
       <div class="metric-value" id="costToday" style="color:#fff">—</div>
       <div class="metric-foot" id="costTodayFoot" style="color:var(--dim)"></div>
+      <div class="metric-models" id="costTodayModels"></div>
     </div>
     <div class="metric">
       <div class="metric-label">近 7 日</div>
@@ -259,6 +264,25 @@ function render(msg) {
       tFoot.textContent = d.costTodayFoot;
     }
   } else { tFoot.style.display = "none"; }
+  // 各模型消费明细（≥2 个模型才展示）
+  var mBox = document.getElementById("costTodayModels");
+  mBox.innerHTML = "";
+  if (d.costTodayModels && d.costTodayModels.length >= 2) {
+    mBox.style.display = "";
+    d.costTodayModels.forEach(function (m) {
+      var row = document.createElement("div");
+      row.className = "metric-model-row";
+      var name = document.createElement("span");
+      name.className = "m-name";
+      name.textContent = m.model;
+      var val = document.createElement("span");
+      val.className = "m-val";
+      val.textContent = m.costText;
+      row.appendChild(name);
+      row.appendChild(val);
+      mBox.appendChild(row);
+    });
+  } else { mBox.style.display = "none"; }
   setText("cost7d", d.cost7d || "—");
   var f7 = document.getElementById("cost7dFoot");
   if (d.cost7dFoot) { f7.textContent = d.cost7dFoot; f7.style.display = ""; }

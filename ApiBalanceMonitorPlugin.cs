@@ -94,6 +94,9 @@ internal sealed class BalanceSession : IPaperBodySession
     private int _polling;
     private UsageDay[]? _usageDays;
     private CostDay[]? _costDays;
+    // 今日各模型消费明细：model -> cost（元）。仅保留今日与昨日，便于卡片展示。
+    private Dictionary<string, double>? _costTodayByModel;
+    private Dictionary<string, double>? _costYesterdayByModel;
     private HourlyUsage[]? _hourlyUsage;
     private PaperBodyTheme _theme;
 
@@ -285,7 +288,7 @@ internal sealed class BalanceSession : IPaperBodySession
                 ? Task.FromResult<UsageDay[]?>(null)
                 : FetchUsageForRecentMonthsAsync(_settings.UsageToken, now);
             var costTask = string.IsNullOrWhiteSpace(_settings.UsageToken)
-                ? Task.FromResult<CostDay[]?>(null)
+                ? Task.FromResult<(CostDay[]? Days, Dictionary<string, double>? TodayByModel, Dictionary<string, double>? YesterdayByModel)>((null, null, null))
                 : FetchCostForRecentMonthsAsync(_settings.UsageToken, now);
             // 小时粒度用量（/v1/usage，用 API Key），用于"今天/昨天/单日"按 2 小时分柱。
             // 小时粒度用量：探测过所有常用端点均无小时粒度数据（只 /v1/usage 返回 404，
@@ -297,7 +300,9 @@ internal sealed class BalanceSession : IPaperBodySession
 
             await Task.WhenAll(balanceTask, usageTask, costTask, hourlyTask).ConfigureAwait(true);
             _usageDays = usageTask.Result;
-            _costDays = costTask.Result;
+            _costDays = costTask.Result.Days;
+            _costTodayByModel = costTask.Result.TodayByModel;
+            _costYesterdayByModel = costTask.Result.YesterdayByModel;
             _hourlyUsage = hourlyTask.Result;
             UpdateSnapshot(balanceTask.Result);
         }
@@ -358,9 +363,10 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 拉取上个月 + 本月的每日消费并合并，供"近 7 天消费"统计。
+    /// 拉取上个月 + 本月的每日消费并合并，同时保留今日/昨日各模型明细。
     /// </summary>
-    private async Task<CostDay[]?> FetchCostForRecentMonthsAsync(string token, DateTime now)
+    private async Task<(CostDay[]? Days, Dictionary<string, double>? TodayByModel, Dictionary<string, double>? YesterdayByModel)>
+        FetchCostForRecentMonthsAsync(string token, DateTime now)
     {
         var thisMonth = new DateTime(now.Year, now.Month, 1);
         var lastMonth = thisMonth.AddMonths(-1);
@@ -371,18 +377,19 @@ internal sealed class BalanceSession : IPaperBodySession
         var last = lastTask.Result;
         if (current == null && last == null)
         {
-            return null;
+            return (null, null, null);
         }
         var list = new List<CostDay>();
-        if (last != null) list.AddRange(last);
-        if (current != null) list.AddRange(current);
-        return list.ToArray();
+        if (last != null) list.AddRange(last.Days);
+        if (current != null) list.AddRange(current.Days);
+        return (list.ToArray(), current?.TodayByModel, current?.YesterdayByModel);
     }
 
     /// <summary>
     /// v3.1 收集方式：调用 platform.deepseek.com 消费接口拉取指定月份每日消费（元）。
+    /// 返回每日总额 + 今日/昨日各模型明细。
     /// </summary>
-    private async Task<CostDay[]?> FetchCostAsync(string token, int year, int month)
+    private async Task<CostParseResult?> FetchCostAsync(string token, int year, int month)
     {
         try
         {
@@ -405,11 +412,19 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 解析消费接口响应，汇总每天的金额。
-    /// 响应：{ data: { biz_data: [ { days: [ { date, data: [ { usage: [ { type, amount } ] } ] } ] } ] } }
+    /// 消费接口解析结果：每日总额 + 今日/昨日各模型明细。
+    /// </summary>
+    private sealed record CostParseResult(
+        CostDay[] Days,
+        Dictionary<string, double>? TodayByModel,
+        Dictionary<string, double>? YesterdayByModel);
+
+    /// <summary>
+    /// 解析消费接口响应，汇总每天的金额；同时保留今日/昨日各模型明细。
+    /// 响应：{ data: { biz_data: [ { days: [ { date, data: [ { model, usage: [ { type, amount } ] } ] } ] } ] } }
     /// amount 为元；费用类型与用量一致，逐条汇总即可。
     /// </summary>
-    private static CostDay[]? ParseCostResponse(string body)
+    private static CostParseResult? ParseCostResponse(string body)
     {
         try
         {
@@ -423,7 +438,11 @@ internal sealed class BalanceSession : IPaperBodySession
                 return null;
             }
             var biz = bizArr.EnumerateArray().First();
-            var result = new List<CostDay>();
+            var daily = new List<CostDay>();
+            Dictionary<string, double>? todayByModel = null;
+            Dictionary<string, double>? yesterdayByModel = null;
+            var todayKey = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var yesterdayKey = DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             if (!biz.TryGetProperty("days", out var days) ||
                 days.ValueKind != JsonValueKind.Array)
             {
@@ -440,16 +459,22 @@ internal sealed class BalanceSession : IPaperBodySession
                     continue;
                 }
                 double total = 0;
+                var perModel = new Dictionary<string, double>();
                 if (day.TryGetProperty("data", out var dataArr) &&
                     dataArr.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var modelUsage in dataArr.EnumerateArray())
                     {
+                        var model = modelUsage.TryGetProperty("model", out var m) &&
+                                    m.ValueKind == JsonValueKind.String
+                            ? m.GetString() ?? ""
+                            : "";
                         if (!modelUsage.TryGetProperty("usage", out var usageArr) ||
                             usageArr.ValueKind != JsonValueKind.Array)
                         {
                             continue;
                         }
+                        double modelTotal = 0;
                         foreach (var entry in usageArr.EnumerateArray())
                         {
                             var type = entry.TryGetProperty("type", out var t) &&
@@ -467,13 +492,20 @@ internal sealed class BalanceSession : IPaperBodySession
                                     CultureInfo.InvariantCulture, out var v))
                             {
                                 total += v;
+                                modelTotal += v;
                             }
+                        }
+                        if (modelTotal > 0)
+                        {
+                            perModel[model] = modelTotal;
                         }
                     }
                 }
-                result.Add(new CostDay(date, total));
+                daily.Add(new CostDay(date, total));
+                if (date == todayKey) todayByModel = perModel;
+                else if (date == yesterdayKey) yesterdayByModel = perModel;
             }
-            return result.ToArray();
+            return new CostParseResult(daily.ToArray(), todayByModel, yesterdayByModel);
         }
         catch
         {
@@ -1240,6 +1272,7 @@ internal sealed class BalanceSession : IPaperBodySession
                 : "",
             ["costToday"] = BuildCostTodayText(),
             ["costTodayFoot"] = BuildCostTodayFoot(),
+            ["costTodayModels"] = BuildCostTodayByModels(),
             ["cost7d"] = BuildCost7dText(),
             ["cost7dFoot"] = BuildCost7dFoot(),
             ["costDays7"] = BuildCostDays7Array(),
@@ -1315,6 +1348,26 @@ internal sealed class BalanceSession : IPaperBodySession
                 ["date"] = h.Date,
                 ["hour"] = h.Hour,
                 ["tokens"] = h.Tokens
+            })
+            .ToArray();
+    }
+
+    /// <summary>
+    /// 今日各模型消费明细数组（按金额降序），用于"今日消费金额"卡片下方的模型分布。
+    /// </summary>
+    private object[] BuildCostTodayByModels()
+    {
+        if (_costTodayByModel == null || _costTodayByModel.Count == 0)
+        {
+            return Array.Empty<object>();
+        }
+        var sym = _settings.CurrencySymbol;
+        return _costTodayByModel
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => (object)new Dictionary<string, object?>
+            {
+                ["model"] = kv.Key,
+                ["costText"] = sym + kv.Value.ToString("0.00", CultureInfo.CurrentCulture)
             })
             .ToArray();
     }
