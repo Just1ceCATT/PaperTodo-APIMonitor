@@ -98,6 +98,7 @@ internal sealed class BalanceSession : IPaperBodySession
     // 今日各模型消费明细：model -> cost（元）。仅保留今日与昨日，便于卡片展示。
     private Dictionary<string, double>? _costTodayByModel;
     private Dictionary<string, double>? _costYesterdayByModel;
+    private double? _minimaxRemainingPercent;
     private HourlyUsage[]? _hourlyUsage;
     private PaperBodyTheme _theme;
 
@@ -342,6 +343,16 @@ internal sealed class BalanceSession : IPaperBodySession
 
     private async Task<BalanceSnapshot> FetchBalanceAsync()
     {
+        // 按供应商分发余额接口。
+        if (string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal))
+        {
+            return await FetchMiniMaxBalanceAsync().ConfigureAwait(false);
+        }
+        if (string.Equals(_settings.Provider, "opencode", StringComparison.Ordinal))
+        {
+            return BalanceSnapshot.Error("尚未适配该供应商");
+        }
+        // DeepSeek（默认）
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, DeepSeekBalanceUrl);
@@ -355,6 +366,91 @@ internal sealed class BalanceSession : IPaperBodySession
         catch (Exception ex)
         {
             return BalanceSnapshot.Error(ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// MiniMax Coding Plan 用量接口：GET /v1/api/openplatform/coding_plan/remains。
+    /// 返回 current_interval_total_count（总额度）与 current_interval_usage_count（已用），
+    /// 剩余 = 总额 - 已用。
+    /// </summary>
+    private async Task<BalanceSnapshot> FetchMiniMaxBalanceAsync()
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains");
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return ParseMiniMaxBalanceResponse(body);
+        }
+        catch (Exception ex)
+        {
+            return BalanceSnapshot.Error(ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// 解析 MiniMax Coding Plan 响应。
+    /// 实测结构：{ "model_remains": [ { "model_name": "general", "remains_time": <毫秒>,
+    ///   "current_interval_remaining_percent": <0-100>, ... }, ... ], "base_resp": {...} }
+    /// 取 general 模型（coding plan 主模型），余额 = 剩余时长（小时）。
+    /// </summary>
+    private BalanceSnapshot ParseMiniMaxBalanceResponse(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("model_remains", out var remains) ||
+                remains.ValueKind != JsonValueKind.Array)
+            {
+                return BalanceSnapshot.Error("未找到 model_remains");
+            }
+            JsonElement best = default;
+            var found = false;
+            foreach (var m in remains.EnumerateArray())
+            {
+                if (m.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+                var name = m.TryGetProperty("model_name", out var n) &&
+                           n.ValueKind == JsonValueKind.String
+                    ? n.GetString()
+                    : "";
+                if (!found || name == "general")
+                {
+                    best = m;
+                    found = true;
+                }
+                if (name == "general")
+                {
+                    break;
+                }
+            }
+            if (!found)
+            {
+                return BalanceSnapshot.Error("无模型数据");
+            }
+            var remainsMs = TryReadNumber(best, "remains_time");
+            var percent = TryReadNumber(best, "current_interval_remaining_percent");
+            if (!remainsMs.HasValue)
+            {
+                return BalanceSnapshot.Error("未找到剩余额度");
+            }
+            _minimaxRemainingPercent = percent ?? 100;
+            var hours = remainsMs.Value / 3600000.0;
+            return BalanceSnapshot.Ok(hours, double.NaN);
+        }
+        catch
+        {
+            return BalanceSnapshot.Error("响应不是合法 JSON");
         }
     }
 
@@ -919,6 +1015,21 @@ internal sealed class BalanceSession : IPaperBodySession
         double riskRatio)
     {
         var sb = new StringBuilder();
+        // MiniMax：余额是时长额度，不用货币符号，显示剩余小时 + 剩余百分比。
+        if (string.Equals(settings.Provider, "minimax", StringComparison.Ordinal))
+        {
+            sb.Append(FormatAmount(snapshot.Remaining));
+            sb.Append("小时");
+            if (settings.ShowPercentage && snapshot.HasRemaining && !double.IsNaN(snapshot.Remaining))
+            {
+                var remain = (int)Math.Round(
+                    Math.Clamp(1 - riskRatio, 0, 1) * 100.0, MidpointRounding.AwayFromZero);
+                sb.Append(" · ");
+                sb.Append(remain.ToString(CultureInfo.CurrentCulture));
+                sb.Append('%');
+            }
+            return sb.ToString();
+        }
         if (!string.IsNullOrEmpty(settings.CurrencySymbol))
         {
             sb.Append(settings.CurrencySymbol);
@@ -981,6 +1092,17 @@ internal sealed class BalanceSession : IPaperBodySession
         if (ratio >= 1.0) return 1.0;
         return Math.Clamp(ratio, 0, 1);
     }
+    /// <summary>
+    /// 把 NaN/±Infinity 归一为 0，避免 JsonSerializer 序列化时抛异常。
+    /// </summary>
+    private static double Finite(double value) => double.IsFinite(value) ? value : 0;
+
+    /// <summary>
+    /// 可空版本的 Finite：非有限值返回 null。
+    /// </summary>
+    private static double? FiniteOrNull(double? value) =>
+        value.HasValue && double.IsFinite(value.Value) ? value : null;
+
     private static string FormatAmount(double amount)
     {
         if (double.IsNaN(amount) || double.IsInfinity(amount))
@@ -1244,7 +1366,12 @@ internal sealed class BalanceSession : IPaperBodySession
     {
         var status = _snapshot.StatusText ?? "";
         var hasData = _snapshot.HasRemaining && !double.IsNaN(_snapshot.Remaining);
-        var ratio = ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold);
+        // MiniMax：余额是时长额度，风险环用"已消耗比例"（100 − 剩余百分比）。
+        var isMiniMax = string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal);
+        // 防御：余额接口异常可能产生 NaN/Infinity，JSON 序列化会抛异常导致宿主崩溃，必须过滤。
+        var ratio = isMiniMax && _minimaxRemainingPercent.HasValue
+            ? Finite((100 - _minimaxRemainingPercent.Value) / 100.0)
+            : Finite(ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold));
         var riskColor = ToHex(RiskColor(ratio));
 
         string statusKind;
@@ -1277,8 +1404,8 @@ internal sealed class BalanceSession : IPaperBodySession
             ["statusKind"] = statusKind,
             ["hasBalance"] = hasData,
             ["balance"] = hasData ? FormatAmount(_snapshot.Remaining) : "—",
-            ["currency"] = MapCurrencySymbolToCode(_settings.CurrencySymbol) ?? _settings.CurrencySymbol,
-            ["currencySymbol"] = _settings.CurrencySymbol,
+            ["currency"] = isMiniMax ? "小时" : (MapCurrencySymbolToCode(_settings.CurrencySymbol) ?? _settings.CurrencySymbol),
+            ["currencySymbol"] = isMiniMax ? "" : _settings.CurrencySymbol,
             ["ratio"] = ratio,
             ["riskColor"] = riskColor,
             ["riskState"] = RiskStateText(ratio),
@@ -1294,9 +1421,9 @@ internal sealed class BalanceSession : IPaperBodySession
             ["cost7d"] = BuildCost7dText(),
             ["cost7dFoot"] = BuildCost7dFoot(),
             ["costDays7"] = BuildCostDays7Array(),
-            ["todayTokens"] = BuildTodayTokens(),
-            ["todayHit"] = BuildTodayHit(),
-            ["cacheRate"] = BuildTodayCacheRate(),
+            ["todayTokens"] = Finite(BuildTodayTokens()),
+            ["todayHit"] = Finite(BuildTodayHit()),
+            ["cacheRate"] = FiniteOrNull(BuildTodayCacheRate()),
             ["hourly"] = BuildHourlyArray(),
             ["usage"] = BuildUsageArray()
         };
@@ -1365,7 +1492,7 @@ internal sealed class BalanceSession : IPaperBodySession
             {
                 ["date"] = h.Date,
                 ["hour"] = h.Hour,
-                ["tokens"] = h.Tokens
+                ["tokens"] = Finite(h.Tokens)
             })
             .ToArray();
     }
@@ -1534,7 +1661,7 @@ internal sealed class BalanceSession : IPaperBodySession
             items.Add(new Dictionary<string, object?>
             {
                 ["date"] = day.Date,
-                ["tokens"] = day.Tokens
+                ["tokens"] = Finite(day.Tokens)
             });
         }
         return items.Cast<object>().ToArray();
