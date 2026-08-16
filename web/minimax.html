@@ -23,61 +23,38 @@
 html{height:100%}
 body{margin:0;min-height:100%;background:transparent;color:var(--ink);font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
 .page{width:100%;min-height:100vh;background:transparent;padding:clamp(22px,4vw,42px) clamp(18px,4vw,40px)}
-.header{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:clamp(18px,3vw,28px);border-bottom:1px solid var(--ink)}
-.kicker{font-size:11px;letter-spacing:4px;color:var(--muted);margin-bottom:12px}
+.header{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;padding-bottom:clamp(18px,3vw,28px);border-bottom:1px solid var(--ink)}
+/* 右上角供应商切换 ⚙ 按钮 + 下拉菜单 */
+.settings-gear{position:relative;align-self:flex-start;flex-shrink:0}
+.gear-btn{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);width:26px;height:26px;border-radius:7px;font-size:14px;line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background-color .15s;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
+.gear-btn:hover{color:var(--ink);border-color:var(--muted)}
+.gear-btn.open{border-color:var(--accent);color:var(--ink)}
+.gear-menu{position:absolute;top:calc(100% + 6px);right:0;min-width:156px;background:var(--paper);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(35,29,20,.18);padding:5px;z-index:60}
+.gear-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;color:var(--muted);padding:7px 10px;border-radius:6px;font:600 12px/1 var(--serif);cursor:pointer;transition:background-color .12s,color .12s}
+.gear-item:hover{background:var(--accent-soft);color:var(--ink)}
+.gear-item.active{color:var(--ink)}
+.gear-dot{width:6px;height:6px;border-radius:50%;border:1px solid var(--muted);flex-shrink:0}
+.gear-item.active .gear-dot{background:var(--accent);border-color:var(--accent)}
 h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;letter-spacing:-1px}
 .header-meta{text-align:right;color:var(--muted);font-size:12px;line-height:1.9}
 .header-meta .status strong{color:var(--ok);font-weight:600}
 .header-meta .status.err strong{color:var(--accent)}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:5px;vertical-align:1px}
 .status-dot.err{background:var(--accent)}
-.hero{display:grid;grid-template-columns:1.25fr .75fr;min-height:clamp(220px,30vh,280px);border-bottom:1px solid var(--line)}
-.hero-main{padding:clamp(28px,5vw,45px) clamp(20px,4vw,55px) clamp(26px,4vw,42px) 0;border-right:1px solid var(--line)}
-.hero-label{color:var(--muted);font-size:12px;letter-spacing:2px;margin-bottom:13px}
-.hero-value{display:flex;align-items:baseline;gap:10px}
-.hero-value strong{font-size:clamp(64px,9vw,104px);line-height:.9;font-weight:500;letter-spacing:-6px}
-.hero-value span{font-size:17px;color:var(--muted)}
-.hero-title{margin-top:clamp(14px,2.5vw,20px);font-size:clamp(15px,2vw,18px);font-weight:600}
-.hero-desc{margin-top:6px;color:var(--muted);font-size:13px}
-.hero-side{padding:clamp(28px,5vw,45px) 0 clamp(26px,4vw,42px) clamp(22px,4vw,48px);display:flex;flex-direction:column;justify-content:center}
-.alert-mark{width:8px;height:8px;background:var(--accent);display:inline-block;margin-right:8px}
-.alert-title{font-size:14px;font-weight:600;margin-bottom:16px}
-.alert-text{color:var(--muted);font-size:13px;line-height:2}
-.alert-text em{color:var(--accent);font-style:normal}
-.section{padding:clamp(22px,4vw,36px) 0;border-bottom:1px solid var(--line)}
-.section-heading{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:clamp(16px,3vw,25px)}
-.section-heading h2{margin:0;font-size:19px;font-weight:600}
-.section-heading span{color:var(--muted);font-size:11px}
-.model{display:grid;grid-template-columns:clamp(90px,14vw,145px) 1fr clamp(90px,14vw,145px);gap:clamp(16px,3vw,30px);align-items:center;padding:clamp(16px,3vw,25px) 0;border-top:1px solid var(--soft-line)}
-.model:first-of-type{border-top:0;padding-top:0}
-.model-name{font-size:clamp(20px,3vw,25px);font-weight:600}
-.model-type{color:var(--muted);font-size:11px;margin-top:4px}
-.meter-label{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:8px}
-.meter{height:4px;background:var(--soft-line)}
-.meter i{display:block;height:100%;background:var(--ink)}
-.meter i.warning{background:var(--accent)}
-.model-number{text-align:right}
-.model-number strong{display:block;font-size:clamp(26px,4vw,34px);font-weight:500;line-height:1}
-.model-number span{display:block;color:var(--muted);font-size:11px;margin-top:7px}
-.periods{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,5vw,48px)}
-.period-title{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
-.period-title strong{font-size:15px;font-weight:600}
-.period-title span{font-size:clamp(20px,3vw,24px);font-weight:500}
-.period-line{position:relative;height:1px;background:var(--line)}
-.period-line i{position:absolute;left:0;top:-2px;height:5px;background:var(--ink)}
-.period-line i.warning{background:var(--accent)}
-.period-info{display:flex;justify-content:space-between;margin-top:10px;color:var(--muted);font-size:10px}
-.footer{padding-top:clamp(16px,3vw,22px);display:flex;justify-content:space-between;color:var(--muted);font-size:10px}
+.hero{display:flex;flex-direction:column;justify-content:center;min-height:clamp(200px,28vh,260px);border-bottom:1px solid var(--line)}
+.hero-main{padding:clamp(28px,5vw,45px) 0 clamp(26px,4vw,42px);display:flex;flex-direction:column;justify-content:center;gap:clamp(30px,5vw,48px)}
+.gauge-name{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:clamp(10px,1.8vw,14px)}
+.gauge-name span{font-size:clamp(14px,2vw,17px);font-weight:600}
+.gauge-name em{font-style:normal;font-size:clamp(20px,3vw,28px);font-weight:500;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.gauge-track{height:clamp(10px,1.6vw,14px);background:var(--soft-line);border-radius:999px;overflow:hidden}
+.gauge-track i{display:block;height:100%;background:var(--ink);border-radius:999px;transition:width .5s ease}
+.gauge-track i.warning{background:var(--accent)}
+.gauge-foot{margin-top:9px;color:var(--muted);font-size:clamp(11px,1.6vw,12px)}
 @media(max-width:760px){
   .page{padding:26px 22px}
   .header{display:block}
   .header-meta{text-align:left;margin-top:15px}
-  .hero{grid-template-columns:1fr}
-  .hero-main{padding-right:0;border-right:0;padding-bottom:24px}
-  .hero-side{padding:20px 0 26px;border-top:1px solid var(--line)}
-  .model{grid-template-columns:90px 1fr;gap:16px}
-  .model-number{grid-column:2;text-align:left;margin-top:-4px}
-  .periods{grid-template-columns:1fr;gap:26px}
+  .hero-main{padding-bottom:24px}
 }
 </style>
 </head>
@@ -86,51 +63,45 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
 
   <header class="header">
     <div>
-      <div class="kicker">TOKEN PLAN · MONITOR</div>
       <h1>MiniMax Coding Plan</h1>
     </div>
     <div class="header-meta">
       <div class="status" id="statusMain"><i class="status-dot" id="statusDot"></i><strong id="statusText">API 正常</strong></div>
       <div>最后更新 · <span id="updated">—</span></div>
     </div>
+    <!-- 右上角供应商切换：点击 ⚙ 展开列表 -->
+    <div class="settings-gear" id="settingsGear">
+      <button type="button" class="gear-btn" id="gearBtn" title="切换供应商">⚙</button>
+      <div class="gear-menu" id="gearMenu" hidden>
+        <button type="button" class="gear-item" data-provider="deepseek"><span class="gear-dot"></span>DeepSeek</button>
+        <button type="button" class="gear-item" data-provider="minimax"><span class="gear-dot"></span>MiniMax</button>
+        <button type="button" class="gear-item" data-provider="opencode"><span class="gear-dot"></span>OpenCode Go</button>
+      </div>
+    </div>
   </header>
 
   <section class="hero">
     <div class="hero-main">
-      <div class="hero-label">GENERAL · WEEKLY REMAINING</div>
-      <div class="hero-value">
-        <strong id="heroPct">--</strong>
-        <span>% remaining</span>
+      <!-- 上方：每五小时余额（当前周期 interval） -->
+      <div class="gauge">
+        <div class="gauge-name">
+          <span>每五小时余额</span>
+          <em id="intervalPct">--%</em>
+        </div>
+        <div class="gauge-track"><i id="intervalBar"></i></div>
+        <div class="gauge-foot" id="intervalFoot">—</div>
       </div>
-      <div class="hero-title" id="heroTitle">—</div>
-      <div class="hero-desc" id="heroDesc">—</div>
-    </div>
-    <div class="hero-side">
-      <div class="alert-title"><i class="alert-mark"></i>需要关注</div>
-      <div class="alert-text" id="alertText">—</div>
+      <!-- 下方：每周余额 -->
+      <div class="gauge">
+        <div class="gauge-name">
+          <span>每周余额</span>
+          <em id="weeklyPct">--%</em>
+        </div>
+        <div class="gauge-track"><i id="weeklyBar"></i></div>
+        <div class="gauge-foot" id="weeklyFoot">—</div>
+      </div>
     </div>
   </section>
-
-  <section class="section">
-    <div class="section-heading">
-      <h2>Models</h2>
-      <span id="modelCount">0 MODELS</span>
-    </div>
-    <div id="modelList"></div>
-  </section>
-
-  <section class="section">
-    <div class="section-heading">
-      <h2>Weekly Cycle</h2>
-      <span id="cycleRange">—</span>
-    </div>
-    <div class="periods" id="periods"></div>
-  </section>
-
-  <footer class="footer">
-    <span>MiniMax Coding Plan · Usage Monitor</span>
-    <span id="footerStatus">STATUS —</span>
-  </footer>
 
 </main>
 <script>
@@ -138,35 +109,19 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
 var bridge = window.chrome && window.chrome.webview;
 function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
 
-// 小时 → "3h 45m"
-function fmtHM(hours) {
+// 小时 → "3天5小时47分钟"；不足一天的省略"天"
+function fmtHMDaysZh(hours) {
   if (hours == null || isNaN(hours) || hours < 0) return "--";
-  var h = Math.floor(hours);
-  var m = Math.round((hours - h) * 60);
-  if (m >= 60) { h += 1; m -= 60; }
-  return h + "h " + m + "m";
-}
-// 小时 → "27 小时 45 分钟"
-function fmtHMZh(hours) {
-  if (hours == null || isNaN(hours) || hours < 0) return "--";
-  var h = Math.floor(hours);
-  var m = Math.round((hours - h) * 60);
-  if (m >= 60) { h += 1; m -= 60; }
-  return h + " 小时 " + m + " 分钟";
-}
-// Unix 毫秒 → "MM.DD HH:MM"
-function fmtDate(ms) {
-  if (!ms) return "--";
-  var d = new Date(ms);
-  return ("0" + (d.getMonth() + 1)).slice(-2) + "." +
-    ("0" + d.getDate()).slice(-2) + " " +
-    ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
-}
-// 相对日期 → "MM.DD"
-function fmtDateShort(ms) {
-  if (!ms) return "--";
-  var d = new Date(ms);
-  return ("0" + (d.getMonth() + 1)).slice(-2) + "." + ("0" + d.getDate()).slice(-2);
+  var totalMin = Math.round(hours * 60);
+  var d = Math.floor(totalMin / 1440);
+  var h = Math.floor((totalMin % 1440) / 60);
+  var m = totalMin % 60;
+  var s = "";
+  if (d > 0) s += d + "天";
+  if (h > 0) s += h + "小时";
+  if (m > 0) s += m + "分钟";
+  if (s === "") s = "0分钟";
+  return s;
 }
 function warning(pct) { return pct < 30; }
 
@@ -185,6 +140,17 @@ function render(msg) {
   if (!msg) return;
   applyTheme(msg.theme);
   var d = msg.data || {};
+  // 供应商高亮：当前 provider 在下拉列表里打勾
+  var provider = d.provider || "minimax";
+  var menu = document.getElementById("gearMenu");
+  if (menu) {
+    var items = menu.querySelectorAll(".gear-item");
+    items.forEach(function (b) {
+      var isActive = b.getAttribute("data-provider") === provider;
+      if (isActive) b.classList.add("active");
+      else b.classList.remove("active");
+    });
+  }
   var models = d.modelRemains || [];
   var general = null;
   models.forEach(function (m) { if (m.model === "general" && !general) general = m; });
@@ -197,81 +163,28 @@ function render(msg) {
   if (d.statusKind === "ok") { setText("statusText", "API 正常"); }
   else { main.classList.add("err"); dot.classList.add("err"); setText("statusText", d.status || "异常"); }
   setText("updated", d.updateTime || "—");
-  setText("footerStatus", "STATUS " + (d.statusKind === "ok" ? "0 · SUCCESS" : "ERROR"));
 
-  // Hero：general weekly
+  // Hero：聚焦 general —— 双进度条（每五小时 / 每周）+ 重置倒计时
+  var ib = document.getElementById("intervalBar");
+  var wb = document.getElementById("weeklyBar");
   if (general) {
-    var wp = Math.round(general.weeklyPercent || 0);
-    setText("heroPct", wp);
-    setText("heroTitle", warning(wp) ? "本周额度进入低余量状态" : "本周额度充足");
-    setText("heroDesc", "Weekly 周期剩余约 " + fmtHMZh(general.weeklyHours));
-    var cur = Math.round(general.percent || 0);
-    setText("alertText",
-      "当前 <em>" + general.model + "</em> Weekly 仅剩 " + wp + "%。<br>" +
-      "当前周期仍有 " + cur + "% 可用额度，<br>" +
-      "两种周期的消耗状态并不一致。");
+    var ip = Math.max(0, Math.min(100, general.percent || 0));
+    var wp = Math.max(0, Math.min(100, general.weeklyPercent || 0));
+    setText("intervalPct", Math.round(ip) + "%");
+    setText("weeklyPct", Math.round(wp) + "%");
+    if (ib) { ib.style.width = ip + "%"; ib.className = warning(ip) ? "warning" : ""; }
+    if (wb) { wb.style.width = wp + "%"; wb.className = warning(wp) ? "warning" : ""; }
+    // 每五小时周期（interval）重置倒计时；每周重置则自动带"天"
+    setText("intervalFoot", "距离下次重置还有 " + fmtHMDaysZh(general.hours));
+    setText("weeklyFoot", "距离下次重置还有 " + fmtHMDaysZh(general.weeklyHours));
   } else {
-    setText("heroPct", "--");
-    setText("heroDesc", "—");
-    setText("alertText", "暂无模型数据");
+    setText("intervalPct", "--%");
+    setText("weeklyPct", "--%");
+    if (ib) { ib.style.width = "0%"; ib.className = ""; }
+    if (wb) { wb.style.width = "0%"; wb.className = ""; }
+    setText("intervalFoot", "—");
+    setText("weeklyFoot", "—");
   }
-
-  // Models
-  setText("modelCount", models.length + " MODELS");
-  var box = document.getElementById("modelList");
-  box.innerHTML = "";
-  models.forEach(function (m) {
-    var art = document.createElement("article");
-    art.className = "model";
-    var nameBox = document.createElement("div");
-    var nm = document.createElement("div"); nm.className = "model-name"; nm.textContent = m.model;
-    var tp = document.createElement("div"); tp.className = "model-type"; tp.textContent = (m.model || "").toUpperCase() + " MODEL";
-    nameBox.appendChild(nm); nameBox.appendChild(tp);
-    var meterBox = document.createElement("div");
-    var ml = document.createElement("div"); ml.className = "meter-label";
-    var s1 = document.createElement("span"); s1.textContent = "Weekly remaining";
-    var s2 = document.createElement("span"); s2.textContent = Math.round(m.weeklyPercent || 0) + "%";
-    ml.appendChild(s1); ml.appendChild(s2);
-    var meter = document.createElement("div"); meter.className = "meter";
-    var fill = document.createElement("i");
-    var wpv = Math.max(0, Math.min(100, m.weeklyPercent || 0));
-    fill.style.width = wpv + "%";
-    if (warning(wpv)) fill.className = "warning";
-    meter.appendChild(fill);
-    meterBox.appendChild(ml); meterBox.appendChild(meter);
-    var num = document.createElement("div"); num.className = "model-number";
-    var b = document.createElement("strong"); b.textContent = fmtHM(m.hours);
-    var sp = document.createElement("span"); sp.textContent = "当前周期剩余";
-    num.appendChild(b); num.appendChild(sp);
-    art.appendChild(nameBox); art.appendChild(meterBox); art.appendChild(num);
-    box.appendChild(art);
-  });
-
-  // Weekly Cycle
-  var cyc = document.getElementById("cycleRange");
-  if (general) { cyc.textContent = fmtDateShort(general.weeklyStart) + " — " + fmtDateShort(general.weeklyEnd); }
-  else { cyc.textContent = "—"; }
-  var periods = document.getElementById("periods");
-  periods.innerHTML = "";
-  models.forEach(function (m) {
-    var col = document.createElement("div");
-    var pt = document.createElement("div"); pt.className = "period-title";
-    var b = document.createElement("strong"); b.textContent = m.model;
-    var v = document.createElement("span"); v.textContent = Math.round(m.weeklyPercent || 0) + "%";
-    pt.appendChild(b); pt.appendChild(v);
-    var pl = document.createElement("div"); pl.className = "period-line";
-    var fill = document.createElement("i");
-    var wpv = Math.max(0, Math.min(100, m.weeklyPercent || 0));
-    fill.style.width = wpv + "%";
-    if (warning(wpv)) fill.className = "warning";
-    pl.appendChild(fill);
-    var pi = document.createElement("div"); pi.className = "period-info";
-    var a = document.createElement("span"); a.textContent = fmtDate(m.weeklyStart);
-    var b2 = document.createElement("span"); b2.textContent = fmtDate(m.weeklyEnd);
-    pi.appendChild(a); pi.appendChild(b2);
-    col.appendChild(pt); col.appendChild(pl); col.appendChild(pi);
-    periods.appendChild(col);
-  });
 }
 
 window.__renderBalance = function (msg) { try { render(msg); } catch (e) {} };
@@ -279,6 +192,35 @@ if (bridge) {
   bridge.addEventListener("message", function (e) { try { render(JSON.parse(e.data)); } catch (e) {} });
   bridge.postMessage({ type: "ready" });
 }
+
+// 右上角 ⚙ 供应商切换：点按钮展开/收起列表；点列表项切换；点外部收起
+(function () {
+  var gear = document.getElementById("settingsGear");
+  var btn = document.getElementById("gearBtn");
+  var menu = document.getElementById("gearMenu");
+  if (!gear || !btn || !menu) return;
+
+  function setOpen(open) {
+    menu.hidden = !open;
+    btn.classList.toggle("open", open);
+  }
+  btn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    setOpen(menu.hidden);
+  });
+  menu.addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList || !t.classList.contains("gear-item")) return;
+    var p = t.getAttribute("data-provider");
+    if (!p) return;
+    setOpen(false);
+    if (t.classList.contains("active")) return; // 已是当前
+    if (bridge) {
+      bridge.postMessage({ type: "switchProvider", provider: p });
+    }
+  });
+  document.addEventListener("click", function () { setOpen(false); });
+})();
 </script>
 </body>
 </html>

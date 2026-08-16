@@ -57,6 +57,17 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .select{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:#1c1c19 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1 2.5 L4 5.5 L7 2.5' stroke='%23918f86' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 8px center;color:var(--muted);padding:6px 24px 6px 12px;border-radius:8px;font:11px var(--serif);outline:none;cursor:pointer;color-scheme:dark;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
 .select:hover{color:var(--text);border-color:#4e4e45;background-color:#232320}
 .select:focus{color:var(--text);border-color:var(--green)}
+/* 右上角供应商切换 ⚙ 按钮 + 下拉菜单 */
+.settings-gear{position:relative;margin-left:10px;align-self:flex-start;flex-shrink:0}
+.gear-btn{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);width:26px;height:26px;border-radius:7px;font-size:14px;line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background-color .15s}
+.gear-btn:hover{color:var(--text);border-color:#4e4e45;background-color:#232320}
+.gear-btn.open{border-color:var(--green);color:var(--text)}
+.gear-menu{position:absolute;top:calc(100% + 6px);right:0;min-width:156px;background:#1c1c19;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:5px;z-index:60}
+.gear-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;color:var(--muted);padding:7px 10px;border-radius:6px;font:600 12px/1 var(--serif);cursor:pointer;transition:background-color .12s,color .12s}
+.gear-item:hover{background:rgba(255,255,255,.06);color:var(--text)}
+.gear-item.active{color:var(--text)}
+.gear-dot{width:6px;height:6px;border-radius:50%;border:1px solid var(--muted);flex-shrink:0}
+.gear-item.active .gear-dot{background:var(--green);border-color:var(--green)}
 .custom-range{display:flex;align-items:center;gap:8px;margin-bottom:10px;font:11px var(--serif);color:var(--dim)}
 .custom-range input{background:#11110f;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:11px var(--serif);color-scheme:dark}
 .chart{height:clamp(180px,38vh,230px);position:relative;border-bottom:1px solid var(--line);padding:clamp(18px,3vw,24px) 8px clamp(26px,4.4vw,32px) clamp(40px,7vw,50px);background:
@@ -104,6 +115,15 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
       <div class="status">
         <div class="status-main" id="statusMain"><i class="status-dot" id="statusDot"></i><span id="statusText">等待数据…</span></div>
         <div class="status-sub" id="statusSub">—</div>
+      </div>
+    </div>
+    <!-- 右上角供应商切换：点击 ⚙ 展开列表 -->
+    <div class="settings-gear" id="settingsGear">
+      <button type="button" class="gear-btn" id="gearBtn" title="切换供应商">⚙</button>
+      <div class="gear-menu" id="gearMenu" hidden>
+        <button type="button" class="gear-item" data-provider="deepseek"><span class="gear-dot"></span>DeepSeek</button>
+        <button type="button" class="gear-item" data-provider="minimax"><span class="gear-dot"></span>MiniMax</button>
+        <button type="button" class="gear-item" data-provider="opencode"><span class="gear-dot"></span>OpenCode Go</button>
       </div>
     </div>
   </section>
@@ -206,6 +226,17 @@ function render(msg) {
   if (!msg) return;
   applyTheme(msg.theme);
   var d = msg.data || {};
+  // 供应商高亮：当前 provider 在下拉列表里打勾
+  var provider = d.provider || "deepseek";
+  var menu = document.getElementById("gearMenu");
+  if (menu) {
+    var items = menu.querySelectorAll(".gear-item");
+    items.forEach(function (b) {
+      var isActive = b.getAttribute("data-provider") === provider;
+      if (isActive) b.classList.add("active");
+      else b.classList.remove("active");
+    });
+  }
 
   // 顶部：余额
   var sym = d.currencySymbol || "";
@@ -489,6 +520,35 @@ if (bridge) {
   });
   bridge.postMessage({ type: "ready" });
 }
+
+// 右上角 ⚙ 供应商切换：点按钮展开/收起列表；点列表项切换；点外部收起
+(function () {
+  var gear = document.getElementById("settingsGear");
+  var btn = document.getElementById("gearBtn");
+  var menu = document.getElementById("gearMenu");
+  if (!gear || !btn || !menu) return;
+
+  function setOpen(open) {
+    menu.hidden = !open;
+    btn.classList.toggle("open", open);
+  }
+  btn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    setOpen(menu.hidden);
+  });
+  menu.addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList || !t.classList.contains("gear-item")) return;
+    var p = t.getAttribute("data-provider");
+    if (!p) return;
+    setOpen(false);
+    if (t.classList.contains("active")) return; // 已是当前
+    if (bridge) {
+      bridge.postMessage({ type: "switchProvider", provider: p });
+    }
+  });
+  document.addEventListener("click", function () { setOpen(false); });
+})();
 
 // 自适应：宿主主题注入 CSS 变量
 function applyTheme(t) {

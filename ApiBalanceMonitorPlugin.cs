@@ -30,26 +30,42 @@ public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
     public string Id => "api.balance.monitor";
     public string DisplayName => "API 余额监测";
     public string Description =>
-        "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色的圆环。";
-    public Version Version => new(1, 1, 0);
+        "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色的圆环。" +
+        "模型供应商在每张纸的监视面板顶部切换；各供应商 Key 独立存储于全局设置。";
+    public Version Version => new(1, 2, 0);
     public string ApiVersion => "1.7";
-    public int StateVersion => 1;
+    public int StateVersion => 2;
     public PaperBodyCapabilities Capabilities => PaperBodyCapabilities.None;
     public PaperBodyRuntimeRequirements RuntimeRequirements =>
         PaperBodyRuntimeRequirements.BackgroundUpdates;
 
     public IPaperBodySession Create(PaperBodyContext context) =>
         new BalanceSession(context);
+
+    /// <summary>
+    /// 旧 v1 没有 state 字段；升级后清空回退到默认 deepseek，让用户在监视面板中按需切换。
+    /// </summary>
+    public string MigrateState(string stateJson, int fromVersion) => "{}";
 }
 
 internal sealed record BalanceSettings(
-    string Provider,
     string ApiKey,
     string UsageToken,
     int PollSeconds,
     string CurrencySymbol,
     double BalanceThreshold,
     bool ShowPercentage);
+
+/// <summary>
+/// 每张 paper 的独立状态：当前选哪个供应商。写入 per-paper StateJson（与全局 settings 隔离）。
+/// </summary>
+internal sealed record PaperState(string Provider)
+{
+    public const string DefaultProvider = "deepseek";
+    public const string DeepSeek = "deepseek";
+    public const string MiniMax = "minimax";
+    public const string OpenCode = "opencode";
+}
 
 internal sealed record BalanceSnapshot(
     double Remaining,
@@ -83,6 +99,7 @@ internal sealed class BalanceSession : IPaperBodySession
     private readonly HttpClient _http;
     private readonly DispatcherTimer _timer;
     private BalanceSettings _settings;
+    private PaperState _state;
     private BalanceSnapshot _snapshot = BalanceSnapshot.Empty("尚未拉取");
     private string _lastCapsuleSignature = "";
     private int _polling;
@@ -110,7 +127,8 @@ internal sealed class BalanceSession : IPaperBodySession
     {
         _context = context;
         _theme = context.Body.Theme;
-        _settings = ReadSettings(context.SettingsJson);
+        _state = ReadState(context.StateJson);
+        _settings = ReadSettings(context.SettingsJson, _state.Provider);
 
         BuildWebView();
 
@@ -168,18 +186,18 @@ internal sealed class BalanceSession : IPaperBodySession
 
     public void OnSettingsChanged(string settingsJson)
     {
-        ApplySettings(ReadSettings(settingsJson));
+        // Provider 来自 per-paper state，不再从全局 settings 读取。
+        ApplySettings(ReadSettings(settingsJson, _state.Provider));
     }
 
     // ---------------- 设置解析 ----------------
 
-    private static BalanceSettings ReadSettings(string? json)
+    private static BalanceSettings ReadSettings(string? json, string provider)
     {
         try
         {
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
             var root = doc.RootElement;
-            var provider = ReadString(root, "provider", "deepseek");
             // 各供应商的 Key 独立存储；切换供应商读取对应 Key（未填则为空）。
             // 旧版单一 apiKey 字段作为 DeepSeek 的兼容迁移来源。
             var deepseekKey = ReadString(root, "deepseekApiKey", "");
@@ -191,12 +209,11 @@ internal sealed class BalanceSession : IPaperBodySession
             var opencodeKey = ReadString(root, "opencodeApiKey", "");
             var apiKey = provider switch
             {
-                "minimax" => minimaxKey,
-                "opencode" => opencodeKey,
+                PaperState.MiniMax => minimaxKey,
+                PaperState.OpenCode => opencodeKey,
                 _ => deepseekKey
             };
             return new BalanceSettings(
-                provider,
                 apiKey,
                 ReadString(root, "usageToken", ""),
                 ReadInt(root, "pollSeconds", 60),
@@ -206,7 +223,7 @@ internal sealed class BalanceSession : IPaperBodySession
         }
         catch
         {
-            return new BalanceSettings("deepseek", "", "", 60, "¥", 20.0, true);
+            return new BalanceSettings("", "", 60, "¥", 20.0, true);
         }
     }
 
@@ -250,21 +267,42 @@ internal sealed class BalanceSession : IPaperBodySession
             ? v.GetBoolean()
             : fallback;
 
+    // ---------------- Per-paper state 解析 ----------------
+
+    /// <summary>
+    /// 读取 per-paper state：当前选哪个供应商。非法值回退到默认。
+    /// </summary>
+    private static PaperState ReadState(string? json)
+    {
+        var fallback = new PaperState(PaperState.DefaultProvider);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return fallback;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var p = ReadString(doc.RootElement, "provider", PaperState.DefaultProvider);
+            return new PaperState(IsValidProvider(p) ? p : PaperState.DefaultProvider);
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static string SerializeState(PaperState state) =>
+        JsonSerializer.Serialize(new Dictionary<string, object?> { ["provider"] = state.Provider });
+
     // ---------------- 设置应用 ----------------
 
     private void ApplySettings(BalanceSettings s)
     {
-        var providerChanged = !string.Equals(
-            _settings.Provider, s.Provider, StringComparison.Ordinal);
         _settings = s;
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
         _timer.Interval = interval;
-        // 供应商切换：重新加载对应面板 HTML（若 WebView2 已就绪）。
-        if (providerChanged && _webViewReady)
-        {
-            ReloadPanelForProvider();
-        }
+        // Provider 变化已迁到 SetPaperProvider；此处只处理 timer/重拉。
         if (!_timer.IsEnabled)
         {
             _timer.Start();
@@ -360,11 +398,11 @@ internal sealed class BalanceSession : IPaperBodySession
 
     private async Task<BalanceSnapshot> FetchBalanceAsync()
     {
-        if (string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal))
+        if (string.Equals(_state.Provider, PaperState.MiniMax, StringComparison.Ordinal))
         {
             return await FetchMiniMaxBalanceAsync().ConfigureAwait(false);
         }
-        if (string.Equals(_settings.Provider, "opencode", StringComparison.Ordinal))
+        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
         {
             return BalanceSnapshot.Error("尚未适配该供应商");
         }
@@ -821,7 +859,7 @@ internal sealed class BalanceSession : IPaperBodySession
             ? Math.Clamp(_minimaxRemainingPercent ?? 100, 0, 100) / 100.0
             : RingArcValue(riskRatio);
 
-        var text = BuildCapsuleText(snapshot, _settings, riskRatio);
+        var text = BuildCapsuleText(snapshot, _settings, _state, riskRatio);
         var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
         if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
@@ -898,12 +936,13 @@ internal sealed class BalanceSession : IPaperBodySession
     private static string BuildCapsuleText(
         BalanceSnapshot snapshot,
         BalanceSettings settings,
+        PaperState state,
         double riskRatio)
     {
         var sb = new StringBuilder();
         // MiniMax：胶囊显示 "xx% · xx时xx分"——百分比为 current_interval_remaining_percent，
         // 时长为 remains_time 转换的时分。圆环弧值由 UpdateSnapshot 用剩余百分比计算。
-        if (string.Equals(settings.Provider, "minimax", StringComparison.Ordinal))
+        if (string.Equals(state.Provider, PaperState.MiniMax, StringComparison.Ordinal))
         {
             if (!double.IsNaN(snapshot.Remaining) && snapshot.Remaining > 0)
             {
@@ -964,7 +1003,7 @@ internal sealed class BalanceSession : IPaperBodySession
     /// 当前供应商是否为 MiniMax（额度按时长计费）。
     /// </summary>
     private bool IsMiniMax =>
-        string.Equals(_settings.Provider, "minimax", StringComparison.Ordinal);
+        string.Equals(_state.Provider, PaperState.MiniMax, StringComparison.Ordinal);
 
     /// <summary>
     /// 当前供应商的风险比例：MiniMax 用"已消耗比例"（100 − 剩余百分比），
@@ -1090,7 +1129,7 @@ internal sealed class BalanceSession : IPaperBodySession
         _documentReady = false;
         _pendingPayload = null;
         const string hostName = "papertodo.balance.monitor.local";
-        var htmlFile = HtmlFileNameFor(_settings.Provider);
+        var htmlFile = HtmlFileNameFor(_state.Provider);
         try
         {
             _webView.CoreWebView2?.Navigate($"https://{hostName}/web/{htmlFile}");
@@ -1142,7 +1181,7 @@ internal sealed class BalanceSession : IPaperBodySession
             var pluginDirectory =
                 Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
                 ?? AppContext.BaseDirectory;
-            var htmlFile = HtmlFileNameFor(_settings.Provider);
+            var htmlFile = HtmlFileNameFor(_state.Provider);
             if (!File.Exists(Path.Combine(pluginDirectory, "web", htmlFile)))
             {
                 throw new InvalidOperationException($"缺少 web/{htmlFile}。");
@@ -1257,18 +1296,63 @@ internal sealed class BalanceSession : IPaperBodySession
     {
         // 页面 JS 就绪后发送 {type:"ready"}，宿主立即补发最新数据。
         // 页面能发出 ready 说明消息监听已挂载，无需再等 NavigationCompleted。
+        // 另支持 {type:"switchProvider", provider:"..."} 切换当前 paper 的供应商。
         try
         {
-            if (e.WebMessageAsJson.IndexOf("\"ready\"", StringComparison.Ordinal) >= 0 &&
-                _webViewReady)
+            var json = e.WebMessageAsJson;
+            if (json.IndexOf("\"ready\"", StringComparison.Ordinal) >= 0 && _webViewReady)
             {
                 PostPayload(BuildViewPayload());
+                return;
+            }
+            if (json.IndexOf("\"switchProvider\"", StringComparison.Ordinal) >= 0)
+            {
+                var msg = JsonDocument.Parse(json);
+                if (msg.RootElement.TryGetProperty("provider", out var p) &&
+                    p.ValueKind == JsonValueKind.String)
+                {
+                    var newProvider = p.GetString() ?? "";
+                    if (IsValidProvider(newProvider))
+                    {
+                        SetPaperProvider(newProvider);
+                    }
+                }
             }
         }
         catch
         {
             // 页面消息解析异常不影响面板主体，静默。
         }
+    }
+
+    private static bool IsValidProvider(string p) =>
+        p == PaperState.DeepSeek || p == PaperState.MiniMax || p == PaperState.OpenCode;
+
+    /// <summary>
+    /// 切换当前 paper 的供应商：写 per-paper state + 重载面板 + 立即拉取。
+    /// </summary>
+    private void SetPaperProvider(string newProvider)
+    {
+        if (string.Equals(_state.Provider, newProvider, StringComparison.Ordinal))
+        {
+            return;
+        }
+        _state = new PaperState(newProvider);
+        // 重新读取设置以应用新 provider 对应的 Key。
+        _settings = ReadSettings(_context.SettingsJson, _state.Provider);
+        try
+        {
+            _context.SaveStateJson(SerializeState(_state));
+        }
+        catch
+        {
+            // 状态写失败不致命；本会话内仍按新 provider 工作。
+        }
+        ReloadPanelForProvider();
+        // 重置 snapshot 避免显示旧 provider 的残留数据。
+        _minimaxModelRemains = null;
+        _minimaxRemainingPercent = null;
+        _ = PollAsync();
     }
 
     /// <summary>
@@ -1349,6 +1433,7 @@ internal sealed class BalanceSession : IPaperBodySession
 
         var data = new Dictionary<string, object?>
         {
+            ["provider"] = _state.Provider,
             ["status"] = status,
             ["statusKind"] = statusKind,
             ["hasBalance"] = hasData,
