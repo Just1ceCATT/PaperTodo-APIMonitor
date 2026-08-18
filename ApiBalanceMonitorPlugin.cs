@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -19,8 +20,13 @@ namespace PaperTodo.Plugin.ApiBalanceMonitor;
 /// 在胶囊中显示「绿/黄/红圆环 + 货币 + 余额 + 可选百分比」。
 ///
 /// 实现要点（不修改宿主）：
-/// - 胶囊由宿主 1.6 模板渲染（ProgressRing + Text），文本使用宿主自家胶囊字体，
-///   与宿主其它胶囊完全一致；宿主（v4.0.0 起）支持胶囊宽度随内容自适应，不会截断。
+/// - 胶囊由插件自己渲染（IPaperCapsuleViewProvider，协议 1.7）。自定义视图
+///   BalanceCapsuleView 完全 1:1 复刻宿主 1.6 模板的视觉：左 6 padding + 18 圆环 +
+///   间距 5 + 填充文本，圆环绘制 1:1 移植宿主 CapsuleProgressRing。宿主只在
+///   Theme / Surface / Width 这三个维度提供上下文。
+/// - SetCapsulePresentation 仍被调用，但仅作为协议层通道传 ToolTip / PlainText
+///   / PreferredWidth(=AutomaticWidth)，Components 仅作非空校验占位——customView
+///   存在时宿主不会渲染 1.6 模板（见 PaperWindow.PluginCapsule.cs:BuildPluginCapsuleContent）。
 /// - 设置项由宿主自带的"插件"设置页绘制（boolean / string / number / select 四类）。
 /// - 鉴权信息（apiKey）会随设置写入 plugins/data/api.balance.monitor.json（明文），
 ///   因此在 plugin.json 的 description 中明确告知用户并建议使用只读子 key。
@@ -93,11 +99,16 @@ internal sealed record UsageDay(string Date, double Tokens, double CacheHit = 0,
 /// </summary>
 internal sealed record CostDay(string Date, double Cost);
 
-internal sealed class BalanceSession : IPaperBodySession
+internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvider
 {
     private readonly PaperBodyContext _context;
     private readonly HttpClient _http;
     private readonly DispatcherTimer _timer;
+    // 高峰时段哨兵：每 30 秒检查一次 UTC+8 是否进入/离开 9-12 / 14-18 高峰窗口，
+    // 让胶囊在 9:00 / 12:00 / 14:00 / 18:00 边界附近 30 秒内自动显隐太阳图标，
+    // 不必等下一次数据拉取（默认 pollSeconds=60）。
+    private readonly DispatcherTimer _peakCheckTimer;
+    private bool _lastIsPeakHour;
     private BalanceSettings _settings;
     private PaperState _state;
     private BalanceSnapshot _snapshot = BalanceSnapshot.Empty("尚未拉取");
@@ -110,6 +121,17 @@ internal sealed class BalanceSession : IPaperBodySession
     private double? _minimaxRemainingPercent;
     private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours, long WeeklyStart, long WeeklyEnd)>? _minimaxModelRemains;
     private PaperBodyTheme _theme;
+
+    // 1.7 胶囊自定义视图：宿主为每个 surface 至多请求一次并缓存，宽度变化时重建。
+    // 在 UpdateSnapshot 里原地更新它们，避免 SetCapsulePresentation 触发重建抖动。
+    private BalanceCapsuleView? _regularCapsuleView;
+    private BalanceCapsuleView? _dockedCapsuleView;
+    // CreateCapsuleView 在首次被宿主调用前就需要拿到最新状态，所以单独缓存一份快照。
+    private string _capsuleText = "—";
+    private string _capsuleRingColorHex = "#9E9E9E";
+    private double _capsuleRingArc;
+    // DeepSeek 高峰时段太阳图标：true 时在余额右侧显示太阳；其它供应商 / 非高峰隐藏。
+    private bool _capsuleIsPeakHour;
 
     // WebView2 监视面板
     private Grid _viewRoot = null!;
@@ -142,7 +164,22 @@ internal sealed class BalanceSession : IPaperBodySession
         _timer = new DispatcherTimer(DispatcherPriority.Background);
         _timer.Tick += async (_, _) => await PollAsync();
 
+        // 高峰时段哨兵：30 秒粒度足够覆盖 9:00 / 12:00 / 14:00 / 18:00 四个切换点
+        // （30 秒 × 60 = 30 分钟，足以漂移到下个时段起点）。Priority=Background 避免与
+        // 数据拉取争抢 UI 线程。
+        _peakCheckTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(30)
+        };
+        _peakCheckTimer.Tick += (_, _) => RefreshPeakHour();
+
         ApplySettings(_settings);
+        // 哨兵 timer 始终运行（与 backgroundUpdates 一致），首次启动即同步当前状态。
+        RefreshPeakHour();
+        if (!_peakCheckTimer.IsEnabled)
+        {
+            _peakCheckTimer.Start();
+        }
         // WebView2 在 View 首次布局后初始化（TryStartWebView），构造时不主动拉取，
         // 等 timer 首次触发，避免阻塞宿主启动。
     }
@@ -152,12 +189,38 @@ internal sealed class BalanceSession : IPaperBodySession
     public void Commit() { /* 设置由宿主管理，正文无草稿 */ }
     public void RefreshFromModel() { /* 无外部数据源需要刷新 */ }
     public void CancelInteractions() { /* 无交互状态 */ }
+
+    /// <summary>
+    /// 高峰时段哨兵：每 30 秒检查 UTC+8 是否进入/离开高峰窗口。
+    /// 状态变化时复用 UpdateSnapshot——它会把新 isPeakHour 写入 signature，
+    /// 进而触发缓存视图 Update 与 SetCapsulePresentation（含动态 Components）。
+    /// </summary>
+    private void RefreshPeakHour()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        var isPeakHour = string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal)
+            && IsPeakHourUtc8();
+        if (isPeakHour == _lastIsPeakHour)
+        {
+            return;
+        }
+        _lastIsPeakHour = isPeakHour;
+        UpdateSnapshot(_snapshot);
+    }
     public void Dispose()
     {
         _disposed = true;
         _lifetime.Cancel();
         _timer.Stop();
+        _peakCheckTimer.Stop();
         _http.Dispose();
+        // 清空 1.7 视图缓存：宿主在下次 body session 重建时会请求新的 view，
+        // 旧引用指向的元素已经被宿主丢弃，保留只会徒增引用计数。
+        _regularCapsuleView = null;
+        _dockedCapsuleView = null;
         try
         {
             _webView?.Dispose();
@@ -178,6 +241,9 @@ internal sealed class BalanceSession : IPaperBodySession
     public void OnThemeChanged(PaperBodyTheme theme)
     {
         _theme = theme;
+        // 1.7 自定义视图需要跟随主题切换重新设置字体/颜色；视图尚未创建时空操作。
+        _regularCapsuleView?.ApplyTheme(theme);
+        _dockedCapsuleView?.ApplyTheme(theme);
         PushView();
     }
 
@@ -860,34 +926,73 @@ internal sealed class BalanceSession : IPaperBodySession
             : RingArcValue(riskRatio);
 
         var text = BuildCapsuleText(snapshot, _settings, _state, riskRatio);
-        var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
+        var toolTip = string.IsNullOrEmpty(snapshot.StatusText)
+            ? text
+            : $"{text}\n{snapshot.StatusText}";
+
+        // DeepSeek 高峰时段（UTC+8 9-12 / 14-18）在余额右侧显示太阳图标；
+        // 非高峰 / MiniMax / OpenCode 不显示。
+        var isPeakHour = string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal)
+            && IsPeakHourUtc8();
+
+        var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + isPeakHour + "|" + snapshot.StatusText;
         if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
             // 胶囊只在内容真正变化时更新，避免无谓的宿主布局抖动。
             _lastCapsuleSignature = signature;
+
+            // 1) 写共享字段：CreateCapsuleView 首次被宿主调用时会从这里取值。
+            _capsuleText = text;
+            _capsuleRingColorHex = ringColor;
+            _capsuleRingArc = ringArc;
+            _capsuleIsPeakHour = isPeakHour;
+
+            // 2) 原地更新两个已缓存的 1.7 自定义视图（Regular / Docked）。
+            //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
+            _regularCapsuleView?.Update(text, ringColor, ringArc, isPeakHour);
+            _dockedCapsuleView?.Update(text, ringColor, ringArc, isPeakHour);
+
+            // 3) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
+            //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
+            //    PreferredWidth=AutomaticWidth 让宿主按标准组件测自然宽；
+            //    Components 仅作协议层"非空校验"占位（customView != null 时宿主不会渲染它们）。
+            //    高峰时多挂一项 Text Width=14 的 sun 占位（5 gap + 14 sun = 19，扣除算法
+            //    自带的 Component Gap 5 = 14），让宿主测宽覆盖 sun 列；非高峰时省略，
+            //    避免胶囊右侧出现与 sun 同宽的空隙。两侧差额恒为 6 DIP（对齐宿主
+            //    CapsuleRightPadding）。host 端渲染时 customView != null 优先返回 customView。
+            //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
+            //    PlainText 用于跨队列拖动的纯文字回退。
+            var components = new List<PaperCapsuleComponent>
+            {
+                new PaperCapsuleComponent
+                {
+                    Kind = PaperCapsuleComponentKind.ProgressRing,
+                    Value = ringArc,
+                    Color = ringColor,
+                    Width = 18
+                },
+                new PaperCapsuleComponent
+                {
+                    Kind = PaperCapsuleComponentKind.Text,
+                    Text = text,
+                    Fill = true
+                }
+            };
+            if (isPeakHour)
+            {
+                components.Add(new PaperCapsuleComponent
+                {
+                    Kind = PaperCapsuleComponentKind.Text,
+                    Text = " ",
+                    Width = 14
+                });
+            }
             _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
             {
-                PreferredWidth = EstimateCapsuleWidth(text),
+                PreferredWidth = PaperCapsulePresentation.AutomaticWidth,
                 PlainText = text,
-                ToolTip = string.IsNullOrEmpty(snapshot.StatusText)
-                    ? text
-                    : $"{text}\n{snapshot.StatusText}",
-                Components = new[]
-                {
-                    new PaperCapsuleComponent
-                    {
-                        Kind = PaperCapsuleComponentKind.ProgressRing,
-                        Value = ringArc,
-                        Color = ringColor,
-                        Width = 18
-                    },
-                    new PaperCapsuleComponent
-                    {
-                        Kind = PaperCapsuleComponentKind.Text,
-                        Text = text,
-                        Fill = true
-                    }
-                }
+                ToolTip = toolTip,
+                Components = components.ToArray()
             });
         }
 
@@ -896,36 +1001,24 @@ internal sealed class BalanceSession : IPaperBodySession
     }
 
     /// <summary>
-    /// 动态测量胶囊内容宽度（DIP），比截断临界值多 1px 最贴合。
-    /// 宿主截断是 TextTrimming.CharacterEllipsis：文本渲染宽 &gt; 可用宽（= PreferredWidth − 35
-    /// 结构占位：左右 padding 12 + ProgressRing 18 + 间距 5）时截断。
-    /// 这里用 FormattedText 按主题字体 12px 精确测量文本宽，内容宽 = 35 + 文本宽 + 1px，
-    /// 恰好容纳不浪费；测量失败回退线性估算。
+    /// 协议 1.7 自定义胶囊视图入口：宿主为 Regular / Docked 两个 surface 各至多调一次，
+    /// 把返回值缓存；宽度变化时再以新 Context 重新调用。
+    /// 约束：每次必须返回 fresh unparented FrameworkElement，宿主会校验 Parent==null。
     /// </summary>
-    private double EstimateCapsuleWidth(string text)
+    public FrameworkElement? CreateCapsuleView(PaperCapsuleViewContext context)
     {
-        var textWidth = text.Length * 7.0;
-        try
+        var view = new BalanceCapsuleView(context);
+        // 首次返回时立即把当前最新状态填入，避免宿主先展示一个空 view 再被 Update 刷新。
+        view.Update(_capsuleText, _capsuleRingColorHex, _capsuleRingArc, _capsuleIsPeakHour);
+        if (context.Surface == PaperCapsuleSurfaceKind.Docked)
         {
-            var formatted = new FormattedText(
-                text,
-                CultureInfo.CurrentUICulture,
-                FlowDirection.LeftToRight,
-                new Typeface(
-                    new FontFamily(_theme.FontFamily),
-                    FontStyles.Normal,
-                    FontWeights.Normal,
-                    FontStretches.Normal),
-                12.0,
-                Brushes.Black,
-                96.0);
-            textWidth = formatted.WidthIncludingTrailingWhitespace;
+            _dockedCapsuleView = view;
         }
-        catch
+        else
         {
-            // 测量失败时保留线性估算兜底。
+            _regularCapsuleView = view;
         }
-        return Math.Ceiling(35 + textWidth + 1);
+        return view;
     }
 
     /// <summary>
@@ -969,21 +1062,37 @@ internal sealed class BalanceSession : IPaperBodySession
             }
             return sb.ToString();
         }
+        // DeepSeek：百分数在前，货币余额在后，格式 "xx% · ¥xx.xx"（百分数由设置开关）。
+        var hasPercent = settings.ShowPercentage
+            && snapshot.HasRemaining
+            && !double.IsNaN(snapshot.Remaining);
+        if (hasPercent)
+        {
+            var percent = (int)Math.Round(
+                Math.Clamp(riskRatio, 0, 1) * 100.0, MidpointRounding.AwayFromZero);
+            sb.Append(percent.ToString(CultureInfo.CurrentCulture));
+            sb.Append('%');
+            sb.Append(" · ");
+        }
         if (!string.IsNullOrEmpty(settings.CurrencySymbol))
         {
             sb.Append(settings.CurrencySymbol);
         }
         // 无数据时 FormatAmount(NaN) 输出 "—"。
         sb.Append(FormatAmount(snapshot.Remaining));
-        if (settings.ShowPercentage && snapshot.HasRemaining && !double.IsNaN(snapshot.Remaining))
-        {
-            var percent = (int)Math.Round(
-                Math.Clamp(riskRatio, 0, 1) * 100.0, MidpointRounding.AwayFromZero);
-            sb.Append(" · ");
-            sb.Append(percent.ToString(CultureInfo.CurrentCulture));
-            sb.Append('%');
-        }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// 高峰时段判断。
+    /// [测试模式] 当前为 UTC+8 的 23:30-23:35（5 分钟窗口），便于验证 30 秒哨兵
+    /// 在时段切换时自动显隐太阳图标；正式版本应改回 9:00-12:00 / 14:00-18:00。
+    /// 不依赖用户本地时区，始终按北京时间计算。
+    /// </summary>
+    private static bool IsPeakHourUtc8()
+    {
+        var now = DateTime.UtcNow.AddHours(8);
+        return now.Hour == 23 && now.Minute >= 30 && now.Minute < 35;
     }
 
     /// <summary>
@@ -1179,10 +1288,10 @@ internal sealed class BalanceSession : IPaperBodySession
             core.WebMessageReceived += OnWebMessageReceived;
 
             var pluginDirectory =
-                Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
+                System.IO.Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
                 ?? AppContext.BaseDirectory;
             var htmlFile = HtmlFileNameFor(_state.Provider);
-            if (!File.Exists(Path.Combine(pluginDirectory, "web", htmlFile)))
+            if (!File.Exists(System.IO.Path.Combine(pluginDirectory, "web", htmlFile)))
             {
                 throw new InvalidOperationException($"缺少 web/{htmlFile}。");
             }
@@ -1244,9 +1353,9 @@ internal sealed class BalanceSession : IPaperBodySession
     private static Task<CoreWebView2Environment> CreateWebViewEnvironmentAsync()
     {
         var pluginDirectory =
-            Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
+            System.IO.Path.GetDirectoryName(typeof(ApiBalanceMonitorPlugin).Assembly.Location)
             ?? AppContext.BaseDirectory;
-        var userDataFolder = Path.Combine(pluginDirectory, ".runtime", "webview2");
+        var userDataFolder = System.IO.Path.Combine(pluginDirectory, ".runtime", "webview2");
         Directory.CreateDirectory(userDataFolder);
         return CoreWebView2Environment.CreateAsync(
             browserExecutableFolder: null,
@@ -1696,6 +1805,258 @@ internal sealed class BalanceSession : IPaperBodySession
             (byte)(from.R + (to.R - from.R) * t),
             (byte)(from.G + (to.G - from.G) * t),
             (byte)(from.B + (to.B - from.B) * t));
+    }
+
+    // ----------------------------------------------------------------------
+    // 协议 1.7 自定义胶囊视图：完全由插件渲染，宿主只在 Theme / Width / Surface
+    // 这三个维度上提供上下文。视觉布局 [6px pad][18px ring][5px gap][* text][4px gap][auto sun]
+    // 与宿主 1.6 模板的 (Padding 6/0/6/0) + (Component Gap 5) + ProgressRing(18) 一致；
+    // 末尾的 sun 列承载 DeepSeek 高峰时段的太阳图标（用 SVG 几何绘制，非高峰时段隐藏）。
+    // ----------------------------------------------------------------------
+
+    private sealed class BalanceCapsuleView : Grid
+    {
+        private readonly TextBlock _label;
+        private readonly BalanceProgressRing _ring;
+        private readonly BalanceSunIcon _sun;
+
+        public BalanceCapsuleView(PaperCapsuleViewContext context)
+        {
+            Background = Brushes.Transparent;
+            ClipToBounds = true;
+            // 宿主还会强制重置 IsHitTestVisible / Focusable / Stretch 对齐，本地保险。
+            IsHitTestVisible = false;
+            Focusable = false;
+            HorizontalAlignment = HorizontalAlignment.Stretch;
+            VerticalAlignment = VerticalAlignment.Stretch;
+
+            // 列布局：[6 pad][18 ring][5 gap][* text][5 gap][auto sun]
+            // sun 前 gap 取 5 与宿主 PluginCapsuleComponentGap 一致，差额 = 6（右 padding）。
+            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
+            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
+            ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            _ring = new BalanceProgressRing
+            {
+                Width = 18,
+                Height = 18,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            Grid.SetColumn(_ring, 1);
+            Children.Add(_ring);
+
+            _label = new TextBlock
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextAlignment = TextAlignment.Left
+            };
+            Grid.SetColumn(_label, 3);
+            Children.Add(_label);
+
+            _sun = new BalanceSunIcon
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Visibility = Visibility.Collapsed
+            };
+            Grid.SetColumn(_sun, 5);
+            Children.Add(_sun);
+
+            ApplyTheme(context.Theme);
+        }
+
+        /// <summary>
+        /// 刷新胶囊状态。仅设文本与圆环颜色 / 弧值，圆环底色由 ApplyTheme 设置；
+        /// isPeakHour=true 时（DeepSeek UTC+8 高峰时段）在余额右侧显示太阳图标，其它时刻隐藏。
+        /// </summary>
+        public void Update(
+            string text,
+            string ringColorHex,
+            double ringArc,
+            bool isPeakHour)
+        {
+            _label.Text = text;
+            _ring.Value = Math.Clamp(ringArc, 0, 1);
+            _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
+            _sun.Visibility = isPeakHour ? Visibility.Visible : Visibility.Collapsed;
+            _ring.InvalidateVisual();
+        }
+
+        /// <summary>
+        /// 主题切换：重设文本字体 / 字号 / 颜色，圆环底色（近似 Theme.Tint(38)）。
+        /// 字号取 12 × FontScale，与宿主默认 CapsuleTextSize=Medium + AppTypography.Scale 一致。
+        /// </summary>
+        public void ApplyTheme(PaperBodyTheme theme)
+        {
+            var scale = Math.Clamp(theme.FontScale, 0.85, 1.2);
+            _label.FontFamily = new FontFamily(theme.FontFamily);
+            _label.FontSize = 12.0 * scale;
+            _label.FontWeight = FontWeights.Normal;
+            // BrightWeakTextBrush 在浅色下等于 WeakTextBrush，深色下浅化 22%。
+            // 这里取 WeakTextColor 作为单一字段近似（浅色完全一致，深色略偏暗，但 1.6 模板
+            // 对未设 Color 的 Text 组件也走这条 Tone 兜底，视觉同源）。
+            _label.Foreground = ToBrush(theme.WeakTextColor, "#707070");
+
+            // TrackBrush 近似 Theme.Tint(38)：在当前 AccentColor 上叠加 alpha=38。
+            // PaperBodyTheme 不暴露 Theme.Tint，使用最近的色板字段 AccentColor 做近似。
+            var accent = ToBrush(theme.AccentColor, "#B07A31");
+            var track = new SolidColorBrush(
+                Color.FromArgb(38, accent.Color.R, accent.Color.G, accent.Color.B));
+            track.Freeze();
+            _ring.TrackBrush = track;
+            _ring.InvalidateVisual();
+        }
+
+        private static SolidColorBrush ToBrush(string value, string fallback)
+        {
+            try
+            {
+                return new SolidColorBrush(
+                    (Color)ColorConverter.ConvertFromString(value)!);
+            }
+            catch
+            {
+                try
+                {
+                    return new SolidColorBrush(
+                        (Color)ColorConverter.ConvertFromString(fallback)!);
+                }
+                catch
+                {
+                    return new SolidColorBrush(Colors.Gray);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 太阳图标：用 WPF 几何图元绘制 SVG 风格的太阳（中心圆盘 + 8 条光芒）。
+    /// 14×14 DIP，固定大小，不参与主题切换。
+    /// </summary>
+    private sealed class BalanceSunIcon : Canvas
+    {
+        private const double Size = 14;
+        private const double Center = 7;
+        private const double CoreRadius = 2.6;
+        private const double RayInner = 4.6;
+        private const double RayOuter = 7;
+        private const double StrokeThickness = 1.4;
+
+        public BalanceSunIcon()
+        {
+            Width = Size;
+            Height = Size;
+            IsHitTestVisible = false;
+            ClipToBounds = false;
+
+            // 太阳主色：amber，与插件风险色 Warming(#FFC107) 同源。
+            var sunBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07));
+            sunBrush.Freeze();
+
+            // 中心圆盘
+            var core = new Ellipse
+            {
+                Width = CoreRadius * 2,
+                Height = CoreRadius * 2,
+                Fill = sunBrush
+            };
+            SetLeft(core, Center - CoreRadius);
+            SetTop(core, Center - CoreRadius);
+            Children.Add(core);
+
+            // 8 条光芒（每 45° 一条），圆角端点让图标柔和
+            for (var i = 0; i < 8; i++)
+            {
+                var angle = i * Math.PI / 4;
+                var cos = Math.Cos(angle);
+                var sin = Math.Sin(angle);
+                var ray = new Line
+                {
+                    X1 = Center + cos * RayInner,
+                    Y1 = Center + sin * RayInner,
+                    X2 = Center + cos * RayOuter,
+                    Y2 = Center + sin * RayOuter,
+                    Stroke = sunBrush,
+                    StrokeThickness = StrokeThickness,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round
+                };
+                Children.Add(ray);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 圆环进度控件。完全 1:1 复刻宿主 CapsuleProgressRing（PaperWindow.PluginCapsule.cs）：
+    /// Pen 粗细 2，半径 = max(1, size/2 - 1.5)，起点 -90° 顺时针，value≥0.999 画整圆。
+    /// </summary>
+    private sealed class BalanceProgressRing : FrameworkElement
+    {
+        public double Value { get; set; }
+        public Brush ForegroundBrush { get; set; } = Brushes.Gray;
+        public Brush TrackBrush { get; set; } = Brushes.LightGray;
+
+        protected override void OnRender(DrawingContext dc)
+        {
+            base.OnRender(dc);
+            var size = Math.Min(ActualWidth, ActualHeight);
+            if (size <= 2)
+            {
+                return;
+            }
+
+            var center = new Point(ActualWidth / 2, ActualHeight / 2);
+            var radius = Math.Max(1, size / 2 - 1.5);
+            var trackPen = new Pen(TrackBrush, 2);
+            var valuePen = new Pen(ForegroundBrush, 2)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            dc.DrawEllipse(null, trackPen, center, radius, radius);
+            var value = Math.Clamp(Value, 0, 1);
+            if (value <= 0)
+            {
+                return;
+            }
+            if (value >= 0.999)
+            {
+                dc.DrawEllipse(null, valuePen, center, radius, radius);
+                return;
+            }
+
+            var startAngle = -90.0;
+            var endAngle = startAngle + value * 360.0;
+            Point PointAt(double angle)
+            {
+                var radians = angle * Math.PI / 180.0;
+                return new Point(
+                    center.X + Math.Cos(radians) * radius,
+                    center.Y + Math.Sin(radians) * radius);
+            }
+
+            var geometry = new StreamGeometry();
+            using (var ctx = geometry.Open())
+            {
+                ctx.BeginFigure(PointAt(startAngle), false, false);
+                ctx.ArcTo(
+                    PointAt(endAngle),
+                    new Size(radius, radius),
+                    0,
+                    value > 0.5,
+                    SweepDirection.Clockwise,
+                    true,
+                    false);
+            }
+            geometry.Freeze();
+            dc.DrawGeometry(null, valuePen, geometry);
+        }
     }
 
 }
