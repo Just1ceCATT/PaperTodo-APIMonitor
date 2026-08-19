@@ -36,8 +36,8 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .ring{width:clamp(54px,9.5vw,64px);height:clamp(54px,9.5vw,64px);border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--green) 0 0%,#383833 0% 100%);position:relative}
 .ring:after{content:"";position:absolute;inset:clamp(5px,0.9vw,6px);border-radius:50%;background:var(--s)}
 .ring span{position:relative;z-index:1;font:600 clamp(11px,2.1vw,14px) var(--serif);color:var(--green)}
-.ring.warn span,.ring.warn{color:var(--warn)}
-.ring.danger span,.ring.danger{color:var(--danger)}
+.ring.warn span{color:var(--warn)}
+.ring.danger span{color:var(--danger)}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);margin-bottom:27px}
 .metric{padding:0 clamp(12px,2.6vw,18px);border-left:1px solid var(--line)}
 .metric:first-child{border-left:0;padding-left:0}
@@ -264,7 +264,7 @@ function render(msg) {
     setText("statusSub", "请在设置页填写");
   }
 
-  // 健康度：圆环 + 进度条 + 颜色
+  // 风险环：圆环 + 进度条 + 颜色
   var ratio = d.ratio || 0;
   var pct = Math.round(Math.max(0, Math.min(ratio, 1)) * 100);
   setText("ringPct", (d.hasBalance && ratio > 0) ? pct + "%" : "--");
@@ -272,7 +272,7 @@ function render(msg) {
   ring.style.background = "conic-gradient(" +
     (d.riskColor || "#78d47d") + " 0 " + pct + "%, #383833 " + pct + "% 100%)";
   applyRiskTone(ring, ratio);
-  document.getElementById("ring").firstElementChild && (document.getElementById("ring").firstElementChild.style.color = d.riskColor || "#78d47d");
+  if (ring.firstElementChild) ring.firstElementChild.style.color = d.riskColor || "#78d47d";
 
   // 三指标卡
   setText("costToday", d.costToday || "—");
@@ -359,15 +359,6 @@ function bindRange() {
   sel.addEventListener("change", sync);
   sel.addEventListener("input", sync);
   sel.addEventListener("click", sync);
-  sel.addEventListener("focus", function () { sel.style.borderColor = "var(--green)"; });
-  sel.addEventListener("blur", function () { sel.style.borderColor = ""; });
-  // 键盘事件（鼠标点击受限时可键盘切换）
-  sel.addEventListener("keydown", function (e) {
-    if (e.key === "ArrowUp" || e.key === "ArrowDown" ||
-        e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      setTimeout(sync, 0);
-    }
-  });
   // 自定义日期
   document.getElementById("fromDate").addEventListener("change", function () { customFrom = this.value; renderChart(); });
   document.getElementById("toDate").addEventListener("change", function () { customTo = this.value; renderChart(); });
@@ -479,7 +470,7 @@ function fmtDay(d) {
   return String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 
-// 趋势 SVG 箭头（三角 + 柄），比文本 ↑/↓ 更明显、贴合深色主题
+// 趋势箭头 SVG：三角+柄,贴合深色主题
 function trendSvg(dir) {
   var body;
   if (dir === "↑") {
@@ -506,12 +497,9 @@ window.__renderBalance = function (msg) {
 };
 
 // 全部内容放大预览（固定 1.35，不做超高适配，便于查看放大效果）
-function fitViewport() {
+window.addEventListener("load", function () {
   document.body.style.zoom = "1.35";
-}
-window.addEventListener("resize", fitViewport);
-window.addEventListener("load", fitViewport);
-fitViewport();
+});
 
 // 监听 postMessage
 if (bridge) {

@@ -19,17 +19,8 @@ namespace PaperTodo.Plugin.ApiBalanceMonitor;
 /// 余额监测插件：拉取 DeepSeek /user/balance 接口，
 /// 在胶囊中显示「绿/黄/红圆环 + 货币 + 余额 + 可选百分比」。
 ///
-/// 实现要点（不修改宿主）：
-/// - 胶囊由插件自己渲染（IPaperCapsuleViewProvider，协议 1.7）。自定义视图
-///   BalanceCapsuleView 完全 1:1 复刻宿主 1.6 模板的视觉：左 6 padding + 18 圆环 +
-///   间距 5 + 填充文本，圆环绘制 1:1 移植宿主 CapsuleProgressRing。宿主只在
-///   Theme / Surface / Width 这三个维度提供上下文。
-/// - SetCapsulePresentation 仍被调用，但仅作为协议层通道传 ToolTip / PlainText
-///   / PreferredWidth(=AutomaticWidth)，Components 仅作非空校验占位——customView
-///   存在时宿主不会渲染 1.6 模板（见 PaperWindow.PluginCapsule.cs:BuildPluginCapsuleContent）。
-/// - 设置项由宿主自带的"插件"设置页绘制（boolean / string / number / select 四类）。
-/// - 鉴权信息（apiKey）会随设置写入 plugins/data/api.balance.monitor.json（明文），
-///   因此在 plugin.json 的 description 中明确告知用户并建议使用只读子 key。
+/// 协议 1.7 自渲染胶囊视图（IPaperCapsuleViewProvider），1.8 自渲染 MiniView
+/// （IPaperMiniViewProvider）；设置页由宿主绘制，鉴权 Key 明文写入插件数据文件。
 /// </summary>
 public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
 {
@@ -122,7 +113,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // 今日各模型消费明细：model -> cost（元）。仅保留今日与昨日，便于卡片展示。
     private Dictionary<string, double>? _costTodayByModel;
     private double? _minimaxRemainingPercent;
-    private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours, long WeeklyStart, long WeeklyEnd)>? _minimaxModelRemains;
+    private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? _minimaxModelRemains;
     private PaperBodyTheme _theme;
 
     // 1.7 胶囊自定义视图：宿主为每个 surface 至多请求一次并缓存，宽度变化时重建。
@@ -136,8 +127,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private string _capsuleText = "—";
     private string _capsuleRingColorHex = "#9E9E9E";
     private double _capsuleRingArc;
-    // 时段判断（RefreshPeakHour 哨兵维护）保留 _lastIsPeakHour 字段供后续扩展。
-    // 太阳图标已移除，胶囊不再需要 _capsuleIsPeakHour 字段。
 
     // WebView2 监视面板
     private Grid _viewRoot = null!;
@@ -170,9 +159,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _timer = new DispatcherTimer(DispatcherPriority.Background);
         _timer.Tick += async (_, _) => await PollAsync();
 
-        // 高峰时段哨兵：30 秒粒度足够覆盖 9:00 / 12:00 / 14:00 / 18:00 四个切换点
-        // （30 秒 × 60 = 30 分钟，足以漂移到下个时段起点）。Priority=Background 避免与
-        // 数据拉取争抢 UI 线程。
+        // 30 秒粒度足以覆盖 9:00 / 12:00 / 14:00 / 18:00 四个时段切换点。
         _peakCheckTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromSeconds(30)
@@ -180,14 +167,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _peakCheckTimer.Tick += (_, _) => RefreshPeakHour();
 
         ApplySettings(_settings);
-        // 哨兵 timer 始终运行（与 backgroundUpdates 一致），首次启动即同步当前状态。
+        // 哨兵始终运行，首次启动同步当前状态。
         RefreshPeakHour();
         if (!_peakCheckTimer.IsEnabled)
         {
             _peakCheckTimer.Start();
         }
-        // WebView2 在 View 首次布局后初始化（TryStartWebView），构造时不主动拉取，
-        // 等 timer 首次触发，避免阻塞宿主启动。
+        // WebView2 延迟到首次布局后初始化，避免阻塞宿主启动。
     }
 
     public FrameworkElement View => _viewRoot;
@@ -197,9 +183,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     public void CancelInteractions() { /* 无交互状态 */ }
 
     /// <summary>
-    /// 高峰时段哨兵：每 30 秒检查 UTC+8 是否进入/离开高峰窗口。
-    /// 状态变化时复用 UpdateSnapshot——它会把新 isPeakHour 写入 signature，
-    /// 进而触发缓存视图 Update 与 SetCapsulePresentation（含动态 Components）。
+    /// DeepSeek 高峰时段哨兵占位（UTC+8 9-12 / 14-18）：状态变化时复用 UpdateSnapshot。
+    /// 当前未驱动 UI 渲染，保留以便后续业务扩展（自定义视图可直接读取 _lastIsPeakHour）。
     /// </summary>
     private void RefreshPeakHour()
     {
@@ -240,18 +225,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     public void OnActivated() { }
     public void OnDeactivated() { }
-    public void OnVisibilityChanged(bool visible)
-    {
-        // 折叠成胶囊后仍按 backgroundUpdates 继续轮询，无需特别处理。
-    }
+    public void OnVisibilityChanged(bool visible) { }
     public void OnPresentationChanged(bool expanded) { }
     public void OnThemeChanged(PaperBodyTheme theme)
     {
         _theme = theme;
-        // 1.7 自定义视图需要跟随主题切换重新设置字体/颜色；视图尚未创建时空操作。
         _regularCapsuleView?.ApplyTheme(theme);
         _dockedCapsuleView?.ApplyTheme(theme);
-        // 1.8 边缘预览视图同步刷新；视图尚未创建时空操作。
         _miniView?.ApplyTheme(theme);
         PushView();
     }
@@ -263,14 +243,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     {
         // Provider 来自 per-paper state，不再从全局 settings 读取。
         ApplySettings(ReadSettings(settingsJson, _state.Provider));
-        // 字体设置变更后让已缓存的 MiniView 重新应用（_miniViewFontFamily 已在 ApplySettings 更新）。
         _miniView?.ApplyTheme(_theme);
     }
 
-    /// <summary>
-    /// 暴露给 BalanceMiniView：若 settings.miniViewFontFamily 非空,覆盖 theme.FontFamily;
-    /// 留空则跟随主题。属性 getter 让 MiniView.ApplyTheme 优先读取。
-    /// </summary>
+    /// <summary>MiniView 字体覆盖（来自设置项 miniViewFontFamily），留空跟随主题。</summary>
     public string MiniViewFontFamily => _miniViewFontFamily;
 
     // ---------------- 设置解析 ----------------
@@ -383,7 +359,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private void ApplySettings(BalanceSettings s)
     {
         _settings = s;
-        _miniViewFontFamily = s.MiniViewFontFamily ?? "";
+        _miniViewFontFamily = s.MiniViewFontFamily;
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
         _timer.Interval = interval;
@@ -391,19 +367,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         if (!_timer.IsEnabled)
         {
             _timer.Start();
-            // 启动后立即拉一次（不等满 interval）
-            _ = PollAsync();
         }
-        else
-        {
-            // 配置变更后也立即重拉
-            _ = PollAsync();
-        }
+        // 启动 / 配置变更后立即拉一次。
+        _ = PollAsync();
     }
 
     // ---------------- HTTP 拉取 ----------------
 
-    // DeepSeek 余额接口固定写死，不再允许用户配置 URL。
     private const string DeepSeekBalanceUrl = "https://api.deepseek.com/user/balance";
 
     private async Task PollAsync()
@@ -422,7 +392,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
         try
         {
-            // 余额 / 用量 / 消费并行拉取（v3.1 收集方式）；用量 Token 未配置时只拉余额。
+            // 余额 / 用量 / 消费并行拉取；用量 Token 未配置时只拉余额。
             // 用量与消费拉取上个月 + 本月，覆盖所有预置时段（近 30 天 / 本月 / 上月）。
             var now = DateTime.Now;
             var balanceTask = FetchBalanceAsync();
@@ -469,7 +439,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             if (platformHeader)
             {
                 request.Headers.TryAddWithoutValidation("x-app-version", "1.0.0");
-                request.Headers.TryAddWithoutValidation("Accept", "*/*");
             }
             using var response = await _http.SendAsync(request).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
@@ -529,7 +498,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             var found = false;
             var modelList = new List<(
                 string Model, double Percent, double Hours,
-                double WeeklyPercent, double WeeklyHours, long WeeklyStart, long WeeklyEnd)>();
+                double WeeklyPercent, double WeeklyHours)>();
             foreach (var m in remains.EnumerateArray())
             {
                 if (m.ValueKind != JsonValueKind.Object)
@@ -544,8 +513,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 var pct = TryReadNumber(m, "current_interval_remaining_percent");
                 var weeklyPct = TryReadNumber(m, "current_weekly_remaining_percent");
                 var weeklyMs = TryReadNumber(m, "weekly_remains_time");
-                var weeklyStart = TryReadNumber(m, "weekly_start_time");
-                var weeklyEnd = TryReadNumber(m, "weekly_end_time");
                 if (ms.HasValue)
                 {
                     modelList.Add((
@@ -553,9 +520,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                         pct ?? 100,
                         ms.Value / 3600000.0,
                         weeklyPct ?? 100,
-                        (weeklyMs ?? 0) / 3600000.0,
-                        weeklyStart.HasValue ? (long)weeklyStart.Value : 0,
-                        weeklyEnd.HasValue ? (long)weeklyEnd.Value : 0));
+                        (weeklyMs ?? 0) / 3600000.0));
                 }
                 // 收集所有模型（不 break）；best 优先取 general。
                 if (!found || name == "general")
@@ -929,11 +894,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // ---------------- 快照 & 胶囊渲染 ----------------
 
     /// <summary>
-    /// 按主题字体精确测量文本宽度（DIP）。用 TextBlock.Measure() + DesiredSize.Width，
-    /// 与 customView 中 TextBlock 实际 layout 完全同源，避免 FormattedText 与 TextBlock
-    /// 之间的字体回退 / LineHeight / 亚像素舍入差异（差额 0.1 DIP 仍会被截断）。
-    /// 测量失败回退线性估算（每个 ASCII 字符 7 DIP）。
-    /// </summary>
+/// 按主题字体精确测量文本宽度（DIP），与 customView 中 TextBlock 同源以避免亚像素舍入差异。
+/// 失败回退为每个字符 7 DIP 的线性估算。
+/// </summary>
     private double MeasureTextWidth(string text)
     {
         try
@@ -976,9 +939,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             ? text
             : $"{text}\n{snapshot.StatusText}";
 
-        // 时段判断仍由 RefreshPeakHour 哨兵维护（用于后续业务扩展）,胶囊视图不再渲染太阳图标。
-        // DeepSeek 高峰时段信息不再进入胶囊 signature。
-
+        // 胶囊 signature 不再包含 isPeakHour（太阳图标已移除）。
         var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
         if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
@@ -1034,14 +995,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 协议 1.7 自定义胶囊视图入口：宿主为 Regular / Docked 两个 surface 各至多调一次，
-    /// 把返回值缓存；宽度变化时再以新 Context 重新调用。
-    /// 约束：每次必须返回 fresh unparented FrameworkElement，宿主会校验 Parent==null。
+    /// 协议 1.7 自定义胶囊视图：宿主为 Regular / Docked 各调一次并缓存；宽度变化时重新调用。
+    /// 必须返回 fresh unparented FrameworkElement（宿主校验 Parent==null）。
     /// </summary>
     public FrameworkElement? CreateCapsuleView(PaperCapsuleViewContext context)
     {
         var view = new BalanceCapsuleView(context);
-        // 首次返回时立即把当前最新状态填入，避免宿主先展示一个空 view 再被 Update 刷新。
+        // 首次返回时立即填入最新状态，避免宿主先展示空 view 再被 Update 刷新。
         view.Update(_capsuleText, _capsuleRingColorHex, _capsuleRingArc);
         if (context.Surface == PaperCapsuleSurfaceKind.Docked)
         {
@@ -1055,38 +1015,29 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 协议 1.8 自定义边缘预览视图：默认 320×220。胶囊悬停时（在 host 现有 1.6/1.7
-    /// 放大胶囊之外）暴露给一个 brief 卡片。仅 MiniMax 场景真正实现，避免给
-    /// DeepSeek / OpenCode 返回空数据造成的误导；其他 provider 返回 null 让宿主
-    /// 走 1.6/1.7 放大胶囊回退（DescribePluginCapsuleFallback）。
-    /// </summary>
+    /// <summary>
+/// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
+/// </summary>
     public PaperMiniViewSize PreferredMiniViewSize => new(440, 180);
 
     public FrameworkElement? CreateMiniView(PaperMiniViewContext context)
     {
-        // OpenCode 等无数据源的 provider 走 1.6/1.7 fallback;MiniMax + DeepSeek 走 1.8 自定义。
         if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
         {
             return null;
         }
         var view = new BalanceMiniView(this, context);
         view.ApplyTheme(context.Theme);
-        // 字段先赋值,确保 ApplyMiniViewSnapshot 内对 _miniView.Update 的调用不被早 return。
+        // 字段先赋值，确保 ApplyMiniViewSnapshot 内的 Update 调用不被早 return。
         _miniView = view;
-        // 首次返回时立即把当前最新状态填入,避免宿主先展示一个空 view 再被 Update 刷新。
         ApplyMiniViewSnapshot();
         return view;
     }
 
     /// <summary>
-    /// 1.8 边缘预览显隐通知：false 表示已开始收起动画，true 表示已渲染。
-    /// 本插件业务状态由胶囊 / 监视面板可见性统一驱动，无需根据 mini 显隐做额外工作。
+    /// 1.8 边缘预览显隐通知：本插件业务状态由胶囊/监视面板可见性统一驱动，无需响应。
     /// </summary>
-    public void OnMiniViewVisibilityChanged(bool visible)
-    {
-        // 不做事：关闭动画期间不要清空已绘制树（host 文档要求），业务更新仍按
-        // IPaperBodySession.OnVisibilityChanged 契约继续。
-    }
+    public void OnMiniViewVisibilityChanged(bool visible) { }
 
     /// <summary>
     /// 把当前 snapshot 推给 1.8 边缘预览视图。MiniMax 走 5h+周双模块;
@@ -1125,6 +1076,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         if (string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
         {
             var todayCost = BuildCostTodayText();
+            var costTodayFoot = BuildCostTodayFoot();
             var cost7d = BuildCost7dText();
             var cost7dFoot = BuildCost7dFoot();
             var todayTokens = BuildTodayTokens();
@@ -1133,6 +1085,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             var ds = new BalanceMiniView.DeepSeekMetrics(
                 TodayCostText: string.IsNullOrEmpty(todayCost) ? "" : todayCost,
+                CostTodayFoot: costTodayFoot,
                 Cost7dText: string.IsNullOrEmpty(cost7d) ? "" : cost7d,
                 Cost7dFoot: cost7dFoot,
                 TodayTokensText: FormatTokens(todayTokens),
@@ -1267,10 +1220,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return RiskState.Safe;
     }
 
-    /// <summary>
-    /// v3.1 颜色：Safe 绿 / Warming 黄 / Danger 橙 / Overrun 红。
-    /// 宿主 ProgressRing 只接受单色，放弃 v3.1 的颜色渐变。
-    /// </summary>
+    /// <summary>v3.1 颜色：Safe 绿 / Warming 黄 / Danger 橙 / Overrun 红。</summary>
     private static string RingColor(double ratio) => ClassifyRisk(ratio) switch
     {
         RiskState.Overrun     => "#F44336",
@@ -1288,14 +1238,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         if (ratio >= 1.0) return 1.0;
         return Math.Clamp(ratio, 0, 1);
     }
-    /// <summary>
-    /// 把 NaN/±Infinity 归一为 0，避免 JsonSerializer 序列化时抛异常。
-    /// </summary>
+
+    /// <summary>NaN/±Infinity 归一为 0，避免 JsonSerializer 序列化时抛异常。</summary>
     private static double Finite(double value) => double.IsFinite(value) ? value : 0;
 
-    /// <summary>
-    /// 可空版本的 Finite：非有限值返回 null。
-    /// </summary>
+    /// <summary>Finite 的可空版本：非有限值返回 null。</summary>
     private static double? FiniteOrNull(double? value) =>
         value.HasValue && double.IsFinite(value.Value) ? value : null;
 
@@ -1312,11 +1259,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             : asDecimal.ToString("F2", CultureInfo.CurrentCulture);
     }
 
-    /// <summary>
-    /// "12345" → "1.2万";"345000000" → "3.4亿"。
-    /// 10000 以下原样返回 "1234"。负数/NaN 视为无效返回 "—"。
-    /// 用于 DeepSeek MiniView 第三列 "≈ 5.0万" 副文本。
-    /// </summary>
+    /// <summary>万/亿简写（"12345" → "1.2万"），负数/NaN 返回 "—"。</summary>
     private static string FormatWanYi(double n)
     {
         if (!double.IsFinite(n) || n < 0)
@@ -1334,10 +1277,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return ((long)Math.Round(n)).ToString(CultureInfo.CurrentCulture);
     }
 
-    /// <summary>
-    /// 千分位逗号分隔。1000 → "1,000"。负数视为无效返回 "0"。
-    /// 用于 DeepSeek MiniView 缓存命中与主值展示。
-    /// </summary>
+    /// <summary>千分位逗号分隔（1000 → "1,000"），负数返回 "0"。</summary>
     private static string FormatThousands(double n)
     {
         if (!double.IsFinite(n) || n < 0)
@@ -1348,10 +1288,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return rounded.ToString("N0", CultureInfo.CurrentCulture);
     }
 
-    /// <summary>
-    /// 整数 tokens 格式化：<=0 显示 "—";否则千分位。
-    /// 与 HTML 端 fmtThousands + 是否>0 判断等价。
-    /// </summary>
+    /// <summary>整数 tokens 格式化：&lt;=0 显示 "—"，否则千分位。</summary>
     private static string FormatTokens(double n)
     {
         if (!double.IsFinite(n) || n <= 0)
@@ -1361,9 +1298,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return FormatThousands(n);
     }
 
-    /// <summary>
-    /// 缓存命中率 0..1 → "50.10%"。null/NaN 返回 null（让 view 自行隐藏该行）。
-    /// </summary>
+    /// <summary>缓存命中率 0..1 → "50.10%"；null/NaN 返回 null。</summary>
     private static string? FormatCacheRate(double? rate)
     {
         if (!rate.HasValue || !double.IsFinite(rate.Value))
@@ -1383,9 +1318,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // ---------------- WebView2 监视面板 ----------------
 
     /// <summary>
-    /// 构建正文容器：插件自建 WebView2，加载本地 web/index.html 渲染监视面板。
-    /// 数据由 C# 侧拉取后通过 PostWebMessageAsJson 推给页面 JS，页面自身不发网络请求
-    /// （规避 WebView2 的 DenyCors / CORS 限制，且不修改宿主）。
+    /// 构建正文容器：插件自建 WebView2 渲染监视面板，数据由 C# 推送给页面 JS（不发网络请求，规避 WebView2 CORS）。
     /// </summary>
     private void BuildWebView()
     {
@@ -1406,9 +1339,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _viewRoot.SizeChanged += OnViewRootSizeChanged;
     }
 
-    /// <summary>
-    /// 按供应商选择面板 HTML 文件。DeepSeek / MiniMax / OpenCode Go 各自独立面板。
-    /// </summary>
+    /// <summary>按供应商选择面板 HTML 文件。</summary>
     private static string HtmlFileNameFor(string provider) => provider switch
     {
         "minimax" => "minimax.html",
@@ -1416,9 +1347,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _ => "monitor.html"
     };
 
-    /// <summary>
-    /// 供应商切换后重新导航 WebView2 到对应供应商的面板 HTML。
-    /// </summary>
+    /// <summary>供应商切换后重新导航 WebView2 到对应面板 HTML。</summary>
     private void ReloadPanelForProvider()
     {
         _documentReady = false;
@@ -1589,9 +1518,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         object? sender,
         CoreWebView2WebMessageReceivedEventArgs e)
     {
-        // 页面 JS 就绪后发送 {type:"ready"}，宿主立即补发最新数据。
-        // 页面能发出 ready 说明消息监听已挂载，无需再等 NavigationCompleted。
-        // 另支持 {type:"switchProvider", provider:"..."} 切换当前 paper 的供应商。
         try
         {
             var json = e.WebMessageAsJson;
@@ -1616,16 +1542,14 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
         catch
         {
-            // 页面消息解析异常不影响面板主体，静默。
+            // 页面消息解析异常不影响面板主体。
         }
     }
 
     private static bool IsValidProvider(string p) =>
         p == PaperState.DeepSeek || p == PaperState.MiniMax || p == PaperState.OpenCode;
 
-    /// <summary>
-    /// 切换当前 paper 的供应商：写 per-paper state + 重载面板 + 立即拉取。
-    /// </summary>
+    /// <summary>切换当前 paper 的供应商：写 state + 重载面板 + 立即拉取。</summary>
     private void SetPaperProvider(string newProvider)
     {
         if (string.Equals(_state.Provider, newProvider, StringComparison.Ordinal))
@@ -1633,7 +1557,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             return;
         }
         _state = new PaperState(newProvider);
-        // 重新读取设置以应用新 provider 对应的 Key。
         _settings = ReadSettings(_context.SettingsJson, _state.Provider);
         try
         {
@@ -1641,7 +1564,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
         catch
         {
-            // 状态写失败不致命；本会话内仍按新 provider 工作。
+            // 状态写失败不致命，本会话内仍按新 provider 工作。
         }
         ReloadPanelForProvider();
         // 重置 snapshot 避免显示旧 provider 的残留数据。
@@ -1650,10 +1573,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _ = PollAsync();
     }
 
-    /// <summary>
-    /// 把最新主题与数据推给 HTML 面板。WebView2 未初始化或页面未就绪时缓存，
-    /// 就绪后自动补发。
-    /// </summary>
+    /// <summary>把最新数据推给 HTML 面板；未就绪时缓存，就绪后自动补发。</summary>
     private void PushView()
     {
         if (_disposed)
@@ -1690,14 +1610,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
     }
 
-    /// <summary>
-    /// 组装推给 HTML 的 JSON：{ theme, data }。data 含状态、余额、风险、用量、更新时间。
-    /// </summary>
+    /// <summary>组装推给 HTML 的 JSON：{ theme, data }。</summary>
     private string BuildViewPayload()
     {
         var status = _snapshot.StatusText ?? "";
         var hasData = _snapshot.HasRemaining && !double.IsNaN(_snapshot.Remaining);
-        // MiniMax：余额是时长额度，风险环用"已消耗比例"（100 − 剩余百分比）。
         var isMiniMax = IsMiniMax;
         var ratio = ComputeRiskRatioForCurrent();
         var riskColor = ToHex(RiskColor(ratio));
@@ -1722,8 +1639,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             ["text"] = NormalizeHex(_theme.TextColor, "#202020"),
             ["weak"] = NormalizeHex(_theme.WeakTextColor, "#707070"),
             ["accent"] = NormalizeHex(_theme.AccentColor, "#B07A31"),
-            ["paper"] = NormalizeHex(_theme.PaperColor, "#FFF8E6"),
-            ["fontScale"] = Math.Clamp(_theme.FontScale, 0.85, 1.2)
+            ["paper"] = NormalizeHex(_theme.PaperColor, "#FFF8E6")
         };
 
         var data = new Dictionary<string, object?>
@@ -1749,9 +1665,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             ["todayHit"] = Finite(BuildTodayHit()),
             ["cacheRate"] = FiniteOrNull(BuildTodayCacheRate()),
             ["modelRemains"] = BuildMiniMaxModelRemains(),
-            ["remainingPercent"] = _minimaxRemainingPercent.HasValue
-                ? (double?)Math.Clamp(_minimaxRemainingPercent.Value, 0, 100)
-                : null,
             ["usage"] = BuildUsageArray()
         };
 
@@ -1762,9 +1675,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         });
     }
 
-    /// <summary>
-    /// 今日（当天）消费文本；无数据返回空字符串。
-    /// </summary>
+    /// <summary>今日消费文本；无数据返回空。</summary>
     private string BuildCostTodayText()
     {
         if (_costDays == null || _costDays.Length == 0)
@@ -1780,10 +1691,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return _settings.CurrencySymbol + day.Cost.ToString("0.00", CultureInfo.CurrentCulture);
     }
 
-    /// <summary>
-    /// 今日 vs 昨日消费变化箭头文案：上升"↑xx.x%"，下降"↓xx.x%"，持平"→0.0%"。
-    /// 无数据或昨日为 0 时返回空。
-    /// </summary>
+    /// <summary>今日 vs 昨日消费变化文案（↑/↓/→）；无昨日数据时返回空。</summary>
     private string BuildCostTodayFoot()
     {
         if (_costDays == null || _costDays.Length == 0)
@@ -1805,9 +1713,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             Math.Abs(diff).ToString("0.0", CultureInfo.CurrentCulture) + "%";
     }
 
-    /// <summary>
-    /// 今日各模型消费明细数组（按金额降序），用于"今日消费金额"卡片下方的模型分布。
-    /// </summary>
+    /// <summary>今日各模型消费明细（按金额降序）。</summary>
     private object[] BuildCostTodayByModels()
     {
         if (_costTodayByModel == null || _costTodayByModel.Count == 0)
@@ -1825,9 +1731,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             .ToArray();
     }
 
-    /// <summary>
-    /// MiniMax 各模型剩余额度数组（供 minimax.html 渲染）：model + 剩余百分比 + 剩余小时。
-    /// </summary>
+    /// <summary>MiniMax 各模型剩余额度（供 minimax.html 渲染）。</summary>
     private object[] BuildMiniMaxModelRemains()
     {
         if (_minimaxModelRemains == null || _minimaxModelRemains.Count == 0)
@@ -1841,16 +1745,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 ["percent"] = Math.Clamp(x.Percent, 0, 100),
                 ["hours"] = Math.Round(x.Hours, 1),
                 ["weeklyPercent"] = Math.Clamp(x.WeeklyPercent, 0, 100),
-                ["weeklyHours"] = Math.Round(x.WeeklyHours, 1),
-                ["weeklyStart"] = x.WeeklyStart,
-                ["weeklyEnd"] = x.WeeklyEnd
+                ["weeklyHours"] = Math.Round(x.WeeklyHours, 1)
             })
             .ToArray();
     }
 
-    /// <summary>
-    /// 今日用量明细；当天无数据返回 null。
-    /// </summary>
+    /// <summary>今日用量明细；当天无数据返回 null。</summary>
     private UsageDay? FindTodayUsage()
     {
         if (_usageDays == null || _usageDays.Length == 0)
@@ -1878,9 +1778,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return day.CacheHit / (day.CacheHit + day.CacheMiss);
     }
 
-    /// <summary>
-    /// 近 7 天（含今天）消费总额；无数据返回 0。
-    /// </summary>
+    /// <summary>近 7 天（含今天）消费总额；无数据返回 0。</summary>
     private double SumLast7DaysCost()
     {
         if (_costDays == null || _costDays.Length == 0)
@@ -1913,9 +1811,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return _settings.CurrencySymbol + total.ToString("0.00", CultureInfo.CurrentCulture);
     }
 
-    /// <summary>
-    /// 近 7 天日均消费文案（"日均 ¥X.XX"）；数据源存在即返回（可能为 ¥0.00）。
-    /// </summary>
+    /// <summary>近 7 天日均消费文案（"日均 ¥X.XX"）；无数据返回空。</summary>
     private string BuildCost7dFoot()
     {
         if (_costDays == null || _costDays.Length == 0)
@@ -1927,9 +1823,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             avg.ToString("0.00", CultureInfo.CurrentCulture);
     }
 
-    /// <summary>
-    /// 全量每日 Token 用量数组（含 date 字段），供 HTML 按所选时段筛选渲染柱状图。
-    /// </summary>
+    /// <summary>全量每日 Token 用量数组（含 date 字段），供 HTML 按所选时段筛选。</summary>
     private object[] BuildUsageArray()
     {
         if (_usageDays == null || _usageDays.Length == 0)
@@ -1960,9 +1854,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return value.StartsWith("#") ? value : "#" + value;
     }
 
-    /// <summary>
-    /// v3.1 风险环颜色（含过渡渐变）：绿 → 黄 → 橙 → 红；未配置阈值时灰。
-    /// </summary>
+    /// <summary>v3.1 风险环颜色（含过渡渐变）：绿 → 黄 → 橙 → 红；未配置阈值时灰。</summary>
     private static Color RiskColor(double ratio)
     {
         if (ratio <= 0)
@@ -2052,8 +1944,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         /// <summary>
-        /// 刷新胶囊状态。仅设文本与圆环颜色 / 弧值，圆环底色由 ApplyTheme 设置；
-        /// 太阳图标已移除（时段判断仍由 RefreshPeakHour 维护,后续业务复用）。
+        /// 刷新胶囊文本与圆环颜色 / 弧值。
         /// </summary>
         public void Update(
             string text,
@@ -2509,8 +2400,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         /// <summary>
-        /// 构建 DeepSeek 单列（仅主值+副标+一行 foot）:Grid 包含 [1px 左竖线 | StackPanel]。
-        /// showDivider=false 时把 Border 隐藏（首列不显示左竖线）。
+        /// 构建 DeepSeek 单列：[1px 左竖线 | StackPanel]，showDivider 控制左竖线可见性。
         /// </summary>
         private void BuildDeepSeekColumn(
             out Grid column,
@@ -2576,8 +2466,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         /// <summary>
-        /// 构建 DeepSeek 第三列（带 Tokens 后缀 + 3 行 foot）:Grid 包含 StackPanel,
-        /// StackPanel 内容依次为：Label / Value(横向 StackPanel:Number + Suffix) / Foot1 / Foot2 / Foot3。
+        /// 构建 DeepSeek 第三列：StackPanel 内容依次为 Label / Value(Number + Suffix) / Foot1 / Foot2 / Foot3。
         /// </summary>
         private void BuildDeepSeekColumnWithTokens(
             out Grid column,
@@ -2706,11 +2595,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             return grid;
         }
 
-        /// <summary>
-        /// 自定义圆角进度条：track 铺满底色，fill 按 ratio 收窄到右侧。
-        /// 高度 8 DIP、半径 4；左侧贴齐字符（Margin.Left = 0），右侧 24 DIP 缩进。
-        /// Update 时修改 fill.Width。
-        /// </summary>
+        /// <summary>圆角进度条：track 铺底色，fill 按 ratio 收窄；高 8 DIP、半径 4。</summary>
         private static (Grid grid, Rectangle track, Rectangle fill) BuildStyledProgressBar()
         {
             var grid = new Grid
@@ -2737,32 +2622,21 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         /// <summary>
-        /// 5h 进度条容器尺寸变化时按当前 ratio 重新计算 fill.Width。
-        /// 避免 ratio 不变但 bar 被布局拉伸时填充宽度与底色不同步。
-        /// </summary>
+        /// <summary>进度条容器尺寸变化时按当前 ratio 重算 fill.Width。</summary>
         private void OnHourlyBarSizeChanged(object sender, SizeChangedEventArgs e)
         {
             _hourlyFill.Width = Math.Max(0, _hourlyBarGrid.ActualWidth * _lastHourlyRatio);
         }
 
-        /// <summary>
-        /// 周模块进度条 SizeChanged：同 5h。
-        /// </summary>
         private void OnWeeklyBarSizeChanged(object sender, SizeChangedEventArgs e)
         {
             _weeklyFill.Width = Math.Max(0, _weeklyBarGrid.ActualWidth * _lastWeeklyRatio);
         }
 
-        /// <summary>
-        /// 主题切换：重建 Brush 缓存、字号、字体、容器与进度条配色。
-        /// 头部标签与倒计时弱文字（WeakTextColor）、百分比主文字（TextColor）、
-        /// 进度条 Track = IsDark ? "#28FFFFFF" : "#22000000"（与 SampleClock 一致）、
-        /// 进度条 Fill 在 Update 里被风险色重写。
-        /// </summary>
+        /// <summary>主题切换：重建 Brush 缓存、字号、字体、容器与进度条配色。</summary>
         public void ApplyTheme(PaperBodyTheme theme)
         {
             _theme = theme;
-            // 容器背景随主题切换（深色 12% 黑 / 浅色 6% 黑）。
             Background = BuildContainerBackground(theme.IsDark);
             _textBrush = ToBrush(theme.TextColor, "#202020");
             _weakBrush = ToBrush(theme.WeakTextColor, "#707070");
@@ -2905,7 +2779,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 if (snapshot.DeepSeekData is { } ds)
                 {
                     _dsCol1Value.Text = string.IsNullOrEmpty(ds.TodayCostText) ? "—" : ds.TodayCostText;
-                    _dsCol1Foot.Text = "";  // 暂无较昨日变化;后续可扩展
+                    _dsCol1Foot.Text = string.IsNullOrEmpty(ds.CostTodayFoot) ? "" : ds.CostTodayFoot;
 
                     _dsCol2Value.Text = string.IsNullOrEmpty(ds.Cost7dText) ? "—" : ds.Cost7dText;
                     _dsCol2Foot.Text = string.IsNullOrEmpty(ds.Cost7dFoot) ? "—" : ds.Cost7dFoot;
@@ -3000,14 +2874,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         /// <summary>
-        /// 一次更新的数据载体（仅兼容旧 MiniMax 签名;DeepSeek 走 MiniViewSnapshot）。
-        /// </summary>
-        public readonly record struct MiniViewQuota(
-            string Title,
-            double Percent,
-            double RemainingHours);
-
-        /// <summary>
         /// 1.8 边缘预览视图统一快照：按 Provider 路由到 MiniMax 双进度条或 DeepSeek 三列卡片。
         /// </summary>
         public readonly record struct MiniViewSnapshot(
@@ -3029,6 +2895,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         /// </summary>
         public readonly record struct DeepSeekMetrics(
             string TodayCostText,     // "¥0.08" 或 "—"
+            string CostTodayFoot,     // "相较昨日 ↑12.0%" 或 ""
             string Cost7dText,        // "¥12.35" 或 "—"
             string Cost7dFoot,        // "日均 ¥1.76"
             string TodayTokensText,   // "50,336" 或 "—"
