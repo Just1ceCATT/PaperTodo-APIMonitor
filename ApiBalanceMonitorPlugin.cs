@@ -136,8 +136,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private string _capsuleText = "—";
     private string _capsuleRingColorHex = "#9E9E9E";
     private double _capsuleRingArc;
-    // DeepSeek 高峰时段太阳图标：true 时在余额右侧显示太阳；其它供应商 / 非高峰隐藏。
-    private bool _capsuleIsPeakHour;
+    // 时段判断（RefreshPeakHour 哨兵维护）保留 _lastIsPeakHour 字段供后续扩展。
+    // 太阳图标已移除，胶囊不再需要 _capsuleIsPeakHour 字段。
 
     // WebView2 监视面板
     private Grid _viewRoot = null!;
@@ -976,12 +976,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             ? text
             : $"{text}\n{snapshot.StatusText}";
 
-        // DeepSeek 高峰时段（UTC+8 9-12 / 14-18）在余额右侧显示太阳图标；
-        // 非高峰 / MiniMax / OpenCode 不显示。
-        var isPeakHour = string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal)
-            && IsPeakHourUtc8();
+        // 时段判断仍由 RefreshPeakHour 哨兵维护（用于后续业务扩展）,胶囊视图不再渲染太阳图标。
+        // DeepSeek 高峰时段信息不再进入胶囊 signature。
 
-        var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + isPeakHour + "|" + snapshot.StatusText;
+        var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
         if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
             // 胶囊只在内容真正变化时更新，避免无谓的宿主布局抖动。
@@ -991,19 +989,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _capsuleText = text;
             _capsuleRingColorHex = ringColor;
             _capsuleRingArc = ringArc;
-            _capsuleIsPeakHour = isPeakHour;
 
             // 2) 原地更新两个已缓存的 1.7 自定义视图（Regular / Docked）。
             //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
-            _regularCapsuleView?.Update(text, ringColor, ringArc, isPeakHour);
-            _dockedCapsuleView?.Update(text, ringColor, ringArc, isPeakHour);
+            _regularCapsuleView?.Update(text, ringColor, ringArc);
+            _dockedCapsuleView?.Update(text, ringColor, ringArc);
 
             // 3) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
             //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
-            //    PreferredWidth = 全部固定列宽(38) + textWidth + sunWidth + 0.1 余量。
-            //    Grid 列布局 [6 pad][18 ring][5 gap][* text][5 gap][auto sun][4 right pad]，
-            //    固定列总宽 = 6+18+5+5+4 = 38,Auto 列(sun)宽 = sunWidth (Visible=14, Collapsed=0)。
-            //    customView 实际宽度 = 38 + textWidth + sunWidth,差额 0.1 极致贴边。
+            //    PreferredWidth = 全部固定列宽(33) + textWidth + 0.1 余量。
+            //    Grid 列布局 [6 pad][18 ring][5 gap][* text][4 right pad]，
+            //    固定列总宽 = 6+18+5+4 = 33。差额 0.1 极致贴边。
             //    textWidth 用 MeasureTextWidth(主题字体 TextBlock.Measure + DesiredSize.Width)
             //    与 customView 渲染完全同源，避免亚像素舍入差异导致省略。
             //    Components 保留 1 项最小 Text 占位（Length > 0 让 Normalize 不返回 null，
@@ -1011,8 +1007,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
             //    PlainText 用于跨队列拖动的纯文字回退。
             var textWidth = Math.Ceiling(MeasureTextWidth(text));
-            var sunWidth = isPeakHour ? 14 : 0;
-            var preferredWidth = 6 + 18 + 5 + textWidth + 5 + sunWidth + 4 + 0.1;
+            var preferredWidth = 6 + 18 + 5 + textWidth + 4 + 0.1;
             _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
             {
                 PreferredWidth = preferredWidth,
@@ -1047,7 +1042,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     {
         var view = new BalanceCapsuleView(context);
         // 首次返回时立即把当前最新状态填入，避免宿主先展示一个空 view 再被 Update 刷新。
-        view.Update(_capsuleText, _capsuleRingColorHex, _capsuleRingArc, _capsuleIsPeakHour);
+        view.Update(_capsuleText, _capsuleRingColorHex, _capsuleRingArc);
         if (context.Surface == PaperCapsuleSurfaceKind.Docked)
         {
             _dockedCapsuleView = view;
@@ -1065,19 +1060,21 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// DeepSeek / OpenCode 返回空数据造成的误导；其他 provider 返回 null 让宿主
     /// 走 1.6/1.7 放大胶囊回退（DescribePluginCapsuleFallback）。
     /// </summary>
-    public PaperMiniViewSize PreferredMiniViewSize => new(320, 220);
+    public PaperMiniViewSize PreferredMiniViewSize => new(440, 180);
 
     public FrameworkElement? CreateMiniView(PaperMiniViewContext context)
     {
-        if (!IsMiniMax)
+        // OpenCode 等无数据源的 provider 走 1.6/1.7 fallback;MiniMax + DeepSeek 走 1.8 自定义。
+        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
         {
             return null;
         }
         var view = new BalanceMiniView(this, context);
         view.ApplyTheme(context.Theme);
-        // 首次返回时立即把当前最新状态填入，避免宿主先展示一个空 view 再被 Update 刷新。
-        ApplyMiniViewSnapshot();
+        // 字段先赋值,确保 ApplyMiniViewSnapshot 内对 _miniView.Update 的调用不被早 return。
         _miniView = view;
+        // 首次返回时立即把当前最新状态填入,避免宿主先展示一个空 view 再被 Update 刷新。
+        ApplyMiniViewSnapshot();
         return view;
     }
 
@@ -1092,9 +1089,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 把当前 snapshot 推给 1.8 边缘预览视图。非 MiniMax 时 _miniView 为 null 空操作。
-    /// 5 小时模块的数据直接从 _minimaxRemainingPercent 与 _minimaxModelRemains[*].Hours /
-    /// WeeklyPercent / WeeklyHours 抽取（general 模型）。
+    /// 把当前 snapshot 推给 1.8 边缘预览视图。MiniMax 走 5h+周双模块;
+    /// DeepSeek 走三列卡片(今日消费/近7日/今日消耗)。非二者时 _miniView 为 null 空操作。
     /// </summary>
     private void ApplyMiniViewSnapshot()
     {
@@ -1102,35 +1098,54 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             return;
         }
-        // 默认占位：未拉取或 general 模型缺失时显示 0% / 空倒计时。
-        var hourly = new BalanceMiniView.MiniViewQuota(
-            Title: "每五小时额度",
-            Percent: 0,
-            RemainingHours: 0);
-        var weekly = new BalanceMiniView.MiniViewQuota(
-            Title: "周额度",
-            Percent: 0,
-            RemainingHours: 0);
-        if (_minimaxModelRemains != null && _minimaxModelRemains.Count > 0)
+
+        if (IsMiniMax && _minimaxModelRemains != null && _minimaxModelRemains.Count > 0)
         {
             for (var i = 0; i < _minimaxModelRemains.Count; i++)
             {
                 var item = _minimaxModelRemains[i];
                 if (string.Equals(item.Model, "general", StringComparison.OrdinalIgnoreCase))
                 {
-                    hourly = new BalanceMiniView.MiniViewQuota(
-                        Title: "每五小时额度",
+                    var maxData = new BalanceMiniView.MiniMaxQuota(
                         Percent: Math.Clamp(item.Percent, 0, 100),
-                        RemainingHours: item.Hours);
-                    weekly = new BalanceMiniView.MiniViewQuota(
-                        Title: "周额度",
-                        Percent: Math.Clamp(item.WeeklyPercent, 0, 100),
-                        RemainingHours: item.WeeklyHours);
-                    break;
+                        RemainingHours: item.Hours,
+                        WeeklyPercent: Math.Clamp(item.WeeklyPercent, 0, 100),
+                        WeeklyHours: item.WeeklyHours);
+                    _miniView.Update(
+                        new BalanceMiniView.MiniViewSnapshot(
+                            Provider: PaperState.MiniMax,
+                            MaxData: maxData,
+                            DeepSeekData: null),
+                        _snapshot.StatusText);
+                    return;
                 }
             }
         }
-        _miniView.Update(hourly, weekly, _snapshot.StatusText);
+
+        if (string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
+        {
+            var todayCost = BuildCostTodayText();
+            var cost7d = BuildCost7dText();
+            var cost7dFoot = BuildCost7dFoot();
+            var todayTokens = BuildTodayTokens();
+            var todayHit = BuildTodayHit();
+            var cacheRate = BuildTodayCacheRate();
+
+            var ds = new BalanceMiniView.DeepSeekMetrics(
+                TodayCostText: string.IsNullOrEmpty(todayCost) ? "" : todayCost,
+                Cost7dText: string.IsNullOrEmpty(cost7d) ? "" : cost7d,
+                Cost7dFoot: cost7dFoot,
+                TodayTokensText: FormatTokens(todayTokens),
+                TodayTokensWan: "≈ " + FormatWanYi(todayTokens),
+                TodayHitText: "缓存命中: " + FormatThousands(todayHit) + " Tokens",
+                TodayCacheRate: FormatCacheRate(cacheRate));
+            _miniView.Update(
+                new BalanceMiniView.MiniViewSnapshot(
+                    Provider: PaperState.DeepSeek,
+                    MaxData: null,
+                    DeepSeekData: ds),
+                _snapshot.StatusText);
+        }
     }
 
     /// <summary>
@@ -1295,6 +1310,67 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         return asDecimal % 1m == 0
             ? asDecimal.ToString("F0", CultureInfo.CurrentCulture)
             : asDecimal.ToString("F2", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// "12345" → "1.2万";"345000000" → "3.4亿"。
+    /// 10000 以下原样返回 "1234"。负数/NaN 视为无效返回 "—"。
+    /// 用于 DeepSeek MiniView 第三列 "≈ 5.0万" 副文本。
+    /// </summary>
+    private static string FormatWanYi(double n)
+    {
+        if (!double.IsFinite(n) || n < 0)
+        {
+            return "—";
+        }
+        if (n >= 1e8)
+        {
+            return (n / 1e8).ToString("0.0", CultureInfo.CurrentCulture) + "亿";
+        }
+        if (n >= 1e4)
+        {
+            return (n / 1e4).ToString("0.0", CultureInfo.CurrentCulture) + "万";
+        }
+        return ((long)Math.Round(n)).ToString(CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// 千分位逗号分隔。1000 → "1,000"。负数视为无效返回 "0"。
+    /// 用于 DeepSeek MiniView 缓存命中与主值展示。
+    /// </summary>
+    private static string FormatThousands(double n)
+    {
+        if (!double.IsFinite(n) || n < 0)
+        {
+            return "0";
+        }
+        var rounded = (long)Math.Round(n);
+        return rounded.ToString("N0", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// 整数 tokens 格式化：<=0 显示 "—";否则千分位。
+    /// 与 HTML 端 fmtThousands + 是否>0 判断等价。
+    /// </summary>
+    private static string FormatTokens(double n)
+    {
+        if (!double.IsFinite(n) || n <= 0)
+        {
+            return "—";
+        }
+        return FormatThousands(n);
+    }
+
+    /// <summary>
+    /// 缓存命中率 0..1 → "50.10%"。null/NaN 返回 null（让 view 自行隐藏该行）。
+    /// </summary>
+    private static string? FormatCacheRate(double? rate)
+    {
+        if (!rate.HasValue || !double.IsFinite(rate.Value))
+        {
+            return null;
+        }
+        return (rate.Value * 100).ToString("0.00", CultureInfo.CurrentCulture) + "%";
     }
 
     // 风险色（v3.1 语义）
@@ -1928,7 +2004,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     {
         private readonly TextBlock _label;
         private readonly BalanceProgressRing _ring;
-        private readonly BalanceSunIcon _sun;
 
         // FontFamily 缓存：theme.FontFamily 是 Source 字符串，按字符串相等判断避免重复构造。
         // 避免每次 ApplyTheme 都触发 WPF 字体回退链解析（首次解析可达 100ms 级）。
@@ -1945,14 +2020,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             HorizontalAlignment = HorizontalAlignment.Stretch;
             VerticalAlignment = VerticalAlignment.Stretch;
 
-            // 列布局：[6 pad][18 ring][5 gap][* text][5 gap][auto sun][4 right pad]
-            // sun 后 4 DIP padding 让图标不贴右边界；差额恒为 6（右 padding + sun 后间距）。
+            // 列布局：[6 pad][18 ring][5 gap][* text][4 right pad]
+            // 移除 sun 列后右 padding 缩为 4 DIP,差额 6 的原口径不再适用。
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
-            ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(4) });
 
             _ring = new BalanceProgressRing
@@ -1975,32 +2048,21 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             Grid.SetColumn(_label, 3);
             Children.Add(_label);
 
-            _sun = new BalanceSunIcon
-            {
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Visibility = Visibility.Collapsed
-            };
-            Grid.SetColumn(_sun, 5);
-            Children.Add(_sun);
-
             ApplyTheme(context.Theme);
         }
 
         /// <summary>
         /// 刷新胶囊状态。仅设文本与圆环颜色 / 弧值，圆环底色由 ApplyTheme 设置；
-        /// isPeakHour=true 时（DeepSeek UTC+8 高峰时段）在余额右侧显示太阳图标，其它时刻隐藏。
+        /// 太阳图标已移除（时段判断仍由 RefreshPeakHour 维护,后续业务复用）。
         /// </summary>
         public void Update(
             string text,
             string ringColorHex,
-            double ringArc,
-            bool isPeakHour)
+            double ringArc)
         {
             _label.Text = text;
             _ring.Value = Math.Clamp(ringArc, 0, 1);
             _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
-            _sun.Visibility = isPeakHour ? Visibility.Visible : Visibility.Collapsed;
             _ring.InvalidateVisual();
         }
 
@@ -2060,63 +2122,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             // 并允许跨线程共享（GPU worker 线程可直接读取颜色与变换）。
             brush.Freeze();
             return brush;
-        }
-    }
-
-    /// <summary>
-    /// 太阳图标：用 WPF 几何图元绘制 SVG 风格的太阳（中心圆盘 + 8 条光芒）。
-    /// 14×14 DIP，固定大小，不参与主题切换。
-    /// </summary>
-    private sealed class BalanceSunIcon : Canvas
-    {
-        private const double Size = 14;
-        private const double Center = 7;
-        private const double CoreRadius = 2.6;
-        private const double RayInner = 4.6;
-        private const double RayOuter = 7;
-        private const double StrokeThickness = 1.4;
-
-        public BalanceSunIcon()
-        {
-            Width = Size;
-            Height = Size;
-            IsHitTestVisible = false;
-            ClipToBounds = false;
-
-            // 太阳主色：amber，与插件风险色 Warming(#FFC107) 同源。
-            var sunBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07));
-            sunBrush.Freeze();
-
-            // 中心圆盘
-            var core = new Ellipse
-            {
-                Width = CoreRadius * 2,
-                Height = CoreRadius * 2,
-                Fill = sunBrush
-            };
-            SetLeft(core, Center - CoreRadius);
-            SetTop(core, Center - CoreRadius);
-            Children.Add(core);
-
-            // 8 条光芒（每 45° 一条），圆角端点让图标柔和
-            for (var i = 0; i < 8; i++)
-            {
-                var angle = i * Math.PI / 4;
-                var cos = Math.Cos(angle);
-                var sin = Math.Sin(angle);
-                var ray = new Line
-                {
-                    X1 = Center + cos * RayInner,
-                    Y1 = Center + sin * RayInner,
-                    X2 = Center + cos * RayOuter,
-                    Y2 = Center + sin * RayOuter,
-                    Stroke = sunBrush,
-                    StrokeThickness = StrokeThickness,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round
-                };
-                Children.Add(ray);
-            }
         }
     }
 
@@ -2274,6 +2279,39 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         private readonly TextBlock _weeklyReset;
         private readonly TextBlock _footer;
 
+        // MiniMax 双模块模式下的两个 StackPanel（缓存以便按 provider 切可见性）。
+        private readonly StackPanel _hourlyStack;
+        private readonly StackPanel _weeklyStack;
+        // MiniMax 双模块容器：3 行 Grid(5h / 1px 分割线 / 周),与 _dsRootGrid 平级放在 _root 内。
+        private readonly Grid _maxRootGrid;
+
+        // DeepSeek 三列卡片子树根：横跨整个 3-row _root;MiniMax 模式时 Collapsed,
+        // DeepSeek 模式时 Visible 并把原 hourlyStack / divider / weeklyStack Collapsed。
+        private readonly Grid _dsRootGrid;
+
+        // DeepSeek 列 1:今日消费金额
+        private readonly Grid _dsCol1;
+        private readonly Border _dsCol1Divider;
+        private readonly TextBlock _dsCol1Label;
+        private readonly TextBlock _dsCol1Value;
+        private readonly TextBlock _dsCol1Foot;
+
+        // DeepSeek 列 2:近 7 日
+        private readonly Grid _dsCol2;
+        private readonly Border _dsCol2Divider;
+        private readonly TextBlock _dsCol2Label;
+        private readonly TextBlock _dsCol2Value;
+        private readonly TextBlock _dsCol2Foot;
+
+        // DeepSeek 列 3:今日消耗
+        private readonly Grid _dsCol3;
+        private readonly TextBlock _dsCol3Label;
+        private readonly TextBlock _dsCol3ValueNumber;
+        private readonly TextBlock _dsCol3ValueSuffix;
+        private readonly TextBlock _dsCol3Foot1;   // ≈ 5.0万
+        private readonly TextBlock _dsCol3Foot2;   // 缓存命中: ...
+        private readonly TextBlock _dsCol3Foot3;   // 缓存命中率 ...
+
         public BalanceMiniView(BalanceSession owner, PaperMiniViewContext context)
         {
             _owner = owner;
@@ -2294,11 +2332,19 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             gray.Freeze();
             _grayBrush = gray;
 
-            // 内部 3 行 Grid:Row 0 撑满上半部(5h),Row 1 = 1px 分割线,Row 2 撑满下半部(周)。
+            // 内部 1 行 Grid:同时容纳 MiniMax 双模块(maxRootGrid)与 DeepSeek 三列(dsRootGrid)。
+// 两个子树互斥:provider 是 MiniMax 时 maxRootGrid 可见 dsRootGrid 隐藏;DeepSeek 反之。
+// 不再用跨行 SetRowSpan(3),避免 Collapsed 状态下 Grid layout 引擎在 hourlyStack/divider/weeklyStack 同 Grid 下产生
+// row 分配冲突,导致 MiniMax 模式视觉错乱。
             _root = new Grid();
             _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Pixel) });
-            _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            // MiniMax 双模块内部 3 行 Grid:5h / 1px 分割线 / 周。
+            _maxRootGrid = new Grid();
+            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Pixel) });
+            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            _maxRootGrid.IsHitTestVisible = false;
 
             // === 5 小时模块(占据上半部 50%) ===
             _hourlyLabel = new TextBlock
@@ -2344,7 +2390,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             hourlyStack.Children.Add(_hourlyBarGrid);
             hourlyStack.Children.Add(_hourlyReset);
             Grid.SetRow(hourlyStack, 0);
-            _root.Children.Add(hourlyStack);
+            _hourlyStack = hourlyStack;
+            _maxRootGrid.Children.Add(hourlyStack);
 
             // 5h / 周模块之间的 1px 分割线,弱色填充。
             _divider = new Border
@@ -2352,7 +2399,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 Height = 1
             };
             Grid.SetRow(_divider, 1);
-            _root.Children.Add(_divider);
+            _maxRootGrid.Children.Add(_divider);
 
             // === 周额度模块(占据下半部 50%) ===
             _weeklyLabel = new TextBlock
@@ -2398,6 +2445,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 Margin = new Thickness(0, 4, 0, 0)
             };
 
+            // weeklyStack 不再含 _footer(避免自然高度超 row 高度导致上下溢出,
+            // divider 1px 被内容覆盖)。_footer 改放到 _maxRootGrid Row 2 内右下角独立显示。
             var weeklyStack = new StackPanel
             {
                 VerticalAlignment = VerticalAlignment.Center,
@@ -2407,11 +2456,213 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             weeklyStack.Children.Add(weeklyHead);
             weeklyStack.Children.Add(_weeklyBarGrid);
             weeklyStack.Children.Add(_weeklyReset);
-            weeklyStack.Children.Add(_footer);
             Grid.SetRow(weeklyStack, 2);
-            _root.Children.Add(weeklyStack);
+            _weeklyStack = weeklyStack;
+            _maxRootGrid.Children.Add(weeklyStack);
+
+            // _footer 在 _maxRootGrid Row 2 内右下角:StackPanel 居左,_footer 靠右下,
+            // 不撑高 weeklyStack 自然高度。
+            Grid.SetRow(_footer, 2);
+            Grid.SetColumn(_footer, 0);
+            _footer.HorizontalAlignment = HorizontalAlignment.Right;
+            _footer.VerticalAlignment = VerticalAlignment.Bottom;
+            _footer.Margin = new Thickness(0, 0, 0, 2);
+            _maxRootGrid.Children.Add(_footer);
+
+            // === DeepSeek 三列卡片子树(默认 Collapsed,MiniMax 时不显示) ===
+            // 整体横跨 _root 的 3 行,垂直居中。
+            _dsRootGrid = new Grid();
+            _dsRootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            _dsRootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            _dsRootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            _dsRootGrid.VerticalAlignment = VerticalAlignment.Center;
+            _dsRootGrid.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _dsRootGrid.IsHitTestVisible = false;
+            _dsRootGrid.Visibility = Visibility.Collapsed;
+
+            BuildDeepSeekColumn(
+                out _dsCol1, out _dsCol1Divider, out _dsCol1Label, out _dsCol1Value, out _dsCol1Foot,
+                primaryInitial: "—", subText: "今日消费金额", footInitial: "",
+                showDivider: false);
+            BuildDeepSeekColumn(
+                out _dsCol2, out _dsCol2Divider, out _dsCol2Label, out _dsCol2Value, out _dsCol2Foot,
+                primaryInitial: "—", subText: "近 7 日", footInitial: "—",
+                showDivider: true);
+            BuildDeepSeekColumnWithTokens(
+                out _dsCol3, out _dsCol3Label, out _dsCol3ValueNumber,
+                out _dsCol3ValueSuffix, out _dsCol3Foot1, out _dsCol3Foot2, out _dsCol3Foot3);
+
+            Grid.SetColumn(_dsCol1, 0); _dsRootGrid.Children.Add(_dsCol1);
+            Grid.SetColumn(_dsCol2, 1); _dsRootGrid.Children.Add(_dsCol2);
+            Grid.SetColumn(_dsCol3, 2); _dsRootGrid.Children.Add(_dsCol3);
+
+            // _dsRootGrid 是 _root 的直接子节点(与 _maxRootGrid 平级),不需要 SetRowSpan(3),
+            // 因为 _root 现在是 1 行 Grid,_maxRootGrid / _dsRootGrid 互斥显示。
+            Grid.SetRow(_dsRootGrid, 0);
+            _root.Children.Add(_dsRootGrid);
+
+            // 把 _maxRootGrid 加入 _root(MiniMax 模式默认显示,_dsRootGrid 默认 Collapsed)。
+            Grid.SetRow(_maxRootGrid, 0);
+            _root.Children.Add(_maxRootGrid);
 
             Child = _root;
+        }
+
+        /// <summary>
+        /// 构建 DeepSeek 单列（仅主值+副标+一行 foot）:Grid 包含 [1px 左竖线 | StackPanel]。
+        /// showDivider=false 时把 Border 隐藏（首列不显示左竖线）。
+        /// </summary>
+        private void BuildDeepSeekColumn(
+            out Grid column,
+            out Border divider,
+            out TextBlock label,
+            out TextBlock value,
+            out TextBlock foot,
+            string primaryInitial,
+            string subText,
+            string footInitial,
+            bool showDivider)
+        {
+            column = new Grid();
+            column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Pixel) });
+            column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            divider = new Border
+            {
+                Width = 1,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Margin = new Thickness(0, 4, 0, 4),
+                Visibility = showDivider ? Visibility.Visible : Visibility.Collapsed
+            };
+            Grid.SetColumn(divider, 0);
+            column.Children.Add(divider);
+
+            var stack = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(14, 0, 14, 0)
+            };
+
+            label = new TextBlock
+            {
+                Text = subText,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            value = new TextBlock
+            {
+                Text = primaryInitial,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            foot = new TextBlock
+            {
+                Text = footInitial,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+
+            stack.Children.Add(label);
+            stack.Children.Add(value);
+            stack.Children.Add(foot);
+
+            Grid.SetColumn(stack, 1);
+            column.Children.Add(stack);
+        }
+
+        /// <summary>
+        /// 构建 DeepSeek 第三列（带 Tokens 后缀 + 3 行 foot）:Grid 包含 StackPanel,
+        /// StackPanel 内容依次为：Label / Value(横向 StackPanel:Number + Suffix) / Foot1 / Foot2 / Foot3。
+        /// </summary>
+        private void BuildDeepSeekColumnWithTokens(
+            out Grid column,
+            out TextBlock label,
+            out TextBlock valueNumber,
+            out TextBlock valueSuffix,
+            out TextBlock foot1,
+            out TextBlock foot2,
+            out TextBlock foot3)
+        {
+            column = new Grid();
+            column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var stack = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(14, 0, 14, 0)
+            };
+
+            label = new TextBlock
+            {
+                Text = "今日消耗",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+
+            valueNumber = new TextBlock
+            {
+                Text = "—",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            valueSuffix = new TextBlock
+            {
+                Text = " Tokens",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(4, 0, 0, 4),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var valueRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            valueRow.Children.Add(valueNumber);
+            valueRow.Children.Add(valueSuffix);
+
+            foot1 = new TextBlock
+            {
+                Text = "",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            foot2 = new TextBlock
+            {
+                Text = "",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 1, 0, 0)
+            };
+            foot3 = new TextBlock
+            {
+                Text = "",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 1, 0, 0)
+            };
+
+            stack.Children.Add(label);
+            stack.Children.Add(valueRow);
+            stack.Children.Add(foot1);
+            stack.Children.Add(foot2);
+            stack.Children.Add(foot3);
+
+            Grid.SetColumn(stack, 0);
+            column.Children.Add(stack);
         }
 
         /// <summary>
@@ -2571,33 +2822,105 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _footer.FontSize = 11.5 * scale;
             _footer.FontStyle = FontStyles.Italic;
             _footer.Foreground = _weakBrush;
+
+            // === DeepSeek 三列卡片字号设置 ===
+            // Label(列标题):弱文字 11×scale Normal,让"今日消费金额"等副标轻盈。
+            var dsLabelSize = 11 * scale;
+            _dsCol1Label.FontFamily = font; _dsCol1Label.FontSize = dsLabelSize;
+            _dsCol1Label.FontWeight = FontWeights.Normal; _dsCol1Label.Foreground = _weakBrush;
+            _dsCol2Label.FontFamily = font; _dsCol2Label.FontSize = dsLabelSize;
+            _dsCol2Label.FontWeight = FontWeights.Normal; _dsCol2Label.Foreground = _weakBrush;
+            _dsCol3Label.FontFamily = font; _dsCol3Label.FontSize = dsLabelSize;
+            _dsCol3Label.FontWeight = FontWeights.Normal; _dsCol3Label.Foreground = _weakBrush;
+
+            // Value(主值):主文字 22×scale SemiBold,数字斜体加半粗
+            var dsValueSize = 22 * scale;
+            _dsCol1Value.FontFamily = font; _dsCol1Value.FontSize = dsValueSize;
+            _dsCol1Value.FontWeight = FontWeights.SemiBold; _dsCol1Value.Foreground = _textBrush;
+            _dsCol2Value.FontFamily = font; _dsCol2Value.FontSize = dsValueSize;
+            _dsCol2Value.FontWeight = FontWeights.SemiBold; _dsCol2Value.Foreground = _textBrush;
+            _dsCol3ValueNumber.FontFamily = font; _dsCol3ValueNumber.FontSize = dsValueSize;
+            _dsCol3ValueNumber.FontWeight = FontWeights.SemiBold; _dsCol3ValueNumber.Foreground = _textBrush;
+            _dsCol3ValueSuffix.FontFamily = font; _dsCol3ValueSuffix.FontSize = 11 * scale;
+            _dsCol3ValueSuffix.FontWeight = FontWeights.Normal; _dsCol3ValueSuffix.Foreground = _weakBrush;
+
+            // Foot(弱文字):极弱文字 10.5×scale
+            var dsFootSize = 10.5 * scale;
+            _dsCol1Foot.FontFamily = font; _dsCol1Foot.FontSize = dsFootSize;
+            _dsCol1Foot.Foreground = _weakBrush;
+            _dsCol2Foot.FontFamily = font; _dsCol2Foot.FontSize = dsFootSize;
+            _dsCol2Foot.Foreground = _weakBrush;
+            _dsCol3Foot1.FontFamily = font; _dsCol3Foot1.FontSize = dsFootSize;
+            _dsCol3Foot1.Foreground = _weakBrush;
+            _dsCol3Foot2.FontFamily = font; _dsCol3Foot2.FontSize = dsFootSize;
+            _dsCol3Foot2.Foreground = _weakBrush;
+            _dsCol3Foot3.FontFamily = font; _dsCol3Foot3.FontSize = dsFootSize;
+            _dsCol3Foot3.Foreground = _weakBrush;
+
+            // 列分隔线颜色:复用 _barTrackBrush
+            _dsCol1Divider.Background = _barTrackBrush;
+            _dsCol2Divider.Background = _barTrackBrush;
         }
 
         /// <summary>
-        /// 刷新两个模块的全部显示。Percent 已经是 0-100 的剩余比例,
-        /// 进度条 fill 固定为灰色,按 ratio 收窄宽度。
-        /// 5h 倒计时用 "x 时 y 分"(小时 < 24),周倒计时用 "x 天 x 时 x 分"。
+        /// 刷新 MiniView 全部显示。按 snapshot.Provider 分发到 MiniMax 双模块或 DeepSeek 三列。
+        /// MiniMax：Percent 已经是 0-100 的剩余比例,进度条 fill 固定为灰色,按 ratio 收窄宽度;
+        /// 5h 倒计时用 "x 时 y 分",周倒计时用 "x 天 x 时 x 分"。
+        /// DeepSeek：所有文本由调用方格式化好,直接显示;hasTokens=false 时 Token 后缀与三行 foot 隐藏。
         /// </summary>
-        public void Update(MiniViewQuota hourly, MiniViewQuota weekly, string statusText)
+        public void Update(MiniViewSnapshot snapshot, string statusText)
         {
-            _hourlyPercent.Text = FormatPercent(hourly.Percent);
-            var hourlyRatio = Math.Clamp(hourly.Percent / 100.0, 0, 1);
-            _lastHourlyRatio = hourlyRatio;
-            _hourlyFill.Fill = _grayBrush;
-            _hourlyFill.Width = Math.Max(0, _hourlyBarGrid.ActualWidth * hourlyRatio);
-            _hourlyReset.Text = string.IsNullOrEmpty(statusText)
-                ? FormatRemaining("距离下次重置还有", hourly.RemainingHours, includeDays: false)
-                : statusText;
+            if (string.Equals(snapshot.Provider, PaperState.MiniMax, StringComparison.Ordinal))
+            {
+                // 整个 maxRootGrid 显示,dsRootGrid 隐藏,互斥且不互相影响 layout。
+                _maxRootGrid.Visibility = Visibility.Visible;
+                _dsRootGrid.Visibility = Visibility.Collapsed;
 
-            _weeklyPercent.Text = FormatPercent(weekly.Percent);
-            var weeklyRatio = Math.Clamp(weekly.Percent / 100.0, 0, 1);
-            _lastWeeklyRatio = weeklyRatio;
-            _weeklyFill.Fill = _grayBrush;
-            _weeklyFill.Width = Math.Max(0, _weeklyBarGrid.ActualWidth * weeklyRatio);
-            _weeklyReset.Text = FormatRemaining("距离下次重置还有", weekly.RemainingHours, includeDays: true);
+                if (snapshot.MaxData is { } max)
+                {
+                    _hourlyPercent.Text = FormatPercent(max.Percent);
+                    var hourlyRatio = Math.Clamp(max.Percent / 100.0, 0, 1);
+                    _lastHourlyRatio = hourlyRatio;
+                    _hourlyFill.Fill = _grayBrush;
+                    _hourlyFill.Width = Math.Max(0, _hourlyBarGrid.ActualWidth * hourlyRatio);
+                    _hourlyReset.Text = string.IsNullOrEmpty(statusText)
+                        ? FormatRemaining("距离下次重置还有", max.RemainingHours, includeDays: false)
+                        : statusText;
 
-            // 底部 footer:更新于 HH:mm:ss,即使 statusText 非空也展示(状态文本由 5hReset 显示)。
-            _footer.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+                    _weeklyPercent.Text = FormatPercent(max.WeeklyPercent);
+                    var weeklyRatio = Math.Clamp(max.WeeklyPercent / 100.0, 0, 1);
+                    _lastWeeklyRatio = weeklyRatio;
+                    _weeklyFill.Fill = _grayBrush;
+                    _weeklyFill.Width = Math.Max(0, _weeklyBarGrid.ActualWidth * weeklyRatio);
+                    _weeklyReset.Text = FormatRemaining("距离下次重置还有", max.WeeklyHours, includeDays: true);
+
+                    _footer.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+                }
+            }
+            else if (string.Equals(snapshot.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
+            {
+                _maxRootGrid.Visibility = Visibility.Collapsed;
+                _dsRootGrid.Visibility = Visibility.Visible;
+
+                if (snapshot.DeepSeekData is { } ds)
+                {
+                    _dsCol1Value.Text = string.IsNullOrEmpty(ds.TodayCostText) ? "—" : ds.TodayCostText;
+                    _dsCol1Foot.Text = "";  // 暂无较昨日变化;后续可扩展
+
+                    _dsCol2Value.Text = string.IsNullOrEmpty(ds.Cost7dText) ? "—" : ds.Cost7dText;
+                    _dsCol2Foot.Text = string.IsNullOrEmpty(ds.Cost7dFoot) ? "—" : ds.Cost7dFoot;
+
+                    var hasTokens = ds.TodayTokensText != "—";
+                    _dsCol3ValueNumber.Text = ds.TodayTokensText;
+                    _dsCol3ValueSuffix.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
+                    _dsCol3Foot1.Text = hasTokens ? ds.TodayTokensWan : "";
+                    _dsCol3Foot1.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
+                    _dsCol3Foot2.Text = hasTokens ? ds.TodayHitText : "";
+                    _dsCol3Foot2.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
+                    _dsCol3Foot3.Text = ds.TodayCacheRate ?? "";
+                    _dsCol3Foot3.Visibility = !string.IsNullOrEmpty(ds.TodayCacheRate) ? Visibility.Visible : Visibility.Collapsed;
+                }
+            }
         }
 
         private static string FormatPercent(double percent)
@@ -2677,13 +3000,41 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         /// <summary>
-        /// 一次更新的数据载体。Percent 是 0-100 的剩余比例，
-        /// RemainingHours 是剩余小时数（double）。
+        /// 一次更新的数据载体（仅兼容旧 MiniMax 签名;DeepSeek 走 MiniViewSnapshot）。
         /// </summary>
         public readonly record struct MiniViewQuota(
             string Title,
             double Percent,
             double RemainingHours);
+
+        /// <summary>
+        /// 1.8 边缘预览视图统一快照：按 Provider 路由到 MiniMax 双进度条或 DeepSeek 三列卡片。
+        /// </summary>
+        public readonly record struct MiniViewSnapshot(
+            string Provider,
+            MiniMaxQuota? MaxData,
+            DeepSeekMetrics? DeepSeekData);
+
+        /// <summary>
+        /// MiniMax 双模块数据(每五小时 + 周额度)。
+        /// </summary>
+        public readonly record struct MiniMaxQuota(
+            double Percent,
+            double RemainingHours,
+            double WeeklyPercent,
+            double WeeklyHours);
+
+        /// <summary>
+        /// DeepSeek 三列卡片数据：所有文本已格式化,view 不再做除法。
+        /// </summary>
+        public readonly record struct DeepSeekMetrics(
+            string TodayCostText,     // "¥0.08" 或 "—"
+            string Cost7dText,        // "¥12.35" 或 "—"
+            string Cost7dFoot,        // "日均 ¥1.76"
+            string TodayTokensText,   // "50,336" 或 "—"
+            string TodayTokensWan,    // "≈ 5.0万"
+            string TodayHitText,      // "缓存命中: 25,088 Tokens"
+            string? TodayCacheRate);  // "50.10%" 或 null(隐藏该行)
     }
 
 }
