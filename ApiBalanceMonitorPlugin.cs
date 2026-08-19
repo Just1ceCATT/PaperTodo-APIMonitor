@@ -909,6 +909,33 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     // ---------------- 快照 & 胶囊渲染 ----------------
 
+    /// <summary>
+    /// 按主题字体精确测量文本宽度（DIP）。用 TextBlock.Measure() + DesiredSize.Width，
+    /// 与 customView 中 TextBlock 实际 layout 完全同源，避免 FormattedText 与 TextBlock
+    /// 之间的字体回退 / LineHeight / 亚像素舍入差异（差额 0.1 DIP 仍会被截断）。
+    /// 测量失败回退线性估算（每个 ASCII 字符 7 DIP）。
+    /// </summary>
+    private double MeasureTextWidth(string text)
+    {
+        try
+        {
+            var probe = new TextBlock
+            {
+                FontFamily = new FontFamily(_theme.FontFamily),
+                FontSize = 12.0 * Math.Clamp(_theme.FontScale, 0.85, 1.2),
+                FontWeight = FontWeights.Normal,
+                Text = text
+            };
+            probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return probe.DesiredSize.Width;
+        }
+        catch
+        {
+            // 测量失败时保留线性估算兜底。
+            return text.Length * 7.0;
+        }
+    }
+
     private void UpdateSnapshot(BalanceSnapshot snapshot)
     {
         _snapshot = snapshot;
@@ -954,45 +981,33 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             // 3) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
             //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
-            //    PreferredWidth=AutomaticWidth 让宿主按标准组件测自然宽；
-            //    Components 仅作协议层"非空校验"占位（customView != null 时宿主不会渲染它们）。
-            //    高峰时多挂一项 Text Width=14 的 sun 占位（5 gap + 14 sun = 19，扣除算法
-            //    自带的 Component Gap 5 = 14），让宿主测宽覆盖 sun 列；非高峰时省略，
-            //    避免胶囊右侧出现与 sun 同宽的空隙。两侧差额恒为 6 DIP（对齐宿主
-            //    CapsuleRightPadding）。host 端渲染时 customView != null 优先返回 customView。
+            //    PreferredWidth = 全部固定列宽(38) + textWidth + sunWidth + 0.1 余量。
+            //    Grid 列布局 [6 pad][18 ring][5 gap][* text][5 gap][auto sun][4 right pad]，
+            //    固定列总宽 = 6+18+5+5+4 = 38,Auto 列(sun)宽 = sunWidth (Visible=14, Collapsed=0)。
+            //    customView 实际宽度 = 38 + textWidth + sunWidth,差额 0.1 极致贴边。
+            //    textWidth 用 MeasureTextWidth(主题字体 TextBlock.Measure + DesiredSize.Width)
+            //    与 customView 渲染完全同源，避免亚像素舍入差异导致省略。
+            //    Components 保留 1 项最小 Text 占位（Length > 0 让 Normalize 不返回 null，
+            //    customView != null 时宿主跳过 1.6 模板不渲染它们）。
             //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
             //    PlainText 用于跨队列拖动的纯文字回退。
-            var components = new List<PaperCapsuleComponent>
-            {
-                new PaperCapsuleComponent
-                {
-                    Kind = PaperCapsuleComponentKind.ProgressRing,
-                    Value = ringArc,
-                    Color = ringColor,
-                    Width = 18
-                },
-                new PaperCapsuleComponent
-                {
-                    Kind = PaperCapsuleComponentKind.Text,
-                    Text = text,
-                    Fill = true
-                }
-            };
-            if (isPeakHour)
-            {
-                components.Add(new PaperCapsuleComponent
-                {
-                    Kind = PaperCapsuleComponentKind.Text,
-                    Text = " ",
-                    Width = 14
-                });
-            }
+            var textWidth = Math.Ceiling(MeasureTextWidth(text));
+            var sunWidth = isPeakHour ? 14 : 0;
+            var preferredWidth = 6 + 18 + 5 + textWidth + 5 + sunWidth + 4 + 0.1;
             _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
             {
-                PreferredWidth = PaperCapsulePresentation.AutomaticWidth,
+                PreferredWidth = preferredWidth,
                 PlainText = text,
                 ToolTip = toolTip,
-                Components = components.ToArray()
+                Components = new[]
+                {
+                    new PaperCapsuleComponent
+                    {
+                        Kind = PaperCapsuleComponentKind.Text,
+                        Text = text,
+                        Fill = true
+                    }
+                }
             });
         }
 
@@ -1084,15 +1099,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 高峰时段判断。
-    /// [测试模式] 当前为 UTC+8 的 23:30-23:35（5 分钟窗口），便于验证 30 秒哨兵
-    /// 在时段切换时自动显隐太阳图标；正式版本应改回 9:00-12:00 / 14:00-18:00。
-    /// 不依赖用户本地时区，始终按北京时间计算。
+    /// 高峰时段判断：UTC+8 的 9:00-12:00 / 14:00-18:00（半开区间，不含 12:00 与 18:00 整点）。
+    /// 不依赖用户本地时区，始终按北京时间计算——不同地区使用同一时段标准。
     /// </summary>
     private static bool IsPeakHourUtc8()
     {
-        var now = DateTime.UtcNow.AddHours(8);
-        return now.Hour == 23 && now.Minute >= 30 && now.Minute < 35;
+        var hour = DateTime.UtcNow.AddHours(8).Hour;
+        return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
     }
 
     /// <summary>
@@ -1820,6 +1833,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         private readonly BalanceProgressRing _ring;
         private readonly BalanceSunIcon _sun;
 
+        // FontFamily 缓存：theme.FontFamily 是 Source 字符串，按字符串相等判断避免重复构造。
+        // 避免每次 ApplyTheme 都触发 WPF 字体回退链解析（首次解析可达 100ms 级）。
+        private FontFamily? _cachedFontFamily;
+        private string? _cachedFontFamilySource;
+
         public BalanceCapsuleView(PaperCapsuleViewContext context)
         {
             Background = Brushes.Transparent;
@@ -1830,14 +1848,15 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             HorizontalAlignment = HorizontalAlignment.Stretch;
             VerticalAlignment = VerticalAlignment.Stretch;
 
-            // 列布局：[6 pad][18 ring][5 gap][* text][5 gap][auto sun]
-            // sun 前 gap 取 5 与宿主 PluginCapsuleComponentGap 一致，差额 = 6（右 padding）。
+            // 列布局：[6 pad][18 ring][5 gap][* text][5 gap][auto sun][4 right pad]
+            // sun 后 4 DIP padding 让图标不贴右边界；差额恒为 6（右 padding + sun 后间距）。
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
             ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(4) });
 
             _ring = new BalanceProgressRing
             {
@@ -1895,12 +1914,19 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         public void ApplyTheme(PaperBodyTheme theme)
         {
             var scale = Math.Clamp(theme.FontScale, 0.85, 1.2);
-            _label.FontFamily = new FontFamily(theme.FontFamily);
+            // FontFamily 缓存：theme.FontFamily 是 Source 字符串，按字符串相等判断避免重复构造。
+            if (_cachedFontFamilySource != theme.FontFamily || _cachedFontFamily == null)
+            {
+                _cachedFontFamily = new FontFamily(theme.FontFamily);
+                _cachedFontFamilySource = theme.FontFamily;
+            }
+            _label.FontFamily = _cachedFontFamily;
             _label.FontSize = 12.0 * scale;
             _label.FontWeight = FontWeights.Normal;
             // BrightWeakTextBrush 在浅色下等于 WeakTextBrush，深色下浅化 22%。
             // 这里取 WeakTextColor 作为单一字段近似（浅色完全一致，深色略偏暗，但 1.6 模板
             // 对未设 Color 的 Text 组件也走这条 Tone 兜底，视觉同源）。
+            // ToBrush 已返回冻结 Brush，可直接复用，无需每次重建。
             _label.Foreground = ToBrush(theme.WeakTextColor, "#707070");
 
             // TrackBrush 近似 Theme.Tint(38)：在当前 AccentColor 上叠加 alpha=38。
@@ -1915,23 +1941,28 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
         private static SolidColorBrush ToBrush(string value, string fallback)
         {
+            SolidColorBrush brush;
             try
             {
-                return new SolidColorBrush(
+                brush = new SolidColorBrush(
                     (Color)ColorConverter.ConvertFromString(value)!);
             }
             catch
             {
                 try
                 {
-                    return new SolidColorBrush(
+                    brush = new SolidColorBrush(
                         (Color)ColorConverter.ConvertFromString(fallback)!);
                 }
                 catch
                 {
-                    return new SolidColorBrush(Colors.Gray);
+                    brush = new SolidColorBrush(Colors.Gray);
                 }
             }
+            // 冻结 brush：让 WPF 渲染系统走快路径（避免每帧 IsFrozen 检查），
+            // 并允许跨线程共享（GPU worker 线程可直接读取颜色与变换）。
+            brush.Freeze();
+            return brush;
         }
     }
 
@@ -1995,6 +2026,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>
     /// 圆环进度控件。完全 1:1 复刻宿主 CapsuleProgressRing（PaperWindow.PluginCapsule.cs）：
     /// Pen 粗细 2，半径 = max(1, size/2 - 1.5)，起点 -90° 顺时针，value≥0.999 画整圆。
+    ///
+    /// 性能优化（避免 5 秒延迟）：
+    /// - Pen 缓存：仅在 TrackBrush / ForegroundBrush 引用变化时重建并 Freeze。
+    /// - StreamGeometry 缓存：仅在 value 变化时重建弧形几何，Freeze 后可跨帧复用。
     /// </summary>
     private sealed class BalanceProgressRing : FrameworkElement
     {
@@ -2002,9 +2037,44 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         public Brush ForegroundBrush { get; set; } = Brushes.Gray;
         public Brush TrackBrush { get; set; } = Brushes.LightGray;
 
+        // Pen 缓存：仅在 brush 引用变化时重建（重建后 Freeze 启用渲染快路径）
+        private Pen? _cachedTrackPen;
+        private Pen? _cachedValuePen;
+        private Brush? _cachedTrackBrushRef;
+        private Brush? _cachedFgBrushRef;
+
+        // Geometry 缓存：仅在 value 变化时重建（Freeze 后线程安全）
+        private double _cachedGeometryValue = double.NaN;
+        private StreamGeometry? _cachedGeometry;
+
+        private Pen GetTrackPen()
+        {
+            if (_cachedTrackPen == null || !ReferenceEquals(_cachedTrackBrushRef, TrackBrush))
+            {
+                _cachedTrackPen = new Pen(TrackBrush, 2);
+                _cachedTrackPen.Freeze();
+                _cachedTrackBrushRef = TrackBrush;
+            }
+            return _cachedTrackPen;
+        }
+
+        private Pen GetValuePen()
+        {
+            if (_cachedValuePen == null || !ReferenceEquals(_cachedFgBrushRef, ForegroundBrush))
+            {
+                _cachedValuePen = new Pen(ForegroundBrush, 2)
+                {
+                    StartLineCap = PenLineCap.Round,
+                    EndLineCap = PenLineCap.Round
+                };
+                _cachedValuePen.Freeze();
+                _cachedFgBrushRef = ForegroundBrush;
+            }
+            return _cachedValuePen;
+        }
+
         protected override void OnRender(DrawingContext dc)
         {
-            base.OnRender(dc);
             var size = Math.Min(ActualWidth, ActualHeight);
             if (size <= 2)
             {
@@ -2013,13 +2083,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             var center = new Point(ActualWidth / 2, ActualHeight / 2);
             var radius = Math.Max(1, size / 2 - 1.5);
-            var trackPen = new Pen(TrackBrush, 2);
-            var valuePen = new Pen(ForegroundBrush, 2)
-            {
-                StartLineCap = PenLineCap.Round,
-                EndLineCap = PenLineCap.Round
-            };
-            dc.DrawEllipse(null, trackPen, center, radius, radius);
+            dc.DrawEllipse(null, GetTrackPen(), center, radius, radius);
+
             var value = Math.Clamp(Value, 0, 1);
             if (value <= 0)
             {
@@ -2027,35 +2092,42 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             }
             if (value >= 0.999)
             {
-                dc.DrawEllipse(null, valuePen, center, radius, radius);
+                dc.DrawEllipse(null, GetValuePen(), center, radius, radius);
                 return;
             }
 
-            var startAngle = -90.0;
-            var endAngle = startAngle + value * 360.0;
-            Point PointAt(double angle)
+            // 弧形 Geometry 缓存：value 不变时复用上一次构建的 StreamGeometry，
+            // 避免每次 OnRender 都走 Open/ArcTo/Freeze 路径。
+            if (_cachedGeometry == null || _cachedGeometryValue != value)
             {
-                var radians = angle * Math.PI / 180.0;
-                return new Point(
-                    center.X + Math.Cos(radians) * radius,
-                    center.Y + Math.Sin(radians) * radius);
+                var geo = new StreamGeometry();
+                var startAngle = -90.0;
+                var endAngle = startAngle + value * 360.0;
+                using (var ctx = geo.Open())
+                {
+                    Point PointAt(double angle)
+                    {
+                        var radians = angle * Math.PI / 180.0;
+                        return new Point(
+                            center.X + Math.Cos(radians) * radius,
+                            center.Y + Math.Sin(radians) * radius);
+                    }
+                    ctx.BeginFigure(PointAt(startAngle), false, false);
+                    ctx.ArcTo(
+                        PointAt(endAngle),
+                        new Size(radius, radius),
+                        0,
+                        value > 0.5,
+                        SweepDirection.Clockwise,
+                        true,
+                        false);
+                }
+                geo.Freeze();
+                _cachedGeometry = geo;
+                _cachedGeometryValue = value;
             }
 
-            var geometry = new StreamGeometry();
-            using (var ctx = geometry.Open())
-            {
-                ctx.BeginFigure(PointAt(startAngle), false, false);
-                ctx.ArcTo(
-                    PointAt(endAngle),
-                    new Size(radius, radius),
-                    0,
-                    value > 0.5,
-                    SweepDirection.Clockwise,
-                    true,
-                    false);
-            }
-            geometry.Freeze();
-            dc.DrawGeometry(null, valuePen, geometry);
+            dc.DrawGeometry(null, GetValuePen(), _cachedGeometry);
         }
     }
 
