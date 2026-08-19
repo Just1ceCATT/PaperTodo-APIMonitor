@@ -39,7 +39,7 @@ public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
         "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色的圆环。" +
         "模型供应商在每张纸的监视面板顶部切换；各供应商 Key 独立存储于全局设置。";
     public Version Version => new(1, 2, 0);
-    public string ApiVersion => "1.7";
+    public string ApiVersion => "1.8";
     public int StateVersion => 2;
     public PaperBodyCapabilities Capabilities => PaperBodyCapabilities.None;
     public PaperBodyRuntimeRequirements RuntimeRequirements =>
