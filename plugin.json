@@ -88,6 +88,15 @@
       "description": "胶囊文字右侧附加 · X%（需要接口同时提供总额字段）。",
       "default": true,
       "quick": true
+    },
+    {
+      "id": "miniViewFontFamily",
+      "type": "string",
+      "name": "MiniView 字体",
+      "description": "覆盖全局字体,仅作用于 MiniView 显示。Windows 字体名如 Microsoft YaHei UI;macOS 字形名如 PingFang SC;Linux 字形名如 Source Han Sans CN、Noto Sans CJK SC。留空则跟随主题。",
+      "placeholder": "留空则跟随主题字体",
+      "maxLength": 80,
+      "default": ""
     }
   ]
 }

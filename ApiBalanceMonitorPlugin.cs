@@ -60,7 +60,8 @@ internal sealed record BalanceSettings(
     int PollSeconds,
     string CurrencySymbol,
     double BalanceThreshold,
-    bool ShowPercentage);
+    bool ShowPercentage,
+    string MiniViewFontFamily);
 
 /// <summary>
 /// 每张 paper 的独立状态：当前选哪个供应商。写入 per-paper StateJson（与全局 settings 隔离）。
@@ -99,7 +100,7 @@ internal sealed record UsageDay(string Date, double Tokens, double CacheHit = 0,
 /// </summary>
 internal sealed record CostDay(string Date, double Cost);
 
-internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvider
+internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvider, IPaperMiniViewProvider
 {
     private readonly PaperBodyContext _context;
     private readonly HttpClient _http;
@@ -111,6 +112,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private bool _lastIsPeakHour;
     private BalanceSettings _settings;
     private PaperState _state;
+    // MiniView 字体覆盖：来自 plugin.json 设置。空字符串表示跟随主题。
+    private string _miniViewFontFamily = "";
     private BalanceSnapshot _snapshot = BalanceSnapshot.Empty("尚未拉取");
     private string _lastCapsuleSignature = "";
     private int _polling;
@@ -126,6 +129,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // 在 UpdateSnapshot 里原地更新它们，避免 SetCapsulePresentation 触发重建抖动。
     private BalanceCapsuleView? _regularCapsuleView;
     private BalanceCapsuleView? _dockedCapsuleView;
+    // 1.8 边缘预览视图：仅 MiniMax 场景保留；非 MiniMax 时 CreateMiniView 返回 null
+    // 让宿主切到 1.6/1.7 放大胶囊回退（DescribePluginCapsuleFallback）。
+    private BalanceMiniView? _miniView;
     // CreateCapsuleView 在首次被宿主调用前就需要拿到最新状态，所以单独缓存一份快照。
     private string _capsuleText = "—";
     private string _capsuleRingColorHex = "#9E9E9E";
@@ -221,6 +227,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 旧引用指向的元素已经被宿主丢弃，保留只会徒增引用计数。
         _regularCapsuleView = null;
         _dockedCapsuleView = null;
+        _miniView = null;
         try
         {
             _webView?.Dispose();
@@ -244,6 +251,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 1.7 自定义视图需要跟随主题切换重新设置字体/颜色；视图尚未创建时空操作。
         _regularCapsuleView?.ApplyTheme(theme);
         _dockedCapsuleView?.ApplyTheme(theme);
+        // 1.8 边缘预览视图同步刷新；视图尚未创建时空操作。
+        _miniView?.ApplyTheme(theme);
         PushView();
     }
 
@@ -254,7 +263,15 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     {
         // Provider 来自 per-paper state，不再从全局 settings 读取。
         ApplySettings(ReadSettings(settingsJson, _state.Provider));
+        // 字体设置变更后让已缓存的 MiniView 重新应用（_miniViewFontFamily 已在 ApplySettings 更新）。
+        _miniView?.ApplyTheme(_theme);
     }
+
+    /// <summary>
+    /// 暴露给 BalanceMiniView：若 settings.miniViewFontFamily 非空,覆盖 theme.FontFamily;
+    /// 留空则跟随主题。属性 getter 让 MiniView.ApplyTheme 优先读取。
+    /// </summary>
+    public string MiniViewFontFamily => _miniViewFontFamily;
 
     // ---------------- 设置解析 ----------------
 
@@ -285,11 +302,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 ReadInt(root, "pollSeconds", 60),
                 ReadString(root, "currencySymbol", "¥"),
                 ReadDouble(root, "balanceThreshold", 20.0),
-                ReadBool(root, "showPercentage", true));
+                ReadBool(root, "showPercentage", true),
+                ReadString(root, "miniViewFontFamily", ""));
         }
         catch
         {
-            return new BalanceSettings("", "", 60, "¥", 20.0, true);
+            return new BalanceSettings("", "", 60, "¥", 20.0, true, "");
         }
     }
 
@@ -365,6 +383,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private void ApplySettings(BalanceSettings s)
     {
         _settings = s;
+        _miniViewFontFamily = s.MiniViewFontFamily ?? "";
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
         _timer.Interval = interval;
@@ -1011,6 +1030,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             });
         }
 
+        // 1.8 边缘预览视图刷新：依赖 _minimaxModelRemains / _minimaxRemainingPercent，
+        // 非 MiniMax 时 _miniView 为 null 自然空操作。
+        ApplyMiniViewSnapshot();
+
         // 面板（HTML）每次拉取后都推送：余额可能不变但用量/时间变了。
         PushView();
     }
@@ -1034,6 +1057,80 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _regularCapsuleView = view;
         }
         return view;
+    }
+
+    /// <summary>
+    /// 协议 1.8 自定义边缘预览视图：默认 320×220。胶囊悬停时（在 host 现有 1.6/1.7
+    /// 放大胶囊之外）暴露给一个 brief 卡片。仅 MiniMax 场景真正实现，避免给
+    /// DeepSeek / OpenCode 返回空数据造成的误导；其他 provider 返回 null 让宿主
+    /// 走 1.6/1.7 放大胶囊回退（DescribePluginCapsuleFallback）。
+    /// </summary>
+    public PaperMiniViewSize PreferredMiniViewSize => new(320, 220);
+
+    public FrameworkElement? CreateMiniView(PaperMiniViewContext context)
+    {
+        if (!IsMiniMax)
+        {
+            return null;
+        }
+        var view = new BalanceMiniView(this, context);
+        view.ApplyTheme(context.Theme);
+        // 首次返回时立即把当前最新状态填入，避免宿主先展示一个空 view 再被 Update 刷新。
+        ApplyMiniViewSnapshot();
+        _miniView = view;
+        return view;
+    }
+
+    /// <summary>
+    /// 1.8 边缘预览显隐通知：false 表示已开始收起动画，true 表示已渲染。
+    /// 本插件业务状态由胶囊 / 监视面板可见性统一驱动，无需根据 mini 显隐做额外工作。
+    /// </summary>
+    public void OnMiniViewVisibilityChanged(bool visible)
+    {
+        // 不做事：关闭动画期间不要清空已绘制树（host 文档要求），业务更新仍按
+        // IPaperBodySession.OnVisibilityChanged 契约继续。
+    }
+
+    /// <summary>
+    /// 把当前 snapshot 推给 1.8 边缘预览视图。非 MiniMax 时 _miniView 为 null 空操作。
+    /// 5 小时模块的数据直接从 _minimaxRemainingPercent 与 _minimaxModelRemains[*].Hours /
+    /// WeeklyPercent / WeeklyHours 抽取（general 模型）。
+    /// </summary>
+    private void ApplyMiniViewSnapshot()
+    {
+        if (_miniView == null)
+        {
+            return;
+        }
+        // 默认占位：未拉取或 general 模型缺失时显示 0% / 空倒计时。
+        var hourly = new BalanceMiniView.MiniViewQuota(
+            Title: "每五小时额度",
+            Percent: 0,
+            RemainingHours: 0);
+        var weekly = new BalanceMiniView.MiniViewQuota(
+            Title: "周额度",
+            Percent: 0,
+            RemainingHours: 0);
+        if (_minimaxModelRemains != null && _minimaxModelRemains.Count > 0)
+        {
+            for (var i = 0; i < _minimaxModelRemains.Count; i++)
+            {
+                var item = _minimaxModelRemains[i];
+                if (string.Equals(item.Model, "general", StringComparison.OrdinalIgnoreCase))
+                {
+                    hourly = new BalanceMiniView.MiniViewQuota(
+                        Title: "每五小时额度",
+                        Percent: Math.Clamp(item.Percent, 0, 100),
+                        RemainingHours: item.Hours);
+                    weekly = new BalanceMiniView.MiniViewQuota(
+                        Title: "周额度",
+                        Percent: Math.Clamp(item.WeeklyPercent, 0, 100),
+                        RemainingHours: item.WeeklyHours);
+                    break;
+                }
+            }
+        }
+        _miniView.Update(hourly, weekly, _snapshot.StatusText);
     }
 
     /// <summary>
@@ -2129,6 +2226,464 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             dc.DrawGeometry(null, GetValuePen(), _cachedGeometry);
         }
+    }
+
+    /// <summary>
+    /// 协议 1.8 自定义边缘预览视图：MiniMax 场景下显示 5 小时 + 周额度两个模块。
+    /// 7 行 Grid：0 5h 标题 / 1 5h 进度条 / 2 5h 倒计时 / 3 12 DIP 间距 /
+    /// 4 周标题 / 5 周进度条 / 6 周倒计时。Margin 与 SampleClock / FocusTimer 一致。
+    /// WebView2 / HwndHost 在 MiniView 里被协议层禁用，仅纯 WPF 控件。
+    /// </summary>
+    private sealed class BalanceMiniView : Border
+    {
+        private readonly BalanceSession _owner;
+        private readonly Grid _root;
+        private PaperBodyTheme _theme;
+
+        // FontFamily 缓存：theme.FontFamily 是 Source 字符串，按字符串相等判断避免
+        // 重复构造（首次解析可达 100ms 级）。
+        private FontFamily? _cachedFontFamily;
+        private string? _cachedFontFamilySource;
+
+        // 颜色缓存：ApplyTheme 重建后冻结，可跨线程共享。
+        private Brush _textBrush = Brushes.Black;
+        private Brush _weakBrush = Brushes.Gray;
+        private Brush _accentBrush = Brushes.Blue;
+        private Brush _barTrackBrush = Brushes.LightGray;
+
+        // 进度条 fill 固定为中性灰 #808080,冻结后跨线程共享,避免每次 Update 都重建。
+        // 用户已确认不再按风险档变色,所以移除 RiskColor 依赖。
+        private readonly Brush _grayBrush;
+        // 记录最近 ratio:SizeChanged 事件按此值重算 fill.Width,与进度条 fill 颜色无关。
+        private double _lastHourlyRatio = -1;
+        private double _lastWeeklyRatio = -1;
+
+        // 控件引用
+        private readonly TextBlock _hourlyLabel;
+        private readonly TextBlock _hourlyPercent;
+        private readonly Grid _hourlyBarGrid;
+        private readonly Rectangle _hourlyBarTrack;
+        private readonly Rectangle _hourlyFill;
+        private readonly TextBlock _hourlyReset;
+        private readonly Border _divider;
+        private readonly TextBlock _weeklyLabel;
+        private readonly TextBlock _weeklyPercent;
+        private readonly Grid _weeklyBarGrid;
+        private readonly Rectangle _weeklyBarTrack;
+        private readonly Rectangle _weeklyFill;
+        private readonly TextBlock _weeklyReset;
+        private readonly TextBlock _footer;
+
+        public BalanceMiniView(BalanceSession owner, PaperMiniViewContext context)
+        {
+            _owner = owner;
+            _theme = context.Theme;
+
+            // 自身作为圆角容器：暗色下 12% 黑、浅色下 6% 黑,与胶囊外壳视觉分离。
+            CornerRadius = new CornerRadius(10);
+            Margin = new Thickness(4);
+            // Padding 加大到 14/12/14/12 让 5h/周模块与圆角边缘留出呼吸空间,避免贴边。
+            Padding = new Thickness(14, 12, 14, 12);
+            Background = BuildContainerBackground(_theme.IsDark);
+            IsHitTestVisible = false;
+            HorizontalAlignment = HorizontalAlignment.Stretch;
+            VerticalAlignment = VerticalAlignment.Stretch;
+
+            // 进度条 fill 固定灰:中性灰 #808080,冻结后跨线程共享。
+            var gray = new SolidColorBrush(Color.FromRgb(0x80, 0x80, 0x80));
+            gray.Freeze();
+            _grayBrush = gray;
+
+            // 内部 3 行 Grid:Row 0 撑满上半部(5h),Row 1 = 1px 分割线,Row 2 撑满下半部(周)。
+            _root = new Grid();
+            _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Pixel) });
+            _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            // === 5 小时模块(占据上半部 50%) ===
+            _hourlyLabel = new TextBlock
+            {
+                Text = "每五小时额度",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            _hourlyPercent = new TextBlock
+            {
+                Text = "—",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var hourlyHead = new Grid();
+            hourlyHead.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            hourlyHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(_hourlyLabel, 0);
+            Grid.SetColumn(_hourlyPercent, 1);
+            hourlyHead.Children.Add(_hourlyLabel);
+            hourlyHead.Children.Add(_hourlyPercent);
+
+            (_hourlyBarGrid, _hourlyBarTrack, _hourlyFill) = BuildStyledProgressBar();
+            _hourlyBarGrid.SizeChanged += OnHourlyBarSizeChanged;
+
+            _hourlyReset = new TextBlock
+            {
+                Text = "尚未拉取",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+
+            var hourlyStack = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                IsHitTestVisible = false
+            };
+            hourlyStack.Children.Add(hourlyHead);
+            hourlyStack.Children.Add(_hourlyBarGrid);
+            hourlyStack.Children.Add(_hourlyReset);
+            Grid.SetRow(hourlyStack, 0);
+            _root.Children.Add(hourlyStack);
+
+            // 5h / 周模块之间的 1px 分割线,弱色填充。
+            _divider = new Border
+            {
+                Height = 1
+            };
+            Grid.SetRow(_divider, 1);
+            _root.Children.Add(_divider);
+
+            // === 周额度模块(占据下半部 50%) ===
+            _weeklyLabel = new TextBlock
+            {
+                Text = "周额度",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            _weeklyPercent = new TextBlock
+            {
+                Text = "—",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var weeklyHead = new Grid();
+            weeklyHead.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            weeklyHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(_weeklyLabel, 0);
+            Grid.SetColumn(_weeklyPercent, 1);
+            weeklyHead.Children.Add(_weeklyLabel);
+            weeklyHead.Children.Add(_weeklyPercent);
+
+            (_weeklyBarGrid, _weeklyBarTrack, _weeklyFill) = BuildStyledProgressBar();
+            _weeklyBarGrid.SizeChanged += OnWeeklyBarSizeChanged;
+
+            _weeklyReset = new TextBlock
+            {
+                Text = "尚未拉取",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+
+            // 底部 footer：更新于 HH:mm:ss,弱文字小字号,右对齐嵌在周模块底部。
+            _footer = new TextBlock
+            {
+                Text = "尚未拉取",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 4, 0, 0)
+            };
+
+            var weeklyStack = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                IsHitTestVisible = false
+            };
+            weeklyStack.Children.Add(weeklyHead);
+            weeklyStack.Children.Add(_weeklyBarGrid);
+            weeklyStack.Children.Add(_weeklyReset);
+            weeklyStack.Children.Add(_footer);
+            Grid.SetRow(weeklyStack, 2);
+            _root.Children.Add(weeklyStack);
+
+            Child = _root;
+        }
+
+        /// <summary>
+        /// 容器背景：暗色 12% 黑 / 浅色 6% 黑,冻结后跨线程共享。
+        /// </summary>
+        private static SolidColorBrush BuildContainerBackground(bool isDark)
+        {
+            var brush = isDark
+                ? new SolidColorBrush(Color.FromArgb(0x20, 0x00, 0x00, 0x00))
+                : new SolidColorBrush(Color.FromArgb(0x10, 0x00, 0x00, 0x00));
+            brush.Freeze();
+            return brush;
+        }
+
+        /// <summary>
+        /// 构建一行水平布局：[左弱文字标签 | 弹缩 | 右侧主文百分比]。
+        /// </summary>
+        private static Grid BuildHeadRow(out TextBlock label, out TextBlock percent, string labelText)
+        {
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            label = new TextBlock
+            {
+                Text = labelText,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            percent = new TextBlock
+            {
+                Text = "—",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            Grid.SetColumn(label, 0);
+            Grid.SetColumn(percent, 1);
+            grid.Children.Add(label);
+            grid.Children.Add(percent);
+            return grid;
+        }
+
+        /// <summary>
+        /// 自定义圆角进度条：track 铺满底色，fill 按 ratio 收窄到右侧。
+        /// 高度 8 DIP、半径 4；左侧贴齐字符（Margin.Left = 0），右侧 24 DIP 缩进。
+        /// Update 时修改 fill.Width。
+        /// </summary>
+        private static (Grid grid, Rectangle track, Rectangle fill) BuildStyledProgressBar()
+        {
+            var grid = new Grid
+            {
+                Height = 8,
+                Margin = new Thickness(0, 6, 24, 0)
+            };
+            var track = new Rectangle
+            {
+                RadiusX = 4,
+                RadiusY = 4,
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            var fill = new Rectangle
+            {
+                RadiusX = 4,
+                RadiusY = 4,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Width = 0
+            };
+            grid.Children.Add(track);
+            grid.Children.Add(fill);
+            return (grid, track, fill);
+        }
+
+        /// <summary>
+        /// 5h 进度条容器尺寸变化时按当前 ratio 重新计算 fill.Width。
+        /// 避免 ratio 不变但 bar 被布局拉伸时填充宽度与底色不同步。
+        /// </summary>
+        private void OnHourlyBarSizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            _hourlyFill.Width = Math.Max(0, _hourlyBarGrid.ActualWidth * _lastHourlyRatio);
+        }
+
+        /// <summary>
+        /// 周模块进度条 SizeChanged：同 5h。
+        /// </summary>
+        private void OnWeeklyBarSizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            _weeklyFill.Width = Math.Max(0, _weeklyBarGrid.ActualWidth * _lastWeeklyRatio);
+        }
+
+        /// <summary>
+        /// 主题切换：重建 Brush 缓存、字号、字体、容器与进度条配色。
+        /// 头部标签与倒计时弱文字（WeakTextColor）、百分比主文字（TextColor）、
+        /// 进度条 Track = IsDark ? "#28FFFFFF" : "#22000000"（与 SampleClock 一致）、
+        /// 进度条 Fill 在 Update 里被风险色重写。
+        /// </summary>
+        public void ApplyTheme(PaperBodyTheme theme)
+        {
+            _theme = theme;
+            // 容器背景随主题切换（深色 12% 黑 / 浅色 6% 黑）。
+            Background = BuildContainerBackground(theme.IsDark);
+            _textBrush = ToBrush(theme.TextColor, "#202020");
+            _weakBrush = ToBrush(theme.WeakTextColor, "#707070");
+            _accentBrush = ToBrush(theme.AccentColor, "#B07A31");
+            _barTrackBrush = ToBrush(theme.IsDark ? "#28FFFFFF" : "#22000000", "#22000000");
+
+            // 字体源：插件设置 miniViewFontFamily 非空时覆盖主题字体,留空跟随主题。
+            var fontSource = !string.IsNullOrEmpty(_owner.MiniViewFontFamily)
+                ? _owner.MiniViewFontFamily
+                : theme.FontFamily;
+            var font = ResolveFontFamily(fontSource);
+            var scale = Math.Clamp(theme.FontScale, 0.85, 1.3);
+
+            // 头部标签：弱文字、字号 15 × scale（中文字号再放大），加粗让"每五小时额度" / "周额度" 更突出
+            _hourlyLabel.FontFamily = font;
+            _hourlyLabel.FontSize = 15 * scale;
+            _hourlyLabel.FontWeight = FontWeights.Bold;
+            _hourlyLabel.Foreground = _weakBrush;
+            _weeklyLabel.FontFamily = font;
+            _weeklyLabel.FontSize = 15 * scale;
+            _weeklyLabel.FontWeight = FontWeights.Bold;
+            _weeklyLabel.Foreground = _weakBrush;
+
+            // 百分比：主文字、字号 24 × scale；数字部分用斜体
+            _hourlyPercent.FontFamily = font;
+            _hourlyPercent.FontSize = 24 * scale;
+            _hourlyPercent.FontStyle = FontStyles.Italic;
+            _hourlyPercent.FontWeight = FontWeights.SemiBold;
+            _hourlyPercent.Foreground = _textBrush;
+            _weeklyPercent.FontFamily = font;
+            _weeklyPercent.FontSize = 24 * scale;
+            _weeklyPercent.FontStyle = FontStyles.Italic;
+            _weeklyPercent.FontWeight = FontWeights.SemiBold;
+            _weeklyPercent.Foreground = _textBrush;
+
+            // 进度条 track 底色随主题;fill 风险色在 Update 里重写。
+            _hourlyBarTrack.Fill = _barTrackBrush;
+            _weeklyBarTrack.Fill = _barTrackBrush;
+
+            // 5h / 周分割线颜色:复用进度条底色,弱视觉分组。
+            _divider.Background = _barTrackBrush;
+
+            // 倒计时：弱文字、字号 14 × scale（数字部分用斜体）；顶部 6 DIP margin 让它与进度条拉开间距
+            _hourlyReset.FontFamily = font;
+            _hourlyReset.FontSize = 14 * scale;
+            _hourlyReset.FontStyle = FontStyles.Italic;
+            _hourlyReset.Margin = new Thickness(0, 6, 0, 0);
+            _hourlyReset.Foreground = _weakBrush;
+            _weeklyReset.FontFamily = font;
+            _weeklyReset.FontSize = 14 * scale;
+            _weeklyReset.FontStyle = FontStyles.Italic;
+            _weeklyReset.Margin = new Thickness(0, 6, 0, 0);
+            _weeklyReset.Foreground = _weakBrush;
+
+            // 底部 footer:弱文字、字号 11.5 × scale（时间戳装饰,但仍可读）；数字斜体
+            _footer.FontFamily = font;
+            _footer.FontSize = 11.5 * scale;
+            _footer.FontStyle = FontStyles.Italic;
+            _footer.Foreground = _weakBrush;
+        }
+
+        /// <summary>
+        /// 刷新两个模块的全部显示。Percent 已经是 0-100 的剩余比例,
+        /// 进度条 fill 固定为灰色,按 ratio 收窄宽度。
+        /// 5h 倒计时用 "x 时 y 分"(小时 < 24),周倒计时用 "x 天 x 时 x 分"。
+        /// </summary>
+        public void Update(MiniViewQuota hourly, MiniViewQuota weekly, string statusText)
+        {
+            _hourlyPercent.Text = FormatPercent(hourly.Percent);
+            var hourlyRatio = Math.Clamp(hourly.Percent / 100.0, 0, 1);
+            _lastHourlyRatio = hourlyRatio;
+            _hourlyFill.Fill = _grayBrush;
+            _hourlyFill.Width = Math.Max(0, _hourlyBarGrid.ActualWidth * hourlyRatio);
+            _hourlyReset.Text = string.IsNullOrEmpty(statusText)
+                ? FormatRemaining("距离下次重置还有", hourly.RemainingHours, includeDays: false)
+                : statusText;
+
+            _weeklyPercent.Text = FormatPercent(weekly.Percent);
+            var weeklyRatio = Math.Clamp(weekly.Percent / 100.0, 0, 1);
+            _lastWeeklyRatio = weeklyRatio;
+            _weeklyFill.Fill = _grayBrush;
+            _weeklyFill.Width = Math.Max(0, _weeklyBarGrid.ActualWidth * weeklyRatio);
+            _weeklyReset.Text = FormatRemaining("距离下次重置还有", weekly.RemainingHours, includeDays: true);
+
+            // 底部 footer:更新于 HH:mm:ss,即使 statusText 非空也展示(状态文本由 5hReset 显示)。
+            _footer.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+        }
+
+        private static string FormatPercent(double percent)
+        {
+            if (double.IsNaN(percent))
+            {
+                return "—";
+            }
+            var rounded = (int)Math.Round(percent, MidpointRounding.AwayFromZero);
+            return rounded.ToString(CultureInfo.CurrentCulture) + "%";
+        }
+
+        /// <summary>
+        /// 把小时数格式化为剩余时长。
+        /// 5h（includeDays=false）："x 时 y 分"，小时为 0 时简化为 "x 分"。
+        /// 周（includeDays=true）："x 天 x 时 x 分"，三段都显示不省略。
+        /// NaN / 0 / 负数视为未拉取。
+        /// </summary>
+        private static string FormatRemaining(string prefix, double hours, bool includeDays)
+        {
+            if (double.IsNaN(hours) || hours <= 0)
+            {
+                return "尚未拉取";
+            }
+            var totalHours = (int)Math.Floor(hours);
+            var m = (int)Math.Round((hours - totalHours) * 60);
+            if (m == 60)
+            {
+                m = 0;
+                totalHours += 1;
+            }
+            if (!includeDays)
+            {
+                return totalHours == 0
+                    ? prefix + m + "分"
+                    : prefix + totalHours + "时" + m + "分";
+            }
+            var days = totalHours / 24;
+            var h = totalHours % 24;
+            return prefix + days + "天" + h + "时" + m + "分";
+        }
+
+        private FontFamily ResolveFontFamily(string source)
+        {
+            if (_cachedFontFamily != null && string.Equals(_cachedFontFamilySource, source, StringComparison.Ordinal))
+            {
+                return _cachedFontFamily;
+            }
+            _cachedFontFamily = new FontFamily(source);
+            _cachedFontFamilySource = source;
+            return _cachedFontFamily;
+        }
+
+        private static SolidColorBrush ToBrush(string value, string fallback)
+        {
+            SolidColorBrush brush;
+            try
+            {
+                brush = new SolidColorBrush(
+                    (Color)ColorConverter.ConvertFromString(value)!);
+            }
+            catch
+            {
+                try
+                {
+                    brush = new SolidColorBrush(
+                        (Color)ColorConverter.ConvertFromString(fallback)!);
+                }
+                catch
+                {
+                    brush = new SolidColorBrush(Colors.Gray);
+                }
+            }
+            // 冻结 brush：让 WPF 渲染系统走快路径，并允许跨线程共享。
+            brush.Freeze();
+            return brush;
+        }
+
+        /// <summary>
+        /// 一次更新的数据载体。Percent 是 0-100 的剩余比例，
+        /// RemainingHours 是剩余小时数（double）。
+        /// </summary>
+        public readonly record struct MiniViewQuota(
+            string Title,
+            double Percent,
+            double RemainingHours);
     }
 
 }
