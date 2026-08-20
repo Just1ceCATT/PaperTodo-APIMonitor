@@ -2231,12 +2231,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _root = new Grid();
             _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-            // MiniMax 双模块内部 3 行 Grid:5h / 2px 分割线区 / 周。
-// row 1 高度 2px、分割线高度 1px 贴 row 1 底部,让 5h 模块底部与分割线之间多 1px 留白,
+            // MiniMax 双模块内部 3 行 Grid:5h / 4px 分割线区 / 周。
+// row 1 高度 4px、分割线高度 1px 贴 row 1 底部,让 5h 模块底部与分割线之间多 3px 留白,
             // 周模块紧贴分割线下方,整体视觉空间更宽松。
             _maxRootGrid = new Grid();
             _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Pixel) });
+            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10, GridUnitType.Pixel) });
             _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             _maxRootGrid.IsHitTestVisible = false;
 
