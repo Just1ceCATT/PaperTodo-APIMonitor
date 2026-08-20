@@ -2196,6 +2196,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
         // DeepSeek 列 3:今日消耗
         private readonly Grid _dsCol3;
+        private readonly Border _dsCol3Divider;
         private readonly TextBlock _dsCol3Label;
         private readonly TextBlock _dsCol3ValueNumber;
         private readonly TextBlock _dsCol3ValueSuffix;
@@ -2386,7 +2387,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 primaryInitial: "—", subText: "近 7 日", footInitial: "—",
                 showDivider: true);
             BuildDeepSeekColumnWithTokens(
-                out _dsCol3, out _dsCol3Label, out _dsCol3ValueNumber,
+                out _dsCol3, out _dsCol3Divider, out _dsCol3Label, out _dsCol3ValueNumber,
                 out _dsCol3ValueSuffix, out _dsCol3Foot1, out _dsCol3Foot2, out _dsCol3Foot3);
 
             Grid.SetColumn(_dsCol1, 0); _dsRootGrid.Children.Add(_dsCol1);
@@ -2476,6 +2477,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         /// </summary>
         private void BuildDeepSeekColumnWithTokens(
             out Grid column,
+            out Border divider,
             out TextBlock label,
             out TextBlock valueNumber,
             out TextBlock valueSuffix,
@@ -2483,14 +2485,30 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             out TextBlock foot2,
             out TextBlock foot3)
         {
+            // 列结构与 BuildDeepSeekColumn 对齐:[1px 左侧分割线 | 内容 stack],
+            // 让"今日消耗"列与"近 7 日"列之间有视觉分隔(三列卡片统一节奏)。
             column = new Grid();
+            column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Pixel) });
             column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
+            divider = new Border
+            {
+                Width = 1,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Margin = new Thickness(0, 4, 0, 4),
+                Visibility = Visibility.Visible
+            };
+            Grid.SetColumn(divider, 0);
+            column.Children.Add(divider);
+
+            // 左右 margin 由 10 改 4:列3 内容 5 行(数字+Tokens+三脚注)横向更紧,
+            // 释放 ~12px 让 "25,325 Tokens" 完整显示而不再被 TextTrimming 截断。
             var stack = new StackPanel
             {
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
-                Margin = new Thickness(14, 0, 14, 0)
+                Margin = new Thickness(4, 0, 4, 0)
             };
 
             label = new TextBlock
@@ -2506,23 +2524,40 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 Text = "—",
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis
+                TextAlignment = TextAlignment.Right,
+                TextTrimming = TextTrimming.None
             };
             valueSuffix = new TextBlock
             {
                 Text = " Tokens",
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Bottom,
-                Margin = new Thickness(4, 0, 0, 4),
+                // Margin left 由 4 改 2,节省数字与 Tokens 间距,给列3 横向多挤出 2px。
+                Margin = new Thickness(2, 0, 0, 4),
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
-            var valueRow = new StackPanel
+            // valueRow 改为 Grid 两列:[数字 Viewbox(可缩放) | Tokens(suffix)]。
+            // Viewbox 让 9 位数(如 "123,456,789")在窄列内自动缩小字号,
+            // 同时保证 " Tokens" 后缀永远完整不被 TextTrimming 截断。
+            var valueNumberViewbox = new Viewbox
             {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Left,
+                Stretch = Stretch.Uniform,
+                StretchDirection = StretchDirection.DownOnly,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            valueRow.Children.Add(valueNumber);
+            valueNumberViewbox.Child = valueNumber;
+
+            var valueRow = new Grid
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            valueRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            valueRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(valueNumberViewbox, 0);
+            Grid.SetColumn(valueSuffix, 1);
+            valueRow.Children.Add(valueNumberViewbox);
             valueRow.Children.Add(valueSuffix);
 
             foot1 = new TextBlock
@@ -2556,7 +2591,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             stack.Children.Add(foot2);
             stack.Children.Add(foot3);
 
-            Grid.SetColumn(stack, 0);
+            Grid.SetColumn(stack, 1);
             column.Children.Add(stack);
         }
 
@@ -2721,9 +2756,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _dsCol1Value.FontWeight = FontWeights.SemiBold; _dsCol1Value.Foreground = _textBrush;
             _dsCol2Value.FontFamily = font; _dsCol2Value.FontSize = dsValueSize;
             _dsCol2Value.FontWeight = FontWeights.SemiBold; _dsCol2Value.Foreground = _textBrush;
-            _dsCol3ValueNumber.FontFamily = font; _dsCol3ValueNumber.FontSize = dsValueSize;
+            // 列3 valueNumber 单独 20×scale:列3 内容多一行(Tokens 后缀+三脚注),
+            // 主数字缩小避免 "数字+Tokens" 横向溢出导致 TextTrimming 截断 Tokens。
+            _dsCol3ValueNumber.FontFamily = font; _dsCol3ValueNumber.FontSize = 20 * scale;
             _dsCol3ValueNumber.FontWeight = FontWeights.SemiBold; _dsCol3ValueNumber.Foreground = _textBrush;
-            _dsCol3ValueSuffix.FontFamily = font; _dsCol3ValueSuffix.FontSize = 11 * scale;
+            _dsCol3ValueSuffix.FontFamily = font; _dsCol3ValueSuffix.FontSize = 10 * scale;
             _dsCol3ValueSuffix.FontWeight = FontWeights.Normal; _dsCol3ValueSuffix.Foreground = _weakBrush;
 
             // Foot(弱文字):极弱文字 10.5×scale
@@ -2739,9 +2776,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _dsCol3Foot3.FontFamily = font; _dsCol3Foot3.FontSize = dsFootSize;
             _dsCol3Foot3.Foreground = _weakBrush;
 
-            // 列分隔线颜色:复用 _barTrackBrush
+            // 列分隔线颜色:复用 _barTrackBrush(三列卡片统一节奏)
             _dsCol1Divider.Background = _barTrackBrush;
             _dsCol2Divider.Background = _barTrackBrush;
+            _dsCol3Divider.Background = _barTrackBrush;
         }
 
         /// <summary>
