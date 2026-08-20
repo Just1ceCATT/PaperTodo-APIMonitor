@@ -2211,8 +2211,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             // 自身作为圆角容器：暗色下 12% 黑、浅色下 6% 黑,与胶囊外壳视觉分离。
             CornerRadius = new CornerRadius(10);
             Margin = new Thickness(4);
-            // Padding 加大到 14/12/14/12 让 5h/周模块与圆角边缘留出呼吸空间,避免贴边。
-            Padding = new Thickness(14, 12, 14, 12);
+            // Padding 14/8/14/8 平衡圆角呼吸与内容空间:5h/周两个模块垂直内容在 scale=1.3 时
+            // 自然高度约 79px,row 可用高度约 85px,留 6px 余量避免上下两部分溢出重叠。
+            Padding = new Thickness(14, 8, 14, 8);
             Background = BuildContainerBackground(_theme.IsDark);
             IsHitTestVisible = false;
             HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -2601,7 +2602,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             var grid = new Grid
             {
                 Height = 8,
-                Margin = new Thickness(0, 6, 24, 0)
+                // top margin 由 6 改 4:减小头部与进度条垂直间距,缓解 5h/周两个模块在
+                // scale=1.3 时 row 自然高度溢出造成的内容重叠。
+                Margin = new Thickness(0, 4, 24, 0)
             };
             var track = new Rectangle
             {
@@ -2683,12 +2686,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _hourlyReset.FontFamily = font;
             _hourlyReset.FontSize = 14 * scale;
             _hourlyReset.FontStyle = FontStyles.Italic;
-            _hourlyReset.Margin = new Thickness(0, 6, 0, 0);
+            _hourlyReset.Margin = new Thickness(0, 4, 0, 0);
             _hourlyReset.Foreground = _weakBrush;
             _weeklyReset.FontFamily = font;
             _weeklyReset.FontSize = 14 * scale;
             _weeklyReset.FontStyle = FontStyles.Italic;
-            _weeklyReset.Margin = new Thickness(0, 6, 0, 0);
+            _weeklyReset.Margin = new Thickness(0, 4, 0, 0);
             _weeklyReset.Foreground = _weakBrush;
 
             // 底部 footer:弱文字、字号 11.5 × scale（时间戳装饰,但仍可读）；数字斜体
