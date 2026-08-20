@@ -2231,10 +2231,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _root = new Grid();
             _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-            // MiniMax 双模块内部 3 行 Grid:5h / 1px 分割线 / 周。
+            // MiniMax 双模块内部 3 行 Grid:5h / 2px 分割线区 / 周。
+// row 1 高度 2px、分割线高度 1px 贴 row 1 底部,让 5h 模块底部与分割线之间多 1px 留白,
+            // 周模块紧贴分割线下方,整体视觉空间更宽松。
             _maxRootGrid = new Grid();
             _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Pixel) });
+            _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Pixel) });
             _maxRootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             _maxRootGrid.IsHitTestVisible = false;
 
@@ -2286,9 +2288,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _maxRootGrid.Children.Add(hourlyStack);
 
             // 5h / 周模块之间的 1px 分割线,弱色填充。
+// VerticalAlignment=Bottom 让它贴在 row 1 底部(row 1 高 2px),上方留 1px 空白归属 5h 模块底部,
+            // 视觉上分割线相对 5h 模块下移 1px,周模块与分割线之间无额外间隙(保持紧凑)。
             _divider = new Border
             {
-                Height = 1
+                Height = 1,
+                VerticalAlignment = VerticalAlignment.Bottom
             };
             Grid.SetRow(_divider, 1);
             _maxRootGrid.Children.Add(_divider);
