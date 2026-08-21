@@ -482,7 +482,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>
 /// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
 /// </summary>
-    public PaperMiniViewSize PreferredMiniViewSize => new(440, 180);
+    public PaperMiniViewSize PreferredMiniViewSize => new(280, 180);
 
     public FrameworkElement? CreateMiniView(PaperMiniViewContext context)
     {

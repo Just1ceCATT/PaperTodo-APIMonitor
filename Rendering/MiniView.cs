@@ -31,9 +31,10 @@ internal sealed partial class BalanceMiniView : Border
     private Brush _accentBrush = Brushes.Blue;
     private Brush _barTrackBrush = Brushes.LightGray;
 
-    // 进度条 fill 固定为中性灰 #808080,冻结后跨线程共享,避免每次 Update 都重建。
-    // 用户已确认不再按风险档变色,所以移除 RiskColor 依赖。
-    private readonly Brush _grayBrush;
+    // 进度条 fill 固定为分类色(5h=橙 #FF9800,周=蓝 #2196F3),冻结后跨线程共享。
+    // 分类色不代表风险,与 RiskClassifier 无关;契约见 AGENTS.md "不引入冗余"段。
+    private readonly Brush _hourlyFillBrush;
+    private readonly Brush _weeklyFillBrush;
     // 记录最近 ratio:SizeChanged 事件按此值重算 fill.Width,与进度条 fill 颜色无关。
     private double _lastHourlyRatio = -1;
     private double _lastWeeklyRatio = -1;
@@ -55,6 +56,16 @@ internal sealed partial class BalanceMiniView : Border
     internal Rectangle _weeklyFill = null!;
     internal TextBlock _weeklyReset = null!;
     internal TextBlock _footer = null!;
+
+    // 倒计时/footer 行容器:左图标 + 右文字,Grid 复合行。
+    internal Grid _hourlyResetRow = null!;
+    internal Grid _weeklyResetRow = null!;
+    internal Grid _footerRow = null!;
+
+    // 时钟 / 刷新图标(Path + StreamGeometry 自绘,跟随主题 _weakBrush)。
+    internal Path _hourlyClockGlyph = null!;
+    internal Path _weeklyClockGlyph = null!;
+    internal Path _refreshGlyph = null!;
 
     // MiniMax 双模块容器:_maxRootGrid(MiniMax 模式显示)。
     internal StackPanel _hourlyStack = null!;
@@ -101,10 +112,13 @@ internal sealed partial class BalanceMiniView : Border
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
 
-        // 进度条 fill 固定灰:中性灰 #808080,冻结后跨线程共享。
-        var gray = new SolidColorBrush(Color.FromRgb(0x80, 0x80, 0x80));
-        gray.Freeze();
-        _grayBrush = gray;
+        // 进度条 fill 固定分类色:5h 橙 #FF9800、周 蓝 #2196F3,冻结后跨线程共享。
+        var hourlyFill = new SolidColorBrush(Color.FromRgb(0xFF, 0x98, 0x00));
+        hourlyFill.Freeze();
+        var weeklyFill = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
+        weeklyFill.Freeze();
+        _hourlyFillBrush = hourlyFill;
+        _weeklyFillBrush = weeklyFill;
 
         // 内部 1 行 Grid:同时容纳 MiniMax 双模块(_maxRootGrid)与 DeepSeek 三列(_dsRootGrid)。
         // 两个子树互斥:provider 是 MiniMax 时 _maxRootGrid 可见 _dsRootGrid 隐藏;DeepSeek 反之。
@@ -152,50 +166,59 @@ internal sealed partial class BalanceMiniView : Border
         var font = ResolveFontFamily(fontSource);
         var scale = Math.Clamp(theme.FontScale, 0.85, 1.3);
 
-        // 头部标签:弱文字、字号 15 × scale(中文字号再放大),加粗让"每五小时额度" / "周额度" 更突出
+        // 头部标签:弱文字、字号 12(主动放弃 × scale,小尺寸浮窗内字号偏小更精致)。
         _hourlyLabel.FontFamily = font;
-        _hourlyLabel.FontSize = 15 * scale;
-        _hourlyLabel.FontWeight = FontWeights.Bold;
+        _hourlyLabel.FontSize = 12;
+        _hourlyLabel.FontWeight = FontWeights.Medium;
         _hourlyLabel.Foreground = _weakBrush;
         _weeklyLabel.FontFamily = font;
-        _weeklyLabel.FontSize = 15 * scale;
-        _weeklyLabel.FontWeight = FontWeights.Bold;
+        _weeklyLabel.FontSize = 12;
+        _weeklyLabel.FontWeight = FontWeights.Medium;
         _weeklyLabel.Foreground = _weakBrush;
 
-        // 百分比:主文字、字号 24 × scale;数字部分用斜体
+        // 百分比:主文字、字号 13、Medium 加粗突出(数字部分保留斜体)。
         _hourlyPercent.FontFamily = font;
-        _hourlyPercent.FontSize = 24 * scale;
+        _hourlyPercent.FontSize = 13;
         _hourlyPercent.FontStyle = FontStyles.Italic;
-        _hourlyPercent.FontWeight = FontWeights.SemiBold;
+        _hourlyPercent.FontWeight = FontWeights.Medium;
         _hourlyPercent.Foreground = _textBrush;
         _weeklyPercent.FontFamily = font;
-        _weeklyPercent.FontSize = 24 * scale;
+        _weeklyPercent.FontSize = 13;
         _weeklyPercent.FontStyle = FontStyles.Italic;
-        _weeklyPercent.FontWeight = FontWeights.SemiBold;
+        _weeklyPercent.FontWeight = FontWeights.Medium;
         _weeklyPercent.Foreground = _textBrush;
 
-        // 进度条 track 底色随主题;fill 风险色在 Update 里重写。
+        // 进度条 track 底色随主题;fill 固定分类色(5h 橙 / 周 蓝),与主题无关,
+        // 在 ApplyTheme 中一次性绑定避免每次 Update 都重写。
         _hourlyBarTrack.Fill = _barTrackBrush;
         _weeklyBarTrack.Fill = _barTrackBrush;
+        _hourlyFill.Fill = _hourlyFillBrush;
+        _weeklyFill.Fill = _weeklyFillBrush;
+
+        // 时钟 / 刷新图标 stroke 跟随弱文字色,粗细 1.1 保证清晰但不喧宾夺主。
+        _hourlyClockGlyph.Stroke = _weakBrush;
+        _hourlyClockGlyph.StrokeThickness = 1.1;
+        _weeklyClockGlyph.Stroke = _weakBrush;
+        _weeklyClockGlyph.StrokeThickness = 1.1;
+        _refreshGlyph.Stroke = _weakBrush;
+        _refreshGlyph.StrokeThickness = 1.1;
 
         // 5h / 周分割线颜色:复用进度条底色,弱视觉分组。
         _divider.Background = _barTrackBrush;
 
-        // 倒计时:弱文字、字号 14 × scale(数字部分用斜体);顶部 6 DIP margin 让它与进度条拉开间距
+        // 倒计时:弱文字、字号 11(最弱,与小浮窗协调);margin 由 hourlyResetRow 容器统一管理。
         _hourlyReset.FontFamily = font;
-        _hourlyReset.FontSize = 14 * scale;
+        _hourlyReset.FontSize = 11;
         _hourlyReset.FontStyle = FontStyles.Italic;
-        _hourlyReset.Margin = new Thickness(0, 4, 0, 0);
         _hourlyReset.Foreground = _weakBrush;
         _weeklyReset.FontFamily = font;
-        _weeklyReset.FontSize = 14 * scale;
+        _weeklyReset.FontSize = 11;
         _weeklyReset.FontStyle = FontStyles.Italic;
-        _weeklyReset.Margin = new Thickness(0, 4, 0, 0);
         _weeklyReset.Foreground = _weakBrush;
 
-        // 底部 footer:弱文字、字号 11.5 × scale(时间戳装饰,但仍可读);数字斜体
+        // 底部 footer:弱文字、字号 11(时间戳装饰);数字斜体。
         _footer.FontFamily = font;
-        _footer.FontSize = 11.5 * scale;
+        _footer.FontSize = 11;
         _footer.FontStyle = FontStyles.Italic;
         _footer.Foreground = _weakBrush;
 
@@ -260,18 +283,16 @@ internal sealed partial class BalanceMiniView : Border
                 _hourlyPercent.Text = FormatPercent(max.Percent);
                 var hourlyRatio = Math.Clamp(max.Percent / 100.0, 0, 1);
                 _lastHourlyRatio = hourlyRatio;
-                _hourlyFill.Fill = _grayBrush;
                 _hourlyFill.Width = Math.Max(0, _hourlyBarGrid.ActualWidth * hourlyRatio);
                 _hourlyReset.Text = string.IsNullOrEmpty(statusText)
-                    ? FormatRemaining("距离下次重置还有", max.RemainingHours, includeDays: false)
+                    ? FormatRemaining(max.RemainingHours, includeDays: false)
                     : statusText;
 
                 _weeklyPercent.Text = FormatPercent(max.WeeklyPercent);
                 var weeklyRatio = Math.Clamp(max.WeeklyPercent / 100.0, 0, 1);
                 _lastWeeklyRatio = weeklyRatio;
-                _weeklyFill.Fill = _grayBrush;
                 _weeklyFill.Width = Math.Max(0, _weeklyBarGrid.ActualWidth * weeklyRatio);
-                _weeklyReset.Text = FormatRemaining("距离下次重置还有", max.WeeklyHours, includeDays: true);
+                _weeklyReset.Text = FormatRemaining(max.WeeklyHours, includeDays: true);
 
                 _footer.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
             }

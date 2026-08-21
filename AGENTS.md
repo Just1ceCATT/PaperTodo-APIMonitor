@@ -187,7 +187,7 @@ powershell -File Test-DeepSeekBalance.ps1
 - 不要向 `plugins/api.balance.monitor/.runtime/webview2/` 提交用户数据缓存。
 - 不要绕过 `IPaperBodyContext.SaveStateJson` 直接读写 `plugins/data/api.balance.monitor.json`。
 - 不要回退到旧版「绿黄红」三分档或按余额绝对值变色的胶囊风险色;v3.1 档位是当前契约。
-- 不要在 MiniView 进度条 fill 上恢复按 `RiskColor(ratio)` 染色;中性灰 `#808080` 已冻结为当前契约。
+- 不要在 MiniView 进度条 fill 上按 `RiskColor(ratio)` 染色;5h 进度条 fill 固定橙 `#FF9800`,周进度条 fill 固定蓝 `#2196F3`,已冻结为当前契约(分类色,不代表风险)。
 - 不要把异常类型名(`TaskCanceledException` / `HttpRequestException` / `JsonException`)直接展示给用户;用友好中文提示。
 
 ### 不破坏用户体验
@@ -240,7 +240,7 @@ powershell -File Test-DeepSeekBalance.ps1
 
 ### 1.8 MiniView
 
-- 尺寸范围 120×90 ~ 480×420 DIP,本插件当前声明 `440×180`。空数据时不要显示更小尺寸;尺寸变化时宿主会重建 MiniView。
+- 尺寸范围 120×90 ~ 480×420 DIP,本插件当前声明 `280×180`。空数据时不要显示更小尺寸;尺寸变化时宿主会重建 MiniView。
 - `OnMiniViewVisibilityChanged(bool)` 仅做"暂停 / 恢复"提示;不要重置或重建 MiniView 树。
 - 字体覆盖:插件设置 `miniViewFontFamily` 非空时替换主题字体,留空跟随主题;Windows 用字体名(如 `Microsoft YaHei UI`),macOS / Linux 用字形名(如 `PingFang SC` / `Noto Sans CJK SC`)。
 
