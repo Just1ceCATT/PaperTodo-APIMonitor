@@ -482,7 +482,23 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>
 /// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
 /// </summary>
-    public PaperMiniViewSize PreferredMiniViewSize => new(280, 180);
+    /// <summary>
+/// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
+/// DeepSeek(3 行 + footer)需要更大空间,返回 322×207(15% 放大);MiniMax(2 行双模块)保持 280×180;
+/// OpenCode 返回 null view 但宿主仍需尺寸用于布局占位,同样返回 280×180。
+/// </summary>
+public PaperMiniViewSize PreferredMiniViewSize
+{
+    get
+    {
+        if (string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
+        {
+            return new(322, 207);
+        }
+        // MiniMax / OpenCode / 默认
+        return new(280, 180);
+    }
+}
 
     public FrameworkElement? CreateMiniView(PaperMiniViewContext context)
     {

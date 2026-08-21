@@ -35,6 +35,7 @@ internal sealed partial class BalanceMiniView : Border
     private Brush _dsAccentBrush = Brushes.Orange;
     private Brush _dsSafeBrush = Brushes.LimeGreen;
     private Brush _dsDangerBrush = Brushes.OrangeRed;
+    private Brush _dsBadgeBackgroundBrush = Brushes.LightSalmon;
 
     // 进度条 fill 固定为分类色(5h=橙 #FF9800,周=蓝 #2196F3),冻结后跨线程共享。
     // 分类色不代表风险,与 RiskClassifier 无关;契约见 AGENTS.md "不引入冗余"段。
@@ -80,13 +81,17 @@ internal sealed partial class BalanceMiniView : Border
     // DeepSeek 子树容器:_dsRootGrid(DeepSeek 模式显示),3 行 StackPanel。
     internal StackPanel _dsRootGrid = null!;
 
-    // Row 1:今日消费金额 + 高峰期徽章 + 涨跌指示 + 主值
+    // Row 1:今日消费金额 + 高峰期徽章(pill)+ 涨跌指示 + 主值
     internal TextBlock _dsRow1HeaderLeft = null!;
-    internal StackPanel _dsRow1Badge = null!;
+    internal Border _dsRow1Badge = null!;
     internal Ellipse _dsBadgeDot = null!;
     internal TextBlock _dsBadgeText = null!;
     internal TextBlock _dsRow1HeaderRight = null!;
     internal TextBlock _dsRow1Value = null!;
+
+    // 行间分割线(类 MiniMax _divider,1px 弱色)
+    internal Border _dsDivider1 = null!;
+    internal Border _dsDivider2 = null!;
 
     // Row 2:近 7 日消费 + 日均 + 主值 + sparkline
     internal TextBlock _dsRow2HeaderLeft = null!;
@@ -98,10 +103,10 @@ internal sealed partial class BalanceMiniView : Border
 
     // Row 3:今日消耗 + tokens + 缓存命中脚注
     internal TextBlock _dsRow3HeaderLeft = null!;
-    internal Viewbox _dsRow3ValueRow = null!;
+    internal Viewbox _dsRow3NumberBox = null!;
     internal TextBlock _dsRow3ValueNumber = null!;
     internal TextBlock _dsRow3ValueSuffix = null!;
-    internal StackPanel _dsRow3FootRow = null!;
+    internal Grid _dsRow3FootRow = null!;
     internal Path _dsCacheIcon = null!;
     internal TextBlock _dsCacheText = null!;
     internal TextBlock _dsCacheRate = null!;
@@ -233,9 +238,16 @@ internal sealed partial class BalanceMiniView : Border
         _dsAccentBrush = ToBrush(theme.AccentColor, "#FF9800");
         _dsSafeBrush = ToBrush(theme.IsDark ? "#78d47d" : "#4CAF50", "#4CAF50");
         _dsDangerBrush = ToBrush(theme.IsDark ? "#e28787" : "#F44336", "#F44336");
+        // Badge pill 背景:深 25% / 浅 15% 橙调半透明,与 5h 橙(#FF9800)视觉同源。
+        _dsBadgeBackgroundBrush = ToBrush(theme.IsDark ? "#40FF9800" : "#26FF9800", "#26FF9800");
+        _dsRow1Badge.Background = _dsBadgeBackgroundBrush;
 
-        // 标签(行 1 / 2 / 3 头部左 + 右):弱文字 11,Normal
-        var dsLabelSize = 11;
+        // 行间分割线:复用 _barTrackBrush,与 MiniMax _divider 同源。
+        _dsDivider1.Background = _barTrackBrush;
+        _dsDivider2.Background = _barTrackBrush;
+
+        // 标签(行 1 / 2 / 3 头部左 + 右):弱文字 12,Normal
+        var dsLabelSize = 12;
         _dsRow1HeaderLeft.FontFamily = font; _dsRow1HeaderLeft.FontSize = dsLabelSize;
         _dsRow1HeaderLeft.FontWeight = FontWeights.Normal; _dsRow1HeaderLeft.Foreground = _weakBrush;
         _dsRow2HeaderLeft.FontFamily = font; _dsRow2HeaderLeft.FontSize = dsLabelSize;
@@ -245,29 +257,29 @@ internal sealed partial class BalanceMiniView : Border
         _dsRow3HeaderLeft.FontFamily = font; _dsRow3HeaderLeft.FontSize = dsLabelSize;
         _dsRow3HeaderLeft.FontWeight = FontWeights.Normal; _dsRow3HeaderLeft.Foreground = _weakBrush;
 
-        // 涨跌指示(_dsRow1HeaderRight):字号 11、SemiBold;颜色由 Update 按方向重写
+        // 涨跌指示(_dsRow1HeaderRight):字号 12、SemiBold;颜色由 Update 按方向重写
         _dsRow1HeaderRight.FontFamily = font; _dsRow1HeaderRight.FontSize = dsLabelSize;
         _dsRow1HeaderRight.FontWeight = FontWeights.SemiBold;
 
-        // 高峰期徽章:8×8 圆点 + 文字"高峰期"
+        // 高峰期徽章:pill 背景由 _dsBadgeBackgroundBrush 注入;圆点 5px 用主题 accent;文字"高峰期" 10
         _dsBadgeDot.Fill = _dsAccentBrush;
-        _dsBadgeText.FontFamily = font; _dsBadgeText.FontSize = dsLabelSize;
+        _dsBadgeText.FontFamily = font; _dsBadgeText.FontSize = 10;
         _dsBadgeText.FontWeight = FontWeights.Medium; _dsBadgeText.Foreground = _dsAccentBrush;
 
-        // 主值(¥0.08 / ¥8.42 / 25,325 tokens):字号 20,SemiBold
-        var dsValueSize = 20;
-        _dsRow1Value.FontFamily = font; _dsRow1Value.FontSize = dsValueSize;
+        // 主值差异化:Row1=22 给"今日消费金额"加视觉权重;Row2=20 让位 sparkline;
+        // Row3=22 突出 tokens 数字。SemiBold,主文字色。
+        _dsRow1Value.FontFamily = font; _dsRow1Value.FontSize = 22;
         _dsRow1Value.FontWeight = FontWeights.SemiBold; _dsRow1Value.Foreground = _textBrush;
-        _dsRow2Value.FontFamily = font; _dsRow2Value.FontSize = dsValueSize;
+        _dsRow2Value.FontFamily = font; _dsRow2Value.FontSize = 14;
         _dsRow2Value.FontWeight = FontWeights.SemiBold; _dsRow2Value.Foreground = _textBrush;
-        _dsRow3ValueNumber.FontFamily = font; _dsRow3ValueNumber.FontSize = dsValueSize;
+        _dsRow3ValueNumber.FontFamily = font; _dsRow3ValueNumber.FontSize = 18;
         _dsRow3ValueNumber.FontWeight = FontWeights.SemiBold; _dsRow3ValueNumber.Foreground = _textBrush;
         // tokens 后缀:字号 11,Normal,弱色
         _dsRow3ValueSuffix.FontFamily = font; _dsRow3ValueSuffix.FontSize = 11;
         _dsRow3ValueSuffix.FontWeight = FontWeights.Normal; _dsRow3ValueSuffix.Foreground = _weakBrush;
 
-        // 缓存命中脚注:字号 10,Normal
-        var dsFootSize = 10;
+        // 缓存命中脚注:字号 11,Normal,弱色
+        var dsFootSize = 11;
         _dsCacheText.FontFamily = font; _dsCacheText.FontSize = dsFootSize;
         _dsCacheText.FontWeight = FontWeights.Normal; _dsCacheText.Foreground = _weakBrush;
         _dsCacheRate.FontFamily = font; _dsCacheRate.FontSize = dsFootSize;
