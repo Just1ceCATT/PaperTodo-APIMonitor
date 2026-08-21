@@ -540,22 +540,25 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         if (string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
         {
             var todayCost = MetricsAggregator.BuildCostTodayText(_costDays, _settings.CurrencySymbol);
-            var costTodayFoot = MetricsAggregator.BuildCostTodayFoot(_costDays);
+            var change = MetricsAggregator.BuildCostChange(_costDays);
             var cost7d = MetricsAggregator.BuildCost7dText(_costDays, _settings.CurrencySymbol);
             var cost7dFoot = MetricsAggregator.BuildCost7dFoot(_costDays, _settings.CurrencySymbol);
             var todayTokens = MetricsAggregator.BuildTodayTokens(_usageDays);
             var todayHit = MetricsAggregator.BuildTodayHit(_usageDays);
             var cacheRate = MetricsAggregator.BuildTodayCacheRate(_usageDays);
+            var sparkline = MetricsAggregator.BuildCostSparkline(_costDays, 7);
 
             var ds = new BalanceMiniView.DeepSeekMetrics(
                 TodayCostText: string.IsNullOrEmpty(todayCost) ? "" : todayCost,
-                CostTodayFoot: costTodayFoot,
+                ChangeDirection: change.Direction,
+                ChangePercent: change.Percent,
                 Cost7dText: string.IsNullOrEmpty(cost7d) ? "" : cost7d,
                 Cost7dFoot: cost7dFoot,
                 TodayTokensText: Format.FormatTokens(todayTokens),
-                TodayTokensWan: "≈ " + Format.FormatWanYi(todayTokens),
-                TodayHitText: "缓存命中: " + Format.FormatThousands(todayHit) + " Tokens",
-                TodayCacheRate: Format.FormatCacheRate(cacheRate));
+                TodayHitText: Format.FormatThousands(todayHit),
+                CacheRateText: Format.FormatCacheRate(cacheRate),
+                Sparkline: sparkline,
+                IsPeakHour: _lastIsPeakHour);
             _miniView.Update(
                 new BalanceMiniView.MiniViewSnapshot(
                     Provider: PaperState.DeepSeek,

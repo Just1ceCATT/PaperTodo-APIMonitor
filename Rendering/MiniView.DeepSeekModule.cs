@@ -1,236 +1,237 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Shapes;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
 /// <summary>
-/// BalanceMiniView 的 DeepSeek 三列卡片 partial:今日消费金额 / 近 7 日 / 今日消耗。
-/// 字段定义在 MiniView.cs,本文件负责 BuildDeepSeekModule / BuildDeepSeekColumn /
-/// BuildDeepSeekColumnWithTokens。BuildDeepSeekColumnWithTokens 第三列含 Viewbox 缩放 +
-/// 三行脚注,代码量较大,因此本 partial 与 MaxModule 体积接近。
+/// BalanceMiniView 的 DeepSeek 三行卡片 partial:今日消费 / 近 7 日 / 今日消耗。
+/// 字段定义在 MiniView.cs,本文件负责 BuildDeepSeekModule + BuildMetricRow + BuildSparklineGeometry。
+/// 3 列 → 3 行重构:每行 header + value,Row 2 含 sparkline,Row 3 含缓存命中脚注。
 /// </summary>
 internal sealed partial class BalanceMiniView
 {
-    /// <summary>构建 DeepSeek 三列卡片子树:_dsRootGrid(默认 Collapsed,MiniMax 时不显示)。</summary>
+    /// <summary>构建 DeepSeek 三行卡片子树:_dsRootGrid(默认 Collapsed,MiniMax 时不显示)。</summary>
     private void BuildDeepSeekModule()
     {
-        // 整体横跨 _root 的 3 行,垂直居中。
-        _dsRootGrid = new Grid();
-        _dsRootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        _dsRootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        _dsRootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        _dsRootGrid.VerticalAlignment = VerticalAlignment.Center;
-        _dsRootGrid.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _dsRootGrid.IsHitTestVisible = false;
-        _dsRootGrid.Visibility = Visibility.Collapsed;
-
-        BuildDeepSeekColumn(
-            out _dsCol1, out _dsCol1Divider, out _dsCol1Label, out _dsCol1Value, out _dsCol1Foot,
-            primaryInitial: "—", subText: "今日消费金额", footInitial: "",
-            showDivider: false);
-        BuildDeepSeekColumn(
-            out _dsCol2, out _dsCol2Divider, out _dsCol2Label, out _dsCol2Value, out _dsCol2Foot,
-            primaryInitial: "—", subText: "近 7 日", footInitial: "—",
-            showDivider: true);
-        BuildDeepSeekColumnWithTokens(
-            out _dsCol3, out _dsCol3Divider, out _dsCol3Label, out _dsCol3ValueNumber,
-            out _dsCol3ValueSuffix, out _dsCol3Foot1, out _dsCol3Foot2, out _dsCol3Foot3);
-
-        Grid.SetColumn(_dsCol1, 0); _dsRootGrid.Children.Add(_dsCol1);
-        Grid.SetColumn(_dsCol2, 1); _dsRootGrid.Children.Add(_dsCol2);
-        Grid.SetColumn(_dsCol3, 2); _dsRootGrid.Children.Add(_dsCol3);
-
-        // _dsRootGrid 是 _root 的直接子节点(与 _maxRootGrid 平级),不需要 SetRowSpan(3),
-        // 因为 _root 现在是 1 行 Grid,_maxRootGrid / _dsRootGrid 互斥显示。
-    }
-
-    /// <summary>
-    /// 构建 DeepSeek 单列:[1px 左竖线 | StackPanel],showDivider 控制左竖线可见性。
-    /// </summary>
-    private void BuildDeepSeekColumn(
-        out Grid column,
-        out Border divider,
-        out TextBlock label,
-        out TextBlock value,
-        out TextBlock foot,
-        string primaryInitial,
-        string subText,
-        string footInitial,
-        bool showDivider)
-    {
-        column = new Grid();
-        column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Pixel) });
-        column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        divider = new Border
+        // 整体 3 行 StackPanel(垂直),各行自然撑高。
+        _dsRootGrid = new StackPanel
         {
-            Width = 1,
+            Orientation = Orientation.Vertical,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            Margin = new Thickness(0, 4, 0, 4),
-            Visibility = showDivider ? Visibility.Visible : Visibility.Collapsed
-        };
-        Grid.SetColumn(divider, 0);
-        column.Children.Add(divider);
-
-        var stack = new StackPanel
-        {
             VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Margin = new Thickness(14, 0, 14, 0)
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 2, 0, 2)
         };
 
-        label = new TextBlock
+        // === Row 1:今日消费金额 + 高峰期徽章 + 涨跌指示 + 主值 ===
+        _dsRow1HeaderLeft = MakeLabel("今日消费金额");
+        _dsRow1Badge = MakeBadge(out _dsBadgeDot, out _dsBadgeText);
+        _dsRow1Badge.Visibility = Visibility.Collapsed; // 默认隐藏,Update 按 IsPeakHour 决定
+        var row1Left = new StackPanel
         {
-            Text = subText,
-            HorizontalAlignment = HorizontalAlignment.Left,
+            Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            IsHitTestVisible = false
         };
-        value = new TextBlock
+        row1Left.Children.Add(_dsRow1HeaderLeft);
+        row1Left.Children.Add(_dsRow1Badge);
+        _dsRow1HeaderRight = new TextBlock
         {
-            Text = primaryInitial,
-            HorizontalAlignment = HorizontalAlignment.Left,
+            Text = "",
+            HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed
         };
-        foot = new TextBlock
+        var row1Header = new Grid { IsHitTestVisible = false };
+        row1Header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row1Header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(row1Left, 0);
+        Grid.SetColumn(_dsRow1HeaderRight, 1);
+        row1Header.Children.Add(row1Left);
+        row1Header.Children.Add(_dsRow1HeaderRight);
+
+        _dsRow1Value = MakeLargeValue("—");
+
+        _dsRootGrid.Children.Add(BuildMetricRow(row1Header, _dsRow1Value));
+
+        // === Row 2:近 7 日消费 + 日均 + 主值 + sparkline ===
+        _dsRow2HeaderLeft = MakeLabel("近 7 日消费");
+        _dsRow2HeaderRight = MakeLabel("", align: HorizontalAlignment.Right);
+        var row2Header = new Grid { IsHitTestVisible = false };
+        row2Header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row2Header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(_dsRow2HeaderLeft, 0);
+        Grid.SetColumn(_dsRow2HeaderRight, 1);
+        row2Header.Children.Add(_dsRow2HeaderLeft);
+        row2Header.Children.Add(_dsRow2HeaderRight);
+
+        _dsRow2Value = MakeLargeValue("—");
+        // sparkline:Path + Viewbox 包裹,容器宽度自适应
+        _dsSparkline = new Path
         {
-            Text = footInitial,
-            HorizontalAlignment = HorizontalAlignment.Left,
+            Width = 56,
+            Height = 22,
+            Stretch = Stretch.Uniform,
+            HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            StrokeThickness = 1.4,
+            StrokeLineJoin = PenLineJoin.Round,
+            IsHitTestVisible = false
         };
-
-        stack.Children.Add(label);
-        stack.Children.Add(value);
-        stack.Children.Add(foot);
-
-        Grid.SetColumn(stack, 1);
-        column.Children.Add(stack);
-    }
-
-    /// <summary>
-    /// 构建 DeepSeek 第三列:StackPanel 内容依次为 Label / Value(Number + Suffix) / Foot1 / Foot2 / Foot3。
-    /// </summary>
-    private void BuildDeepSeekColumnWithTokens(
-        out Grid column,
-        out Border divider,
-        out TextBlock label,
-        out TextBlock valueNumber,
-        out TextBlock valueSuffix,
-        out TextBlock foot1,
-        out TextBlock foot2,
-        out TextBlock foot3)
-    {
-        // 列结构与 BuildDeepSeekColumn 对齐:[1px 左侧分割线 | 内容 stack],
-        // 让"今日消耗"列与"近 7 日"列之间有视觉分隔(三列卡片统一节奏)。
-        column = new Grid();
-        column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Pixel) });
-        column.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        divider = new Border
-        {
-            Width = 1,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            Margin = new Thickness(0, 4, 0, 4),
-            Visibility = Visibility.Visible
-        };
-        Grid.SetColumn(divider, 0);
-        column.Children.Add(divider);
-
-        // 左右 margin 由 10 改 4:列3 内容 5 行(数字+Tokens+三脚注)横向更紧,
-        // 释放 ~12px 让 "25,325 Tokens" 完整显示而不再被 TextTrimming 截断。
-        var stack = new StackPanel
-        {
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Margin = new Thickness(4, 0, 4, 0)
-        };
-
-        label = new TextBlock
-        {
-            Text = "今日消耗",
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-
-        valueNumber = new TextBlock
-        {
-            Text = "—",
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextAlignment = TextAlignment.Right,
-            TextTrimming = TextTrimming.None
-        };
-        valueSuffix = new TextBlock
-        {
-            Text = " Tokens",
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            // Margin left 由 4 改 2,节省数字与 Tokens 间距,给列3 横向多挤出 2px。
-            Margin = new Thickness(2, 0, 0, 4),
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-        // valueRow 改为 Grid 两列:[数字 Viewbox(可缩放) | Tokens(suffix)]。
-        // Viewbox 让 9 位数(如 "123,456,789")在窄列内自动缩小字号,
-        // 同时保证 " Tokens" 后缀永远完整不被 TextTrimming 截断。
-        var valueNumberViewbox = new Viewbox
+        var sparkWrap = new Viewbox
         {
             Stretch = Stretch.Uniform,
             StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        sparkWrap.Child = _dsSparkline;
+        var row2Value = new Grid { IsHitTestVisible = false, Margin = new Thickness(0, 0, 0, 0) };
+        row2Value.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row2Value.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(_dsRow2Value, 0);
+        Grid.SetColumn(sparkWrap, 1);
+        row2Value.Children.Add(_dsRow2Value);
+        row2Value.Children.Add(sparkWrap);
+
+        _dsRootGrid.Children.Add(BuildMetricRow(row2Header, row2Value));
+
+        // === Row 3:今日消耗 + 主值(数字 + tokens 后缀) ===
+        _dsRow3HeaderLeft = MakeLabel("今日消耗");
+        var row3Header = new Grid { IsHitTestVisible = false };
+        row3Header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row3Header.Children.Add(_dsRow3HeaderLeft);
+
+        _dsRow3ValueNumber = MakeLargeValue("—");
+        _dsRow3ValueSuffix = MakeLabel("tokens");
+        var row3ValueInner = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            IsHitTestVisible = false
+        };
+        row3ValueInner.Children.Add(_dsRow3ValueNumber);
+        row3ValueInner.Children.Add(_dsRow3ValueSuffix);
+        _dsRow3ValueRow = new Viewbox
+        {
+            Stretch = Stretch.Uniform,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        _dsRow3ValueRow.Child = row3ValueInner;
+
+        _dsRootGrid.Children.Add(BuildMetricRow(row3Header, _dsRow3ValueRow));
+
+        // === Row 3 footer:缓存命中中 + tokens · rate% ===
+        _dsCacheIcon = BuildRefreshGlyph();
+        _dsCacheText = MakeLabel("缓存命中中");
+        var footLeft = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        footLeft.Children.Add(_dsCacheIcon);
+        footLeft.Children.Add(_dsCacheText);
+        _dsCacheRate = MakeLabel("", align: HorizontalAlignment.Right);
+        _dsRow3FootRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 0),
+            IsHitTestVisible = false
         };
-        valueNumberViewbox.Child = valueNumber;
+        _dsRow3FootRow.Children.Add(footLeft);
+        // 占位 Spacer 把 _dsCacheRate 推到右侧
+        var spacer = new TextBlock { Text = " ", Width = 4, IsHitTestVisible = false };
+        _dsRow3FootRow.Children.Add(spacer);
+        _dsRow3FootRow.Children.Add(_dsCacheRate);
+        _dsRootGrid.Children.Add(_dsRow3FootRow);
 
-        var valueRow = new Grid
+        // _dsRootGrid 由构造函数统一加入 _root(与 _maxRootGrid 平级,互斥显示),
+        // 此处不再重复添加,避免 "Specified element is already the logical child of another element" 异常。
+    }
+
+    /// <summary>单行容器:header 行 + value 行,StackPanel 垂直堆叠。</summary>
+    private static StackPanel BuildMetricRow(FrameworkElement header, FrameworkElement value)
+    {
+        var row = new StackPanel
         {
+            Orientation = Orientation.Vertical,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 4),
+            IsHitTestVisible = false
         };
-        valueRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        valueRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(valueNumberViewbox, 0);
-        Grid.SetColumn(valueSuffix, 1);
-        valueRow.Children.Add(valueNumberViewbox);
-        valueRow.Children.Add(valueSuffix);
+        row.Children.Add(header);
+        row.Children.Add(value);
+        return row;
+    }
 
-        foot1 = new TextBlock
+    /// <summary>通用标签 TextBlock:弱文字、字号由 ApplyTheme 注入、Normal 字重。</summary>
+    private static TextBlock MakeLabel(string text, HorizontalAlignment align = HorizontalAlignment.Left)
+    {
+        return new TextBlock
         {
-            Text = "",
+            Text = text,
+            HorizontalAlignment = align,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            IsHitTestVisible = false
+        };
+    }
+
+    /// <summary>主值 TextBlock:主文字、SemiBold、占位"—"。</summary>
+    private static TextBlock MakeLargeValue(string initial)
+    {
+        return new TextBlock
+        {
+            Text = initial,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(0, 2, 0, 0)
+            TextTrimming = TextTrimming.None,
+            IsHitTestVisible = false
         };
-        foot2 = new TextBlock
+    }
+
+    /// <summary>高峰期徽章:8×8 圆点 + 文字"高峰期",StackPanel 横向布局。</summary>
+    private static StackPanel MakeBadge(out Ellipse dot, out TextBlock text)
+    {
+        dot = new Ellipse
         {
-            Text = "",
+            Width = 8,
+            Height = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 6, 0),
+            IsHitTestVisible = false
+        };
+        text = new TextBlock
+        {
+            Text = "高峰期",
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(0, 1, 0, 0)
+            IsHitTestVisible = false
         };
-        foot3 = new TextBlock
+        return new StackPanel
         {
-            Text = "",
-            HorizontalAlignment = HorizontalAlignment.Left,
+            Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(0, 1, 0, 0)
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 0, 0),
+            IsHitTestVisible = false,
+            Children = { dot, text }
         };
-
-        stack.Children.Add(label);
-        stack.Children.Add(valueRow);
-        stack.Children.Add(foot1);
-        stack.Children.Add(foot2);
-        stack.Children.Add(foot3);
-
-        Grid.SetColumn(stack, 1);
-        column.Children.Add(stack);
     }
 }

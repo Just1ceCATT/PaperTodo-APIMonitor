@@ -31,6 +31,11 @@ internal sealed partial class BalanceMiniView : Border
     private Brush _accentBrush = Brushes.Blue;
     private Brush _barTrackBrush = Brushes.LightGray;
 
+    // DeepSeek 模块专用 brush 缓存:sparkline / 涨跌指示 / 高峰徽章。
+    private Brush _dsAccentBrush = Brushes.Orange;
+    private Brush _dsSafeBrush = Brushes.LimeGreen;
+    private Brush _dsDangerBrush = Brushes.OrangeRed;
+
     // 进度条 fill 固定为分类色(5h=橙 #FF9800,周=蓝 #2196F3),冻结后跨线程共享。
     // 分类色不代表风险,与 RiskClassifier 无关;契约见 AGENTS.md "不引入冗余"段。
     private readonly Brush _hourlyFillBrush;
@@ -72,28 +77,34 @@ internal sealed partial class BalanceMiniView : Border
     internal StackPanel _weeklyStack = null!;
     internal Grid _maxRootGrid = null!;
 
-    // DeepSeek 子树容器:_dsRootGrid(DeepSeek 模式显示)。
-    internal Grid _dsRootGrid = null!;
-    internal Grid _dsCol1 = null!;
-    internal Border _dsCol1Divider = null!;
-    internal TextBlock _dsCol1Label = null!;
-    internal TextBlock _dsCol1Value = null!;
-    internal TextBlock _dsCol1Foot = null!;
+    // DeepSeek 子树容器:_dsRootGrid(DeepSeek 模式显示),3 行 StackPanel。
+    internal StackPanel _dsRootGrid = null!;
 
-    internal Grid _dsCol2 = null!;
-    internal Border _dsCol2Divider = null!;
-    internal TextBlock _dsCol2Label = null!;
-    internal TextBlock _dsCol2Value = null!;
-    internal TextBlock _dsCol2Foot = null!;
+    // Row 1:今日消费金额 + 高峰期徽章 + 涨跌指示 + 主值
+    internal TextBlock _dsRow1HeaderLeft = null!;
+    internal StackPanel _dsRow1Badge = null!;
+    internal Ellipse _dsBadgeDot = null!;
+    internal TextBlock _dsBadgeText = null!;
+    internal TextBlock _dsRow1HeaderRight = null!;
+    internal TextBlock _dsRow1Value = null!;
 
-    internal Grid _dsCol3 = null!;
-    internal Border _dsCol3Divider = null!;
-    internal TextBlock _dsCol3Label = null!;
-    internal TextBlock _dsCol3ValueNumber = null!;
-    internal TextBlock _dsCol3ValueSuffix = null!;
-    internal TextBlock _dsCol3Foot1 = null!;   // ≈ 5.0万
-    internal TextBlock _dsCol3Foot2 = null!;   // 缓存命中: ...
-    internal TextBlock _dsCol3Foot3 = null!;   // 缓存命中率 ...
+    // Row 2:近 7 日消费 + 日均 + 主值 + sparkline
+    internal TextBlock _dsRow2HeaderLeft = null!;
+    internal TextBlock _dsRow2HeaderRight = null!;
+    internal TextBlock _dsRow2Value = null!;
+    internal Path _dsSparkline = null!;
+    internal double _dsSparklineWidth;
+    internal double _dsSparklineHeight;
+
+    // Row 3:今日消耗 + tokens + 缓存命中脚注
+    internal TextBlock _dsRow3HeaderLeft = null!;
+    internal Viewbox _dsRow3ValueRow = null!;
+    internal TextBlock _dsRow3ValueNumber = null!;
+    internal TextBlock _dsRow3ValueSuffix = null!;
+    internal StackPanel _dsRow3FootRow = null!;
+    internal Path _dsCacheIcon = null!;
+    internal TextBlock _dsCacheText = null!;
+    internal TextBlock _dsCacheRate = null!;
 
     /// <param name="fontOverride">字体覆盖源,来自插件设置 miniViewFontFamily,空字符串表示跟随主题。</param>
     public BalanceMiniView(string fontOverride, PaperMiniViewContext context)
@@ -176,15 +187,13 @@ internal sealed partial class BalanceMiniView : Border
         _weeklyLabel.FontWeight = FontWeights.Medium;
         _weeklyLabel.Foreground = _weakBrush;
 
-        // 百分比:主文字、字号 13、Medium 加粗突出(数字部分保留斜体)。
+        // 百分比:主文字、字号 13、Medium 加粗突出(取消斜体,数字部分用正体)。
         _hourlyPercent.FontFamily = font;
         _hourlyPercent.FontSize = 13;
-        _hourlyPercent.FontStyle = FontStyles.Italic;
         _hourlyPercent.FontWeight = FontWeights.Medium;
         _hourlyPercent.Foreground = _textBrush;
         _weeklyPercent.FontFamily = font;
         _weeklyPercent.FontSize = 13;
-        _weeklyPercent.FontStyle = FontStyles.Italic;
         _weeklyPercent.FontWeight = FontWeights.Medium;
         _weeklyPercent.Foreground = _textBrush;
 
@@ -209,59 +218,69 @@ internal sealed partial class BalanceMiniView : Border
         // 倒计时:弱文字、字号 11(最弱,与小浮窗协调);margin 由 hourlyResetRow 容器统一管理。
         _hourlyReset.FontFamily = font;
         _hourlyReset.FontSize = 11;
-        _hourlyReset.FontStyle = FontStyles.Italic;
         _hourlyReset.Foreground = _weakBrush;
         _weeklyReset.FontFamily = font;
         _weeklyReset.FontSize = 11;
-        _weeklyReset.FontStyle = FontStyles.Italic;
         _weeklyReset.Foreground = _weakBrush;
 
-        // 底部 footer:弱文字、字号 11(时间戳装饰);数字斜体。
+        // 底部 footer:弱文字、字号 11(时间戳装饰);正体。
         _footer.FontFamily = font;
         _footer.FontSize = 11;
-        _footer.FontStyle = FontStyles.Italic;
         _footer.Foreground = _weakBrush;
 
-        // === DeepSeek 三列卡片字号设置 ===
-        // Label(列标题):弱文字 11×scale Normal,让"今日消费金额"等副标轻盈。
-        var dsLabelSize = 11 * scale;
-        _dsCol1Label.FontFamily = font; _dsCol1Label.FontSize = dsLabelSize;
-        _dsCol1Label.FontWeight = FontWeights.Normal; _dsCol1Label.Foreground = _weakBrush;
-        _dsCol2Label.FontFamily = font; _dsCol2Label.FontSize = dsLabelSize;
-        _dsCol2Label.FontWeight = FontWeights.Normal; _dsCol2Label.Foreground = _weakBrush;
-        _dsCol3Label.FontFamily = font; _dsCol3Label.FontSize = dsLabelSize;
-        _dsCol3Label.FontWeight = FontWeights.Normal; _dsCol3Label.Foreground = _weakBrush;
+        // === DeepSeek 三行卡片字号设置 ===
+        // DeepSeek 模块专用 brush 缓存:sparkline 用主题 accent(暖色);涨跌指示用固定 safe/danger 色。
+        _dsAccentBrush = ToBrush(theme.AccentColor, "#FF9800");
+        _dsSafeBrush = ToBrush(theme.IsDark ? "#78d47d" : "#4CAF50", "#4CAF50");
+        _dsDangerBrush = ToBrush(theme.IsDark ? "#e28787" : "#F44336", "#F44336");
 
-        // Value(主值):主文字 22×scale SemiBold,数字斜体加半粗
-        var dsValueSize = 22 * scale;
-        _dsCol1Value.FontFamily = font; _dsCol1Value.FontSize = dsValueSize;
-        _dsCol1Value.FontWeight = FontWeights.SemiBold; _dsCol1Value.Foreground = _textBrush;
-        _dsCol2Value.FontFamily = font; _dsCol2Value.FontSize = dsValueSize;
-        _dsCol2Value.FontWeight = FontWeights.SemiBold; _dsCol2Value.Foreground = _textBrush;
-        // 列3 valueNumber 单独 20×scale:列3 内容多一行(Tokens 后缀+三脚注),
-        // 主数字缩小避免 "数字+Tokens" 横向溢出导致 TextTrimming 截断 Tokens。
-        _dsCol3ValueNumber.FontFamily = font; _dsCol3ValueNumber.FontSize = 20 * scale;
-        _dsCol3ValueNumber.FontWeight = FontWeights.SemiBold; _dsCol3ValueNumber.Foreground = _textBrush;
-        _dsCol3ValueSuffix.FontFamily = font; _dsCol3ValueSuffix.FontSize = 10 * scale;
-        _dsCol3ValueSuffix.FontWeight = FontWeights.Normal; _dsCol3ValueSuffix.Foreground = _weakBrush;
+        // 标签(行 1 / 2 / 3 头部左 + 右):弱文字 11,Normal
+        var dsLabelSize = 11;
+        _dsRow1HeaderLeft.FontFamily = font; _dsRow1HeaderLeft.FontSize = dsLabelSize;
+        _dsRow1HeaderLeft.FontWeight = FontWeights.Normal; _dsRow1HeaderLeft.Foreground = _weakBrush;
+        _dsRow2HeaderLeft.FontFamily = font; _dsRow2HeaderLeft.FontSize = dsLabelSize;
+        _dsRow2HeaderLeft.FontWeight = FontWeights.Normal; _dsRow2HeaderLeft.Foreground = _weakBrush;
+        _dsRow2HeaderRight.FontFamily = font; _dsRow2HeaderRight.FontSize = dsLabelSize;
+        _dsRow2HeaderRight.FontWeight = FontWeights.Normal; _dsRow2HeaderRight.Foreground = _weakBrush;
+        _dsRow3HeaderLeft.FontFamily = font; _dsRow3HeaderLeft.FontSize = dsLabelSize;
+        _dsRow3HeaderLeft.FontWeight = FontWeights.Normal; _dsRow3HeaderLeft.Foreground = _weakBrush;
 
-        // Foot(弱文字):极弱文字 10.5×scale
-        var dsFootSize = 10.5 * scale;
-        _dsCol1Foot.FontFamily = font; _dsCol1Foot.FontSize = dsFootSize;
-        _dsCol1Foot.Foreground = _weakBrush;
-        _dsCol2Foot.FontFamily = font; _dsCol2Foot.FontSize = dsFootSize;
-        _dsCol2Foot.Foreground = _weakBrush;
-        _dsCol3Foot1.FontFamily = font; _dsCol3Foot1.FontSize = dsFootSize;
-        _dsCol3Foot1.Foreground = _weakBrush;
-        _dsCol3Foot2.FontFamily = font; _dsCol3Foot2.FontSize = dsFootSize;
-        _dsCol3Foot2.Foreground = _weakBrush;
-        _dsCol3Foot3.FontFamily = font; _dsCol3Foot3.FontSize = dsFootSize;
-        _dsCol3Foot3.Foreground = _weakBrush;
+        // 涨跌指示(_dsRow1HeaderRight):字号 11、SemiBold;颜色由 Update 按方向重写
+        _dsRow1HeaderRight.FontFamily = font; _dsRow1HeaderRight.FontSize = dsLabelSize;
+        _dsRow1HeaderRight.FontWeight = FontWeights.SemiBold;
 
-        // 列分隔线颜色:复用 _barTrackBrush(三列卡片统一节奏)
-        _dsCol1Divider.Background = _barTrackBrush;
-        _dsCol2Divider.Background = _barTrackBrush;
-        _dsCol3Divider.Background = _barTrackBrush;
+        // 高峰期徽章:8×8 圆点 + 文字"高峰期"
+        _dsBadgeDot.Fill = _dsAccentBrush;
+        _dsBadgeText.FontFamily = font; _dsBadgeText.FontSize = dsLabelSize;
+        _dsBadgeText.FontWeight = FontWeights.Medium; _dsBadgeText.Foreground = _dsAccentBrush;
+
+        // 主值(¥0.08 / ¥8.42 / 25,325 tokens):字号 20,SemiBold
+        var dsValueSize = 20;
+        _dsRow1Value.FontFamily = font; _dsRow1Value.FontSize = dsValueSize;
+        _dsRow1Value.FontWeight = FontWeights.SemiBold; _dsRow1Value.Foreground = _textBrush;
+        _dsRow2Value.FontFamily = font; _dsRow2Value.FontSize = dsValueSize;
+        _dsRow2Value.FontWeight = FontWeights.SemiBold; _dsRow2Value.Foreground = _textBrush;
+        _dsRow3ValueNumber.FontFamily = font; _dsRow3ValueNumber.FontSize = dsValueSize;
+        _dsRow3ValueNumber.FontWeight = FontWeights.SemiBold; _dsRow3ValueNumber.Foreground = _textBrush;
+        // tokens 后缀:字号 11,Normal,弱色
+        _dsRow3ValueSuffix.FontFamily = font; _dsRow3ValueSuffix.FontSize = 11;
+        _dsRow3ValueSuffix.FontWeight = FontWeights.Normal; _dsRow3ValueSuffix.Foreground = _weakBrush;
+
+        // 缓存命中脚注:字号 10,Normal
+        var dsFootSize = 10;
+        _dsCacheText.FontFamily = font; _dsCacheText.FontSize = dsFootSize;
+        _dsCacheText.FontWeight = FontWeights.Normal; _dsCacheText.Foreground = _weakBrush;
+        _dsCacheRate.FontFamily = font; _dsCacheRate.FontSize = dsFootSize;
+        _dsCacheRate.FontWeight = FontWeights.Normal; _dsCacheRate.Foreground = _weakBrush;
+        // 缓存命中图标 stroke 跟随弱色
+        _dsCacheIcon.Stroke = _weakBrush;
+        _dsCacheIcon.StrokeThickness = 1.1;
+
+        // Sparkline 设计尺寸(实际由 Path 的 StreamGeometry 坐标决定,这里记录用于 Update 重算)
+        _dsSparklineWidth = 56;
+        _dsSparklineHeight = 22;
+        _dsSparkline.Stroke = _dsAccentBrush;
+        _dsSparkline.StrokeThickness = 1.4;
     }
 
     /// <summary>
@@ -304,21 +323,36 @@ internal sealed partial class BalanceMiniView : Border
 
             if (snapshot.DeepSeekData is { } ds)
             {
-                _dsCol1Value.Text = string.IsNullOrEmpty(ds.TodayCostText) ? "—" : ds.TodayCostText;
-                _dsCol1Foot.Text = string.IsNullOrEmpty(ds.CostTodayFoot) ? "" : ds.CostTodayFoot;
+                // Row 1:今日消费金额 + 高峰期徽章 + 涨跌指示 + 主值
+                _dsRow1Value.Text = string.IsNullOrEmpty(ds.TodayCostText) ? "—" : ds.TodayCostText;
+                _dsRow1Badge.Visibility = ds.IsPeakHour ? Visibility.Visible : Visibility.Collapsed;
+                if (ds.ChangeDirection is null)
+                {
+                    _dsRow1HeaderRight.Visibility = Visibility.Collapsed;
+                }
+                else
+                {
+                    _dsRow1HeaderRight.Visibility = Visibility.Visible;
+                    var arrow = ds.ChangeDirection == "up" ? "↑"
+                        : (ds.ChangeDirection == "down" ? "↓" : "→");
+                    _dsRow1HeaderRight.Text = arrow + ds.ChangePercent.ToString("0.0", CultureInfo.CurrentCulture) + "%";
+                    _dsRow1HeaderRight.Foreground = ds.ChangeDirection == "up" ? _dsDangerBrush
+                        : (ds.ChangeDirection == "down" ? _dsSafeBrush : _weakBrush);
+                }
 
-                _dsCol2Value.Text = string.IsNullOrEmpty(ds.Cost7dText) ? "—" : ds.Cost7dText;
-                _dsCol2Foot.Text = string.IsNullOrEmpty(ds.Cost7dFoot) ? "—" : ds.Cost7dFoot;
+                // Row 2:近 7 日消费 + 日均 + 主值 + sparkline
+                _dsRow2Value.Text = string.IsNullOrEmpty(ds.Cost7dText) ? "—" : ds.Cost7dText;
+                _dsRow2HeaderRight.Text = ds.Cost7dFoot ?? "";
+                _dsSparkline.Data = BuildSparklineGeometry(ds.Sparkline, _dsSparklineWidth, _dsSparklineHeight);
 
-                var hasTokens = ds.TodayTokensText != "—";
-                _dsCol3ValueNumber.Text = ds.TodayTokensText;
-                _dsCol3ValueSuffix.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
-                _dsCol3Foot1.Text = hasTokens ? ds.TodayTokensWan : "";
-                _dsCol3Foot1.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
-                _dsCol3Foot2.Text = hasTokens ? ds.TodayHitText : "";
-                _dsCol3Foot2.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
-                _dsCol3Foot3.Text = ds.TodayCacheRate ?? "";
-                _dsCol3Foot3.Visibility = !string.IsNullOrEmpty(ds.TodayCacheRate) ? Visibility.Visible : Visibility.Collapsed;
+                // Row 3:今日消耗 + tokens + 缓存命中脚注
+                var hasTokens = !string.IsNullOrEmpty(ds.TodayTokensText) && ds.TodayTokensText != "—";
+                _dsRow3ValueNumber.Text = string.IsNullOrEmpty(ds.TodayTokensText) ? "—" : ds.TodayTokensText;
+                _dsRow3ValueSuffix.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
+                _dsCacheText.Text = hasTokens ? "缓存命中中" : "尚未拉取";
+                _dsCacheRate.Text = hasTokens && ds.CacheRateText != null
+                    ? ds.TodayHitText + " · " + ds.CacheRateText
+                    : "";
             }
         }
     }
@@ -359,6 +393,46 @@ internal sealed partial class BalanceMiniView : Border
         return brush;
     }
 
+    /// <summary>
+    /// 由 7 个日消费额构造 sparkline 折线的 StreamGeometry,坐标按 (width, height) 归一化。
+    /// 值序列长度不足 2 或全 0 时返回空几何(冻结),Path 控件自然不绘制。
+    /// </summary>
+    private static StreamGeometry BuildSparklineGeometry(double[] values, double width, double height)
+    {
+        var sg = new StreamGeometry();
+        if (values == null || values.Length < 2 || width <= 0 || height <= 0)
+        {
+            sg.Freeze();
+            return sg;
+        }
+        var max = 0.0;
+        for (var i = 0; i < values.Length; i++)
+        {
+            if (values[i] > max)
+            {
+                max = values[i];
+            }
+        }
+        if (max <= 0)
+        {
+            sg.Freeze();
+            return sg;
+        }
+        var stepX = width / (values.Length - 1);
+        using (var ctx = sg.Open())
+        {
+            var firstY = height - (values[0] / max) * height;
+            ctx.BeginFigure(new Point(0, firstY), false, false);
+            for (var i = 1; i < values.Length; i++)
+            {
+                var p = new Point(i * stepX, height - (values[i] / max) * height);
+                ctx.LineTo(p, true, false);
+            }
+        }
+        sg.Freeze();
+        return sg;
+    }
+
     /// <summary>1.8 边缘预览视图统一快照:按 Provider 路由到 MiniMax 双进度条或 DeepSeek 三列卡片。</summary>
     internal readonly record struct MiniViewSnapshot(
         string Provider,
@@ -372,14 +446,16 @@ internal sealed partial class BalanceMiniView : Border
         double WeeklyPercent,
         double WeeklyHours);
 
-    /// <summary>DeepSeek 三列卡片数据:所有文本已格式化,view 不再做除法。</summary>
+    /// <summary>DeepSeek 三行卡片数据:所有文本已格式化,view 不再做除法。</summary>
     internal readonly record struct DeepSeekMetrics(
-        string TodayCostText,     // "¥0.08" 或 "—"
-        string CostTodayFoot,     // "相较昨日 ↑12.0%" 或 ""
-        string Cost7dText,        // "¥12.35" 或 "—"
-        string Cost7dFoot,        // "日均 ¥1.76"
-        string TodayTokensText,   // "50,336" 或 "—"
-        string TodayTokensWan,    // "≈ 5.0万"
-        string TodayHitText,      // "缓存命中: 25,088 Tokens"
-        string? TodayCacheRate);  // "50.10%" 或 null(隐藏该行)
+        string TodayCostText,         // "¥0.08" 或 ""
+        string? ChangeDirection,      // "up" | "down" | "flat" | null
+        double ChangePercent,        // 3.1(无方向时为 0)
+        string Cost7dText,            // "¥8.42" 或 ""
+        string Cost7dFoot,            // "日均 ¥1.20" 或 ""
+        string TodayTokensText,       // "25,325" 或 ""
+        string TodayHitText,          // "25,088"(不带"缓存命中:"前缀)
+        string? CacheRateText,        // "0.00%" 或 null
+        double[] Sparkline,           // 7 个日消费额,缺日补 0
+        bool IsPeakHour);
 }

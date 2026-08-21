@@ -47,6 +47,51 @@ internal static class MetricsAggregator
             Math.Abs(diff).ToString("0.0", CultureInfo.CurrentCulture) + "%";
     }
 
+    /// <summary>
+    /// 今日 vs 昨日消费变化:(Direction, Percent)。Direction ∈ {"up","down","flat",null}。
+    /// 当任一日缺失或昨日=0 时返回 (null, 0),调用方按 null 决定隐藏涨跌指示。
+    /// </summary>
+    public static (string? Direction, double Percent) BuildCostChange(CostDay[]? costDays)
+    {
+        if (costDays == null || costDays.Length == 0)
+        {
+            return (null, 0);
+        }
+        var now = DateTime.Now;
+        var todayKey = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var yesterdayKey = now.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var today = Array.Find(costDays, c => c.Date == todayKey);
+        var yesterday = Array.Find(costDays, c => c.Date == yesterdayKey);
+        if (today == null || yesterday == null || yesterday.Cost <= 0)
+        {
+            return (null, 0);
+        }
+        var diff = (today.Cost - yesterday.Cost) / yesterday.Cost * 100.0;
+        var dir = diff > 0 ? "up" : (diff < 0 ? "down" : "flat");
+        return (dir, Math.Abs(diff));
+    }
+
+    /// <summary>
+    /// 近 N 天(默认 7)每日消费金额数组,从最早到最新排列,缺日补 0;无数据返回空数组。
+    /// 给 WPF sparkline 用:View 端按 max 归一化到控件高度,渲染折线。
+    /// </summary>
+    public static double[] BuildCostSparkline(CostDay[]? costDays, int days = 7)
+    {
+        if (costDays == null || costDays.Length == 0)
+        {
+            return Array.Empty<double>();
+        }
+        var values = new double[days];
+        var now = DateTime.Now.Date;
+        for (var i = 0; i < days; i++)
+        {
+            var key = now.AddDays(-(days - 1 - i)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var day = Array.Find(costDays, c => c.Date == key);
+            values[i] = day?.Cost ?? 0;
+        }
+        return values;
+    }
+
     /// <summary>今日各模型消费明细（按金额降序）。</summary>
     public static object[] BuildCostTodayByModels(
         Dictionary<string, double>? costTodayByModel,
