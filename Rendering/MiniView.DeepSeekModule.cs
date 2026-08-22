@@ -150,33 +150,39 @@ internal sealed partial class BalanceMiniView
 
         _dsRootGrid.Children.Add(BuildMetricRow(row3Header, row3ValueInner));
 
-        // === Row 3 footer:缓存命中中 + tokens · rate%(Grid 布局,与 row1Header/row2Header 视觉一致) ===
+        // === Row 3 footer:与 MiniMax _footerRow 一致的"右下角"布局 ===
+        // 左下角:缓存命中指示器 _dsCacheRate("缓存命中: x,xxx,xxx Tokens · xx%",Left 对齐)
+        // 右下角:刷新图标 _dsCacheIcon + 更新时间指示器 _dsCacheText("更新于 xx:xx",Right 对齐)
+        // 整个 footer 的 VerticalAlignment=Bottom、Margin bottom=2,与 MiniMax _footerRow 一致
         _dsCacheIcon = BuildRefreshGlyph();
-        _dsCacheText = MakeLabel("缓存命中中");
-        var footLeft = new StackPanel
+        _dsCacheText = MakeLabel("更新于 --:--:--");
+        var footRight = new StackPanel
         {
             Orientation = Orientation.Horizontal,
+            // 右下角:水平右对齐,垂直贴底
+            HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false
         };
-        footLeft.Children.Add(_dsCacheIcon);
-        footLeft.Children.Add(_dsCacheText);
-        _dsCacheRate = MakeLabel("", align: HorizontalAlignment.Right);
+        footRight.Children.Add(_dsCacheIcon);
+        footRight.Children.Add(_dsCacheText);
+        _dsCacheRate = MakeLabel("", align: HorizontalAlignment.Left);
         _dsRow3FootRow = new Grid
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Center,
-            // 底部 6px margin 给 footer 单独呼吸空间,让"今日消耗"板块与卡片下边框之间
-            // 有统一留白,不再贴边。
-            Margin = new Thickness(0, 4, 0, 6),
+            // 与 MiniMax _footerRow 一致:VerticalAlignment=Bottom
+            VerticalAlignment = VerticalAlignment.Bottom,
+            // 顶部 4px 间距(让 Row 3 value 与 footer 分开),底部 2px(与 MiniMax _footerRow 一致)
+            Margin = new Thickness(0, 4, 0, 2),
             IsHitTestVisible = false
         };
         _dsRow3FootRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         _dsRow3FootRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(footLeft, 0);
-        Grid.SetColumn(_dsCacheRate, 1);
-        _dsRow3FootRow.Children.Add(footLeft);
+        // 左下角:缓存命中指示器;右下角:刷新图标 + 更新时间指示器
+        Grid.SetColumn(_dsCacheRate, 0);
+        Grid.SetColumn(footRight, 1);
         _dsRow3FootRow.Children.Add(_dsCacheRate);
+        _dsRow3FootRow.Children.Add(footRight);
         _dsRootGrid.Children.Add(_dsRow3FootRow);
 
         // _dsRootGrid 由构造函数统一加入 _root(与 _maxRootGrid 平级,互斥显示),

@@ -358,13 +358,17 @@ internal sealed partial class BalanceMiniView : Border
                 _dsRow2HeaderRight.Text = ds.Cost7dFoot ?? "";
                 _dsSparkline.Data = BuildSparklineGeometry(ds.Sparkline, _dsSparklineWidth, _dsSparklineHeight);
 
-                // Row 3:今日消耗 + tokens + 缓存命中脚注
+                // Row 3 footer(与 MiniMax _footerRow 同款右下角布局):
+                // 右下角 = 刷新图标(_dsCacheIcon)+ 更新时间指示器(_dsCacheText,"更新于 xx:xx")
+                // 左下角 = 缓存命中指示器(_dsCacheRate,"缓存命中: x,xxx,xxx Tokens · xx%")
                 var hasTokens = !string.IsNullOrEmpty(ds.TodayTokensText) && ds.TodayTokensText != "—";
                 _dsRow3ValueNumber.Text = string.IsNullOrEmpty(ds.TodayTokensText) ? "—" : ds.TodayTokensText;
                 _dsRow3ValueSuffix.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
-                _dsCacheText.Text = hasTokens ? "缓存命中中" : "尚未拉取";
+                // 右下角:更新时间指示器,与 MiniMax _footerRow 的 _footer 行为一致,始终显示时间戳
+                _dsCacheText.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+                // 左下角:缓存命中指示器,格式 "缓存命中: <命中数> Tokens · <缓存命中率>"
                 _dsCacheRate.Text = hasTokens && ds.CacheRateText != null
-                    ? ds.TodayHitText + " · " + ds.CacheRateText
+                    ? "缓存命中: " + ds.TodayHitText + " Tokens · " + ds.CacheRateText
                     : "";
             }
         }
