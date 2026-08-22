@@ -240,7 +240,7 @@ powershell -File Test-DeepSeekBalance.ps1
 
 ### 1.8 MiniView
 
-- 尺寸范围 120×90 ~ 480×420 DIP,本插件当前声明 `280×180`。空数据时不要显示更小尺寸;尺寸变化时宿主会重建 MiniView。
+- 尺寸范围 120×90 ~ 480×420 DIP,本插件按 provider 区分:DeepSeek `322×257`(比 207 高 50px,3 行 + footer 需要更大空间)、MiniMax/OpenCode `280×180`(2 行双模块足够)。空数据时不要显示更小尺寸;尺寸变化时宿主会重建 MiniView。
 - `OnMiniViewVisibilityChanged(bool)` 仅做"暂停 / 恢复"提示;不要重置或重建 MiniView 树。
 - 字体覆盖:插件设置 `miniViewFontFamily` 非空时替换主题字体,留空跟随主题;Windows 用字体名(如 `Microsoft YaHei UI`),macOS / Linux 用字形名(如 `PingFang SC` / `Noto Sans CJK SC`)。
 
