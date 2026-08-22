@@ -319,32 +319,50 @@ internal sealed partial class BalanceMiniView
     }
 
     /// <summary>
-    /// 刷新图标(现代风):270° 圆弧 + 双侧开口 + 顶部细箭头,viewBox 14x14,Stroke 由 ApplyTheme 注入。
-    /// 用 SVG path 标记语法(M/L/A)经 Geometry.Parse 解析。
-    /// 弧以 (7, 7) 为圆心、半径 5:起点 (11.33, 4.5) [右上 -30°] 顺时针经顶部、左侧、底部到 (11.33, 9.5) [右下 30°];
-    /// 端点严格在圆上((11.33-7)²+(4.5-7)² = 25),弧的两端都在右侧,形成朝右的"双侧开口"。
-    /// 顶部箭头 (5, 1)→(7, 2)→(5, 3):顶点 (7, 2) 精确落在弧顶正中(12 点),与弧的 +x 切线对齐。
-    /// </summary>
-    private static Path BuildRefreshGlyph()
+/// 刷新图标:经典"双弧双箭头"刷新形态(viewBox 32×32),4 段组合:
+///   1) 上方弧线:`M 3.51,9 a 9,9 0 0 1 14.85,-3.36 L 21,9`  → 从左侧底部逆时针弧到右上方,再直线回到右边中点
+///   2) 上方箭头:`M 21,3 v6 h-6`  → 右上角"┐"形(朝下的钩子),与上弧线终点 (21, 9) 相连
+///   3) 下方弧线:`M 20.49,15 a 9,9 0 0 1 -14.85,3.36 L 3,15` → 从右侧顶部逆时针弧到左下方,再直线回到左边中点
+///   4) 下方箭头:`M 3,21 v-6 h6`  → 左下角"└"形(朝上的钩子),与下弧线终点 (3, 15) 相连
+/// 两个半圆对置 + 两个箭头反向 → 视觉上明显的"循环/旋转"语义,这就是经典的 refresh 按钮样式。
+///
+/// **Bounds = (3, 3, 21, 21) = 18×18 正方形**(viewBox 32×32 内)。
+/// Path Width=14 + Height=14 + Stretch=Uniform → 完美 1:1 缩放,圆弧不变形,与时钟图标行为一致。
+///
+/// 端点圆角:SVG 用 stroke-linecap="round" + stroke-linejoin="round",WPF 等价
+/// StrokeStartLineCap / StrokeEndLineCap = PenLineCap.Round + StrokeLineJoin = PenLineJoin.Round,
+/// 让端点和拐角圆滑,视觉更精致。
+///
+/// Margin right=6:与时钟图标 _weeklyClockGlyph 一致,Grid Column 宽度 = 14 + 6 = 20,
+/// 保持图标右边与"更新于 xx:xx"文字之间 6 DIP 间距。
+/// </summary>
+private static Path BuildRefreshGlyph()
+{
+    var data = Geometry.Parse(
+        "M 21,3 v6 h-6 " +                                          // 上箭头 (右上 ┐ 朝下)
+        "M 3,21 v-6 h6 " +                                          // 下箭头 (左下 └ 朝上)
+        "M 3.51,9 a 9,9 0 0 1 14.85,-3.36 L 21,9 " +               // 上弧线:左下弧到右上 + 直线到右中
+        "M 20.49,15 a 9,9 0 0 1 -14.85,3.36 L 3,15");              // 下弧线:右上弧到左下 + 直线到左中
+    if (data.CanFreeze)
     {
-        // A 标志:大弧(large-arc-flag=1)+ 顺时针(sweep-flag=1)。
-        // 双侧开口:起点 (11.33, 4.5)、终点 (11.33, 9.5) 严格落在半径 5 圆周,呈"环"形。
-        // 箭头 (5, 1)→(7, 2)→(5, 3) 顶点对齐弧顶正中 (7, 2),避免和圆环错位。
-        var data = Geometry.Parse("M 11.33,4.5 A 5,5 0 1 1 11.33,9.5 M 5,1 L 7,2 L 5,3");
-        if (data.CanFreeze)
-        {
-            data.Freeze();
-        }
-        return new Path
-        {
-            Data = data,
-            Width = 14,
-            Height = 14,
-            Margin = new Thickness(0, 0, 6, 0),
-            Stretch = Stretch.Uniform,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
-            IsHitTestVisible = false
-        };
+        data.Freeze();
     }
+    return new Path
+    {
+        Data = data,
+        // 整体比时钟图标小一档:时钟 14×14,刷新 12×12(约 -14%),
+        // 不抢"更新于 xx:xx"文字视觉权重。Stretch=Uniform 让 Geometry 18×18
+        // 按比例缩到 12×12,保持 1:1 比例不拉伸。
+        Width = 12,
+        Height = 12,
+        Margin = new Thickness(0, 0, 6, 0),
+        Stretch = Stretch.Uniform,
+        StrokeStartLineCap = PenLineCap.Round,
+        StrokeEndLineCap = PenLineCap.Round,
+        StrokeLineJoin = PenLineJoin.Round,
+        HorizontalAlignment = HorizontalAlignment.Left,
+        VerticalAlignment = VerticalAlignment.Center,
+        IsHitTestVisible = false
+    };
+}
 }

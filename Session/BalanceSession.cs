@@ -508,6 +508,15 @@ public PaperMiniViewSize PreferredMiniViewSize
         }
         var view = new BalanceMiniView(_miniViewFontFamily, context);
         view.ApplyTheme(context.Theme);
+        // 显式锁定 MiniView 尺寸为 PreferredMiniViewSize。
+        // BalanceMiniView 继承自 Border,默认 VerticalAlignment=Stretch,如果不锁定尺寸,
+        // 宿主给的容器如果纵向 Space 偏大,会把整个 MiniView 拉伸,所有内容(图标/文字/进度条)
+        // 按比例视觉放大,圆环变椭圆。
+        // 锁定后即使父容器空间大于期望值,MiniView 也会按 PreferredMiniViewSize 显示,
+        // 剩余空白归父容器处理。
+        var size = PreferredMiniViewSize;
+        view.Width = size.Width;
+        view.Height = size.Height;
         // 字段先赋值，确保 ApplyMiniViewSnapshot 内的 Update 调用不被早 return。
         _miniView = view;
         ApplyMiniViewSnapshot();
