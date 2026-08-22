@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using PaperTodo.Plugin.ApiBalanceMonitor.Models;
+using PaperTodo.Plugin.ApiBalanceMonitor.Payload;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
@@ -110,6 +111,8 @@ internal sealed partial class BalanceMiniView : Border
     internal Path _dsCacheIcon = null!;
     internal TextBlock _dsCacheText = null!;
     internal TextBlock _dsCacheRate = null!;
+    // Row 3 主值尾部的"≈X.XX万/亿"换算文本,与 Tokens 后缀同一字号和 baseline 对齐。
+    internal TextBlock _dsRow3ValueEstimate = null!;
 
     /// <param name="fontOverride">字体覆盖源,来自插件设置 miniViewFontFamily,空字符串表示跟随主题。</param>
     public BalanceMiniView(string fontOverride, PaperMiniViewContext context)
@@ -278,6 +281,9 @@ internal sealed partial class BalanceMiniView : Border
         // tokens 后缀:字号 11,Normal,弱色
         _dsRow3ValueSuffix.FontFamily = font; _dsRow3ValueSuffix.FontSize = 11;
         _dsRow3ValueSuffix.FontWeight = FontWeights.Normal; _dsRow3ValueSuffix.Foreground = _weakBrush;
+        // "≈X.XX万/亿" 换算:与 Tokens 后缀同字号同色,共享 baseline
+        _dsRow3ValueEstimate.FontFamily = font; _dsRow3ValueEstimate.FontSize = 11;
+        _dsRow3ValueEstimate.FontWeight = FontWeights.Normal; _dsRow3ValueEstimate.Foreground = _weakBrush;
 
         // 缓存命中脚注:字号 11,Normal,弱色
         var dsFootSize = 11;
@@ -364,6 +370,18 @@ internal sealed partial class BalanceMiniView : Border
                 var hasTokens = !string.IsNullOrEmpty(ds.TodayTokensText) && ds.TodayTokensText != "—";
                 _dsRow3ValueNumber.Text = string.IsNullOrEmpty(ds.TodayTokensText) ? "—" : ds.TodayTokensText;
                 _dsRow3ValueSuffix.Visibility = hasTokens ? Visibility.Visible : Visibility.Collapsed;
+                // "≈X.XX万/亿" 换算:与 Tokens 后缀同生命周期,有 tokens 时显示,无则隐藏
+                var estimate = Format.FormatEstimate(ds.TodayTokensText);
+                if (hasTokens && !string.IsNullOrEmpty(estimate))
+                {
+                    _dsRow3ValueEstimate.Text = " " + estimate;  // 前导空格与 Tokens 隔开
+                    _dsRow3ValueEstimate.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    _dsRow3ValueEstimate.Text = "";
+                    _dsRow3ValueEstimate.Visibility = Visibility.Collapsed;
+                }
                 // 右下角:更新时间指示器,与 MiniMax _footerRow 的 _footer 行为一致,始终显示时间戳
                 _dsCacheText.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
                 // 左下角:缓存命中指示器,格式 "缓存命中: <命中数> Tokens · <缓存命中率>"

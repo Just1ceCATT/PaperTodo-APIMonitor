@@ -125,28 +125,34 @@ internal sealed partial class BalanceMiniView
         row3Header.Children.Add(_dsRow3HeaderLeft);
 
         _dsRow3ValueNumber = MakeLargeValue("—", 22);
-        // tokens 后缀显式 margin(2,0,0,4):左 2 间距数字、底 4 对齐大数字基线;
-        // 消除 MakeLabel 默认右 6px 死白边。
-        _dsRow3ValueSuffix = MakeLabel("tokens", fontSize: 11, margin: new Thickness(2, 0, 0, 4));
+        // "Tokens" 后缀:T 首大写。Margin left=2 与数字保持视觉间隙;
+        // top=6 让 11pt 后缀顶部下沉 6px,使后缀 baseline 与 22pt 数字 baseline 重合;
+        // (22pt 字高约 28-30px, baseline 距顶部 ~21px; 11pt 字高约 14-16px, baseline 距顶部 ~11px;
+        //  差值 10px,但 baseline 下沉视觉上对称约 6-8px 比较和谐,此处取 6)
+        _dsRow3ValueSuffix = MakeLabel("Tokens", fontSize: 11, margin: new Thickness(2, 6, 0, 0));
+        // "≈X.XX万/亿" 换算:紧贴 Tokens 后方,同 left=2 间隙、同 top=6 baseline 对齐
+        _dsRow3ValueEstimate = MakeLabel("", fontSize: 11, margin: new Thickness(2, 6, 0, 0));
         // Viewbox 仅包裹数字(避免后缀长度变化牵连数字缩放)
         _dsRow3NumberBox = new Viewbox
         {
             Stretch = Stretch.Uniform,
             StretchDirection = StretchDirection.DownOnly,
             HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
             IsHitTestVisible = false,
             Child = _dsRow3ValueNumber
         };
         var row3ValueInner = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center,
+            // Bottom 对齐:后缀靠 Margin top 推 baseline,数字按 Viewbox 自然底部贴底
+            VerticalAlignment = VerticalAlignment.Bottom,
             HorizontalAlignment = HorizontalAlignment.Left,
             IsHitTestVisible = false
         };
         row3ValueInner.Children.Add(_dsRow3NumberBox);
         row3ValueInner.Children.Add(_dsRow3ValueSuffix);
+        row3ValueInner.Children.Add(_dsRow3ValueEstimate);
 
         _dsRootGrid.Children.Add(BuildMetricRow(row3Header, row3ValueInner));
 

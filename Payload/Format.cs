@@ -67,6 +67,34 @@ internal static class Format
         return FormatThousands(n);
     }
 
+    /// <summary>
+    /// Tokens 换算为中文单位近似值(2 位小数):
+    ///   - < 1亿: "≈X.XX万"(如 25,088 → "≈2.51万"; 5,000 → "≈0.50万")
+    ///   - ≥ 1亿: "≈X.XX亿"(如 123,456,789 → "≈1.23亿")
+    ///   - 无效/空/≤0: 空串(让调用方决定是否隐藏整段)
+    /// </summary>
+    public static string FormatEstimate(string tokensText)
+    {
+        if (string.IsNullOrEmpty(tokensText) || tokensText == NaNPlaceholder)
+        {
+            return "";
+        }
+        // 去掉千分位逗号后解析
+        var cleaned = tokensText.Replace(",", "").Replace(" ", "").Trim();
+        if (!double.TryParse(cleaned, NumberStyles.Any, CultureInfo.InvariantCulture, out var tokens) ||
+            tokens <= 0 || !double.IsFinite(tokens))
+        {
+            return "";
+        }
+        const double yi = 100_000_000.0;  // 1 亿
+        const double wan = 10_000.0;      // 1 万
+        if (tokens >= yi)
+        {
+            return "≈" + (tokens / yi).ToString("F2", CultureInfo.CurrentCulture) + "亿";
+        }
+        return "≈" + (tokens / wan).ToString("F2", CultureInfo.CurrentCulture) + "万";
+    }
+
     /// <summary>缓存命中率 0..1 → "50.10%"；null/NaN 返回 null。</summary>
     public static string? FormatCacheRate(double? rate)
     {
