@@ -33,10 +33,36 @@ PaperTodo.ApiBalanceMonitor/                # 本仓库根(插件源码仓库)
 ├── README.md                                # 用户文档(中文)
 ├── plugin.json                              # 插件部署清单;插件 ID、设置项、requires 等
 ├── PaperTodo.Plugin.ApiBalanceMonitor.csproj
-├── ApiBalanceMonitorPlugin.cs               # 唯一插件实现(单文件,~2900 行)
+├── ApiBalanceMonitorPlugin.cs               # 唯一插件入口(IPaperBodyPlugin 实现;元数据 + 装配 Session)
 ├── Sync-PluginsToOutput.ps1                 # 把 plugin.json / web/ / 编译产物复制到宿主输出目录
 ├── Test-DeepSeekBalance.ps1                 # DeepSeek 接口连通性测试(只测网络和 Key)
 ├── Test-MiniMaxCodingPlan.ps1               # MiniMax 接口连通性测试(只测网络和 Key)
+├── Models/                                  # 纯数据 record / DTO,不引用业务逻辑
+│   ├── BalanceSettings.cs                   # 全局设置 DTO(ApiKey / UsageToken / PollSeconds / ...)
+│   ├── PaperState.cs                        # per-paper state + Provider 常量(DefaultProvider / DeepSeek / MiniMax / OpenCode)
+│   ├── BalanceSnapshot.cs                   # 余额快照(Remaining / HasRemaining / StatusText)+ Empty / Error / Ok 工厂
+│   ├── UsageCostRecords.cs                  # UsageDay / CostDay / CostParseResult(今日各模型明细)
+│   └── ColorPalette.cs                      # 货币符号 → DeepSeek 币种代码映射(¥/CNY 等)
+├── Services/                                # 可注入的业务服务(Http / 拉取 / 解析 / 风险)
+│   ├── HttpFetcher.cs                       # HTTP + JSON 通用助手(FetchJsonAsync / TryReadNumber)
+│   ├── DeepSeekProvider.cs                  # DeepSeek /user/balance 客户端 + 响应解析
+│   ├── MiniMaxProvider.cs                   # MiniMax /v1/api/openplatform/coding_plan/remains 客户端
+│   ├── UsageProvider.cs                     # DeepSeek usage + cost 接口客户端
+│   ├── SettingsReader.cs                    # 解析全局 settings JSON
+│   └── RiskClassifier.cs                    # 风险档位阈值(Safe / Warming / Danger / Overrun)+ 风险色 + ClassifyRisk
+├── Session/                                 # 会话编排
+│   └── BalanceSession.cs                    # BalanceSession(IPaperBodySession 实现;轮询 / 状态 / Provider 切换)
+├── Rendering/                               # WPF 自绘视图
+│   ├── CapsuleView.cs                       # 1.7 胶囊 BalanceCapsuleView + BalanceProgressRing
+│   ├── MiniView.cs                          # 1.8 MiniView 入口 BalanceMiniView
+│   ├── MiniView.DeepSeekModule.cs           # DeepSeek 三列卡片模块
+│   └── MiniView.MaxModule.cs                # MiniMax 双进度条模块
+├── Payload/                                 # 数据聚合 + 格式化 + WebView2 payload
+│   ├── MetricsAggregator.cs                 # 用量 / 消费 / 缓存命中率聚合(近 7 日折线 + 今日模型明细)
+│   ├── ViewPayloadBuilder.cs                # WebView2 payload 构建(provider / status / balance / ...)
+│   └── Format.cs                            # 数字 / 时间 / 文本格式化工具
+├── WebPanel/                                # WebView2 宿主
+│   └── WebViewPanelHost.cs                  # WebView2 生命周期 + 消息通道 + 虚拟主机名
 ├── web/
 │   ├── monitor.html                         # DeepSeek 监视面板(展开后)
 │   └── minimax.html                         # MiniMax 监视面板(展开后)
@@ -66,10 +92,14 @@ PaperTodo.ApiBalanceMonitor/                # 本仓库根(插件源码仓库)
 
 代码组织约定:
 
-- `ApiBalanceMonitorPlugin.cs` 是单一入口;按功能分段(`IPaperBodyPlugin` 元数据 / `BalanceSession` / 设置解析 / HTTP 拉取 / 胶囊视图 `BalanceCapsuleView` + `BalanceProgressRing` / MiniView `BalanceMiniView` / WebView2 面板 / payload 构建 / 格式化工具)。
-- 内部 record 类型(`BalanceSettings` / `PaperState` / `BalanceSnapshot` / `UsageDay` / `CostDay` / `MiniViewSnapshot` / `MiniMaxQuota` / `DeepSeekMetrics`)集中放在会话类之前。
-- 私有常量颜色 / 风险档位阈值 / URL 与会话类同文件,不分散到多个 `Constants.cs`。
-- 不要新增 `Models.cs` / `Services/` / `Views/` 等目录结构;单文件实现已足以覆盖本插件规模,过早拆分反而打破"读一个文件就能理解全部"的特性。
+- `ApiBalanceMonitorPlugin.cs` 是唯一插件入口,只放 `IPaperBodyPlugin` 元数据 + 装配 `BalanceSession`;业务逻辑全部委托给下面各模块。
+- `Models/` 目录只放纯数据 record / DTO,不引用业务逻辑;`Provider` 常量集中在 `PaperState`。
+- `Services/` 目录放可注入的业务服务;Http / 拉取 / 解析 / 设置读取 / 风险分类各一个文件,按职责拆分不要揉在一起。
+- `Session/BalanceSession.cs` 是会话编排核心,负责 `DispatcherTimer` 轮询 / `Interlocked` 串行化 / 状态推送签名去重;对外暴露 `Internal getter` 给 `Payload/` 和 `WebPanel/` 只读访问。
+- `Rendering/` 目录是 WPF 自绘视图:`CapsuleView.cs` 是 1.7 胶囊,`MiniView.cs` 是 1.8 MiniView 入口,Provider 特有模块按 `MiniView.DeepSeekModule.cs` / `MiniView.MaxModule.cs` 拆开,不要把所有 Provider 视图堆在一个文件。
+- `Payload/` 目录负责聚合(近 7 日折线、缓存命中率、今日模型明细) + payload 构建 + 纯格式化函数。
+- `WebPanel/WebViewPanelHost.cs` 独立持有 WebView2 生命周期(虚拟主机名、`userDataFolder`、`RenderProcessExited` 恢复);不要把 WebView2 操作塞进 `BalanceSession`。
+- 风险色 / 风险档位阈值(`Safe` / `Warming` / `Danger` / `Overrun`)集中在 `Services/RiskClassifier.cs`,与 `ClassifyRisk` / `RingColor` / `RiskColor` 同文件;改阈值时色与档位必须一起改。颜色 / URL 常量随对应 `Provider` / `RiskClassifier` 同文件,不集中到一个 `Constants.cs`。
 
 ---
 

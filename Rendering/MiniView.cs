@@ -215,7 +215,8 @@ internal sealed partial class BalanceMiniView : Border
         _weeklyClockGlyph.Stroke = _weakBrush;
         _weeklyClockGlyph.StrokeThickness = 1.1;
         _refreshGlyph.Stroke = _weakBrush;
-        _refreshGlyph.StrokeThickness = 1.1;
+        // 纤细风:从 1.1 降到 1.0,跟新双侧开口弧配合让图标更轻盈。
+        _refreshGlyph.StrokeThickness = 1.0;
 
         // 5h / 周分割线颜色:复用进度条底色,弱视觉分组。
         _divider.Background = _barTrackBrush;
@@ -228,9 +229,9 @@ internal sealed partial class BalanceMiniView : Border
         _weeklyReset.FontSize = 11;
         _weeklyReset.Foreground = _weakBrush;
 
-        // 底部 footer:弱文字、字号 11(时间戳装饰);正体。
+        // 底部 footer:弱文字,字号 10(比 11 更小,作为时间戳装饰进一步弱化);正体。
         _footer.FontFamily = font;
-        _footer.FontSize = 11;
+        _footer.FontSize = 10;
         _footer.Foreground = _weakBrush;
 
         // === DeepSeek 三行卡片字号设置 ===

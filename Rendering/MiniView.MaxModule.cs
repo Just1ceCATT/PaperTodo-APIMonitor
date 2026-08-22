@@ -178,11 +178,14 @@ internal sealed partial class BalanceMiniView
 
         // weeklyStack 不再含 _footer(避免自然高度超 row 高度导致上下溢出,
         // divider 1px 被内容覆盖)。_footerRow 改放到 _maxRootGrid Row 2 内右下角独立显示。
+        // Margin(0,-5,0,5) 把"周额度 / 百分比 / 周额度进度条 / xx天后重置"几个组件作为一组
+        // 整体上移 5px,底部留 5px 避免与 _footerRow 重叠。
         var weeklyStack = new StackPanel
         {
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            IsHitTestVisible = false
+            IsHitTestVisible = false,
+            Margin = new Thickness(0, -5, 0, 5)
         };
         weeklyStack.Children.Add(weeklyHead);
         weeklyStack.Children.Add(_weeklyBarGrid);
@@ -316,17 +319,18 @@ internal sealed partial class BalanceMiniView
     }
 
     /// <summary>
-    /// 刷新图标:270° 弧(大弧) + 顶端箭头三角,viewBox 14x14,Stroke 由 ApplyTheme 注入。
+    /// 刷新图标(现代风):270° 圆弧 + 双侧开口 + 顶部细箭头,viewBox 14x14,Stroke 由 ApplyTheme 注入。
     /// 用 SVG path 标记语法(M/L/A)经 Geometry.Parse 解析。
-    /// 弧以 (7, 7) 为圆心、半径 5:起点 (12, 7) [3 点] 顺时针经底部、左侧到 (7, 2) [12 点];
-    /// 终点 (7, 2) 处切线方向向右(+x),箭头三角形顶点 (7, 2)、底边 (4, 0.5)→(4, 3.5) 垂直于切线。
+    /// 弧以 (7, 7) 为圆心、半径 5:起点 (11.33, 4.5) [右上 -30°] 顺时针经顶部、左侧、底部到 (11.33, 9.5) [右下 30°];
+    /// 端点严格在圆上((11.33-7)²+(4.5-7)² = 25),弧的两端都在右侧,形成朝右的"双侧开口"。
+    /// 顶部箭头 (5, 1)→(7, 2)→(5, 3):顶点 (7, 2) 精确落在弧顶正中(12 点),与弧的 +x 切线对齐。
     /// </summary>
     private static Path BuildRefreshGlyph()
     {
         // A 标志:大弧(large-arc-flag=1)+ 顺时针(sweep-flag=1)。
-        // 箭头三角形:底边在 (4, 0.5)~(4, 3.5) 垂直竖立,顶点 (7, 2) 指向右,
-        // 与弧在 (7, 2) 处的切线方向(顺时针→右)严格对齐。
-        var data = Geometry.Parse("M 12,7 A 5,5 0 1 1 7,2 M 4,0.5 L 7,2 L 4,3.5");
+        // 双侧开口:起点 (11.33, 4.5)、终点 (11.33, 9.5) 严格落在半径 5 圆周,呈"环"形。
+        // 箭头 (5, 1)→(7, 2)→(5, 3) 顶点对齐弧顶正中 (7, 2),避免和圆环错位。
+        var data = Geometry.Parse("M 11.33,4.5 A 5,5 0 1 1 11.33,9.5 M 5,1 L 7,2 L 5,3");
         if (data.CanFreeze)
         {
             data.Freeze();
