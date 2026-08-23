@@ -250,43 +250,43 @@ internal sealed partial class BalanceMiniView : Border
         _dsDivider1.Background = _barTrackBrush;
         _dsDivider2.Background = _barTrackBrush;
 
-        // 标签(行 1 / 2 / 3 头部左 + 右):弱文字 12,Normal
-        var dsLabelSize = 12;
+        // 标签(行 1 / 2 / 3 头部左 + 右):弱文字 11,Normal(参数表[Header]=11)
+        var dsLabelSize = 11.0;
         _dsRow1HeaderLeft.FontFamily = font; _dsRow1HeaderLeft.FontSize = dsLabelSize;
         _dsRow1HeaderLeft.FontWeight = FontWeights.Normal; _dsRow1HeaderLeft.Foreground = _weakBrush;
         _dsRow2HeaderLeft.FontFamily = font; _dsRow2HeaderLeft.FontSize = dsLabelSize;
         _dsRow2HeaderLeft.FontWeight = FontWeights.Normal; _dsRow2HeaderLeft.Foreground = _weakBrush;
-        _dsRow2HeaderRight.FontFamily = font; _dsRow2HeaderRight.FontSize = dsLabelSize;
+        _dsRow2HeaderRight.FontFamily = font; _dsRow2HeaderRight.FontSize = 10.5;
         _dsRow2HeaderRight.FontWeight = FontWeights.Normal; _dsRow2HeaderRight.Foreground = _weakBrush;
         _dsRow3HeaderLeft.FontFamily = font; _dsRow3HeaderLeft.FontSize = dsLabelSize;
         _dsRow3HeaderLeft.FontWeight = FontWeights.Normal; _dsRow3HeaderLeft.Foreground = _weakBrush;
 
-        // 涨跌指示(_dsRow1HeaderRight):字号 12、SemiBold;颜色由 Update 按方向重写
+        // 涨跌指示(_dsRow1HeaderRight):字号 11、SemiBold;颜色由 Update 按方向重写
         _dsRow1HeaderRight.FontFamily = font; _dsRow1HeaderRight.FontSize = dsLabelSize;
         _dsRow1HeaderRight.FontWeight = FontWeights.SemiBold;
 
-        // 高峰期徽章:pill 背景由 _dsBadgeBackgroundBrush 注入;圆点 5px 用主题 accent;文字"高峰期" 10
+        // 高峰期徽章:pill 背景由 _dsBadgeBackgroundBrush 注入;圆点 4px 用主题 accent;文字"高峰期" 9.5
         _dsBadgeDot.Fill = _dsAccentBrush;
-        _dsBadgeText.FontFamily = font; _dsBadgeText.FontSize = 10;
+        _dsBadgeText.FontFamily = font; _dsBadgeText.FontSize = 9.5;
         _dsBadgeText.FontWeight = FontWeights.Medium; _dsBadgeText.Foreground = _dsAccentBrush;
 
-        // 主值差异化:Row1=22 给"今日消费金额"加视觉权重;Row2=20 让位 sparkline;
-        // Row3=22 突出 tokens 数字。SemiBold,主文字色。
-        _dsRow1Value.FontFamily = font; _dsRow1Value.FontSize = 22;
+        // 主值差异化:Row1=20、Row2=16、Row3=20 形成 20→16→20 的渐进层级,SemiBold 主文字色。
+        // 原 22/14/22 跨度达 36%、Row2 视觉过弱,改为 20/16/20 后层级更稳定。
+        _dsRow1Value.FontFamily = font; _dsRow1Value.FontSize = 20;
         _dsRow1Value.FontWeight = FontWeights.SemiBold; _dsRow1Value.Foreground = _textBrush;
-        _dsRow2Value.FontFamily = font; _dsRow2Value.FontSize = 14;
+        _dsRow2Value.FontFamily = font; _dsRow2Value.FontSize = 16;
         _dsRow2Value.FontWeight = FontWeights.SemiBold; _dsRow2Value.Foreground = _textBrush;
-        _dsRow3ValueNumber.FontFamily = font; _dsRow3ValueNumber.FontSize = 18;
+        _dsRow3ValueNumber.FontFamily = font; _dsRow3ValueNumber.FontSize = 20;
         _dsRow3ValueNumber.FontWeight = FontWeights.SemiBold; _dsRow3ValueNumber.Foreground = _textBrush;
-        // tokens 后缀:字号 11,Normal,弱色
-        _dsRow3ValueSuffix.FontFamily = font; _dsRow3ValueSuffix.FontSize = 11;
+        // tokens 后缀:字号 10,Normal,弱色(参数表[Token 后缀]=10)
+        _dsRow3ValueSuffix.FontFamily = font; _dsRow3ValueSuffix.FontSize = 10;
         _dsRow3ValueSuffix.FontWeight = FontWeights.Normal; _dsRow3ValueSuffix.Foreground = _weakBrush;
         // "≈X.XX万/亿" 换算:与 Tokens 后缀同字号同色,共享 baseline
-        _dsRow3ValueEstimate.FontFamily = font; _dsRow3ValueEstimate.FontSize = 11;
+        _dsRow3ValueEstimate.FontFamily = font; _dsRow3ValueEstimate.FontSize = 10;
         _dsRow3ValueEstimate.FontWeight = FontWeights.Normal; _dsRow3ValueEstimate.Foreground = _weakBrush;
 
-        // 缓存命中脚注:字号 11,Normal,弱色
-        var dsFootSize = 11;
+        // Footer:字号 10.5,Normal,弱色(参数表[Footer]=10.5)
+        var dsFootSize = 10.5;
         _dsCacheText.FontFamily = font; _dsCacheText.FontSize = dsFootSize;
         _dsCacheText.FontWeight = FontWeights.Normal; _dsCacheText.Foreground = _weakBrush;
         _dsCacheRate.FontFamily = font; _dsCacheRate.FontSize = dsFootSize;
@@ -296,10 +296,12 @@ internal sealed partial class BalanceMiniView : Border
         _dsCacheIcon.StrokeThickness = 1.1;
 
         // Sparkline 设计尺寸(实际由 Path 的 StreamGeometry 坐标决定,这里记录用于 Update 重算)
-        _dsSparklineWidth = 56;
-        _dsSparklineHeight = 22;
+        // 56×22 缩到 52×18:Row2 主值改为 16px,22px 高度的图形会抢眼;
+        // 配套 StrokeThickness 1.4→1.2 保持纤细感,left margin=8 让数字与图形间留呼吸。
+        _dsSparklineWidth = 52;
+        _dsSparklineHeight = 18;
         _dsSparkline.Stroke = _dsAccentBrush;
-        _dsSparkline.StrokeThickness = 1.4;
+        _dsSparkline.StrokeThickness = 1.2;
     }
 
     /// <summary>
