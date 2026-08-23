@@ -68,8 +68,9 @@ internal sealed class BalanceDotCapsuleView : Grid
 
         _dot = new Ellipse
         {
-            Width = 5,
-            Height = 5,
+            // 6×6 DIP：缩到圆环直径（18）的 1/3，让位给外环轮廓，避免视觉上压过 track。
+            Width = 6,
+            Height = 6,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
             Visibility = Visibility.Visible
@@ -107,7 +108,8 @@ internal sealed class BalanceDotCapsuleView : Grid
 
     /// <summary>
     /// 刷新胶囊文本 / 圆环 / 圆点。
-    /// - ringColorHex / ringArc：圆环弧值与颜色（按风险档位）。
+    /// - ringColorHex / ringArc：本胶囊不消费颜色（外环保持 track 底色，仅作轮廓），
+    ///                      但参数仍保留以保持调用方签名统一。
     /// - dotColorHex：圆点默认颜色（按风险档位：绿/黄/橙/红）。
     /// - isPeakHour=true：圆点变橙色并呼吸；false：按 dotColorHex 静态显示。
     /// </summary>
@@ -120,9 +122,11 @@ internal sealed class BalanceDotCapsuleView : Grid
     {
         _label.Text = text;
 
-        // 圆环：按 riskRatio 走弧值与颜色，作为外圈。
+        // 圆环：仅作轮廓底色，不显示风险颜色弧。ForegroundBrush 用 Brushes.Transparent，
+        // 让 OnRender 只画 track（TrackBrush 由 ApplyTheme 注入），弧段自然透明。
+        // Arc 值仍可保留（避免 0/1 抖动），但视觉上不出现。
         _ring.Value = Math.Clamp(ringArc, 0, 1);
-        _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
+        _ring.ForegroundBrush = Brushes.Transparent;
         _ring.InvalidateVisual();
 
         // 圆点：高峰期强制橙色 + 呼吸；其他时段按 dotColorHex 静态。
@@ -157,9 +161,9 @@ internal sealed class BalanceDotCapsuleView : Grid
         _label.FontWeight = FontWeights.Normal;
         _label.Foreground = ToBrush(theme.WeakTextColor, "#707070");
 
-        var accent = ToBrush(theme.AccentColor, "#B07A31");
-        var track = new SolidColorBrush(
-            Color.FromArgb(38, accent.Color.R, accent.Color.G, accent.Color.B));
+        // 外圆环底色：浅白色（alpha ≈ 70/255 ≈ 27%），弱视觉锚点。深色主题下清晰可见，
+        // 浅色主题下与背景融为一体只剩微弱轮廓，符合"外环不需要颜色、仅作衬托"的设计意图。
+        var track = new SolidColorBrush(Color.FromArgb(70, 0xFF, 0xFF, 0xFF));
         track.Freeze();
         _ring.TrackBrush = track;
         _ring.InvalidateVisual();

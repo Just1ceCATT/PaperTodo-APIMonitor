@@ -745,12 +745,19 @@ public PaperMiniViewSize PreferredMiniViewSize
     }
 
     /// <summary>
-    /// 高峰时段判断：UTC+8 的 9:00-12:00 / 14:00-18:00（半开区间，不含 12:00 与 18:00 整点）。
+    /// 高峰时段判断：UTC+8 的 9:00-12:00 / 14:00-18:00（半开区间，不含 12:00 与 18:00 整点），
+    /// 且仅限周一至周五——周末整天不算高峰期，胶囊圆点不呼吸。
     /// 不依赖用户本地时区，始终按北京时间计算——不同地区使用同一时段标准。
     /// </summary>
     private static bool IsPeakHourUtc8()
     {
-        var hour = DateTime.UtcNow.AddHours(8).Hour;
+        var nowUtc8 = DateTime.UtcNow.AddHours(8);
+        // DayOfWeek：Sunday=0, Monday=1 ... Saturday=6。周末 = 周六(6) / 周日(0)。
+        if (nowUtc8.DayOfWeek == DayOfWeek.Saturday || nowUtc8.DayOfWeek == DayOfWeek.Sunday)
+        {
+            return false;
+        }
+        var hour = nowUtc8.Hour;
         return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
     }
 
