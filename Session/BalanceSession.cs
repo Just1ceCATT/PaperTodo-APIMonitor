@@ -53,6 +53,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private double? _minimaxRemainingPercent;
     private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? _minimaxModelRemains;
     private PaperBodyTheme _theme;
+    // 30 分钟滑动窗口趋势分析器：只吃成功拉取的 DeepSeek 余额样本，纯内存不持久化，
+    // 插件重启后重新积累（前 5 分钟显示"采集中"）。与阈值风险是两套独立指标。
+    private readonly TrendAnalyzer _trend = new();
 
     // Internal getter:供 Payload/ViewPayloadBuilder 只读访问字段,不暴露给宿主。
     internal BalanceSnapshot LatestSnapshot => _snapshot;
@@ -63,11 +66,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     internal CostDay[]? CostDays => _costDays;
     internal Dictionary<string, double>? CostTodayByModel => _costTodayByModel;
     internal List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? MiniMaxModelRemains => _minimaxModelRemains;
+    /// <summary>当前 30 分钟窗口的余额趋势。每次读取都基于当前时间重新裁剪窗口并回归。</summary>
+    internal BalanceTrend CurrentTrend => _trend.Analyze(DateTime.Now, _snapshot.Remaining);
 
     // 1.7 胶囊自定义视图：宿主为每个 surface 至多请求一次并缓存，宽度变化时重建。
     // 在 UpdateSnapshot 里原地更新它们，避免 SetCapsulePresentation 触发重建抖动。
-    private BalanceCapsuleView? _regularCapsuleView;
-    private BalanceCapsuleView? _dockedCapsuleView;
+    // MiniMax 与 DeepSeek 各有独立的胶囊类（BalanceRingCapsuleView / BalanceDotCapsuleView），
+    // 因此分别持有两份字段，互不干涉。provider 切换时清空，避免缓存视图类型不匹配。
+    private BalanceRingCapsuleView? _regularRingCapsuleView;
+    private BalanceRingCapsuleView? _dockedRingCapsuleView;
+    private BalanceDotCapsuleView? _regularDotCapsuleView;
+    private BalanceDotCapsuleView? _dockedDotCapsuleView;
     // 1.8 边缘预览视图：仅 MiniMax 场景保留；非 MiniMax 时 CreateMiniView 返回 null
     // 让宿主切到 1.6/1.7 放大胶囊回退（DescribePluginCapsuleFallback）。
     private BalanceMiniView? _miniView;
@@ -156,8 +165,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _http.Dispose();
         // 清空 1.7 视图缓存：宿主在下次 body session 重建时会请求新的 view，
         // 旧引用指向的元素已经被宿主丢弃，保留只会徒增引用计数。
-        _regularCapsuleView = null;
-        _dockedCapsuleView = null;
+        _regularRingCapsuleView = null;
+        _dockedRingCapsuleView = null;
+        _regularDotCapsuleView = null;
+        _dockedDotCapsuleView = null;
         _miniView = null;
         // WebView2 状态机封装在自己的 Dispose 里(取消 CTS + 释放 _webView)。
         _panel.Dispose();
@@ -215,6 +226,14 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 重置 snapshot 避免显示旧 provider 的残留数据。
         _minimaxModelRemains = null;
         _minimaxRemainingPercent = null;
+        // 清空所有胶囊视图缓存：不同 provider 对应不同胶囊类，下一次 CreateCapsuleView
+        // 会按新 provider 实例化正确类型。
+        _regularRingCapsuleView = null;
+        _dockedRingCapsuleView = null;
+        _regularDotCapsuleView = null;
+        _dockedDotCapsuleView = null;
+        // 趋势窗口是按 provider 的余额口径积累的，跨 provider 复用会得到无意义的斜率。
+        _trend.Reset();
         _ = PollAsync();
     }
 
@@ -225,8 +244,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     public void OnThemeChanged(PaperBodyTheme theme)
     {
         _theme = theme;
-        _regularCapsuleView?.ApplyTheme(theme);
-        _dockedCapsuleView?.ApplyTheme(theme);
+        // 主题切换：同时更新两种胶囊缓存（provider 可能切换过），由胶囊内部 ApplyTheme
+        // 各自处理 Brush 重建。
+        _regularRingCapsuleView?.ApplyTheme(theme);
+        _dockedRingCapsuleView?.ApplyTheme(theme);
+        _regularDotCapsuleView?.ApplyTheme(theme);
+        _dockedDotCapsuleView?.ApplyTheme(theme);
         _miniView?.ApplyTheme(theme);
         _panel.PostSnapshot(_payloadBuilder.Build());
     }
@@ -306,6 +329,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _usageDays = usageTask.Result;
             _costDays = costTask.Result.Days;
             _costTodayByModel = costTask.Result.TodayByModel;
+            RecordTrendSample(balanceTask.Result, now);
             UpdateSnapshot(balanceTask.Result);
         }
         catch (TaskCanceledException)
@@ -344,6 +368,23 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
         // DeepSeek（默认）
         return await _deepseek.FetchBalanceAsync(_settings.ApiKey, _settings.CurrencySymbol).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 记录趋势样本。只有 DeepSeek 且本次余额确实拉取成功时才写入——
+    /// 请求失败 / 超时 / 解析失败一律不喂，避免用虚假数据污染趋势窗口。
+    /// </summary>
+    private void RecordTrendSample(BalanceSnapshot snapshot, DateTime now)
+    {
+        if (!string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (!snapshot.HasRemaining || !double.IsFinite(snapshot.Remaining))
+        {
+            return;
+        }
+        _trend.Add(now, snapshot.Remaining);
     }
 
     /// <summary>
@@ -397,13 +438,16 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             ? Math.Clamp(_minimaxRemainingPercent ?? 100, 0, 100) / 100.0
             : RiskClassifier.RingArcValue(riskRatio);
 
-        var text = BuildCapsuleText(snapshot, _settings, _state, riskRatio);
+        // 趋势：每次刷新都重算（窗口是滑动窗口，时间会裁剪样本）；和阈值是两套独立指标。
+        var trend = CurrentTrend;
+
+        var text = BuildCapsuleText(snapshot, _settings, _state, riskRatio, _costDays);
         var toolTip = string.IsNullOrEmpty(snapshot.StatusText)
             ? text
             : $"{text}\n{snapshot.StatusText}";
 
-        // 胶囊 signature 不再包含 isPeakHour（太阳图标已移除）。
-        var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText;
+        // 胶囊 signature：文本/风险比/颜色/状态文本 之外追加趋势等级，避免趋势变化时漏刷新胶囊。
+        var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText + "|" + TrendAnalyzer.LevelKey(trend.Level) + "|" + trend.SampleCount.ToString(CultureInfo.InvariantCulture);
         var capsule = new CapsuleSnapshot(text, ringColor, ringArc);
         if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
@@ -415,8 +459,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             // 1) 原地更新两个已缓存的 1.7 自定义视图（Regular / Docked）。
             //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
-            _regularCapsuleView?.Update(text, ringColor, ringArc);
-            _dockedCapsuleView?.Update(text, ringColor, ringArc);
+            //    按 provider 分发到不同的胶囊类 —— 两种胶囊互不继承，改动其中一个不会牵连另一个。
+            if (isMiniMax)
+            {
+                _regularRingCapsuleView?.Update(text, ringColor, ringArc);
+                _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
+            }
+            else
+            {
+                _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+            }
 
             // 2) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
             //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
@@ -459,23 +512,43 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>
     /// 协议 1.7 自定义胶囊视图：宿主为 Regular / Docked 各调一次并缓存；宽度变化时重新调用。
     /// 必须返回 fresh unparented FrameworkElement（宿主校验 Parent==null）。
+    /// 按当前 provider 分发到独立的胶囊类：MiniMax → BalanceRingCapsuleView，
+    /// DeepSeek / OpenCode → BalanceDotCapsuleView。两种胶囊互不继承、各自封装指示器。
     /// </summary>
     public FrameworkElement? CreateCapsuleView(PaperCapsuleViewContext context)
     {
-        var view = new BalanceCapsuleView(context);
-        // 首次返回时立即填入最新状态，避免宿主先展示空 view 再被 Update 刷新。
-        // 不可变 CapsuleSnapshot:无隐式时序契约,_latestCapsuleSnapshot 初值 = CapsuleSnapshot.Empty
-        // 保证首屏胶囊始终有内容,不会空白。
-        view.Update(_latestCapsuleSnapshot.Text, _latestCapsuleSnapshot.RingColorHex, _latestCapsuleSnapshot.RingArc);
+        if (IsMiniMax)
+        {
+            var ringView = new BalanceRingCapsuleView(context);
+            // 首次返回时立即填入最新状态，避免宿主先展示空 view 再被 Update 刷新。
+            ringView.Update(_latestCapsuleSnapshot.Text, _latestCapsuleSnapshot.RingColorHex, _latestCapsuleSnapshot.RingArc);
+            if (context.Surface == PaperCapsuleSurfaceKind.Docked)
+            {
+                _dockedRingCapsuleView = ringView;
+            }
+            else
+            {
+                _regularRingCapsuleView = ringView;
+            }
+            return ringView;
+        }
+
+        var dotView = new BalanceDotCapsuleView(context);
+        dotView.Update(
+            _latestCapsuleSnapshot.Text,
+            _latestCapsuleSnapshot.RingColorHex,
+            _latestCapsuleSnapshot.RingArc,
+            dotColorHex: _latestCapsuleSnapshot.RingColorHex,
+            isPeakHour: _lastIsPeakHour);
         if (context.Surface == PaperCapsuleSurfaceKind.Docked)
         {
-            _dockedCapsuleView = view;
+            _dockedDotCapsuleView = dotView;
         }
         else
         {
-            _regularCapsuleView = view;
+            _regularDotCapsuleView = dotView;
         }
-        return view;
+        return dotView;
     }
 
     /// <summary>
@@ -484,7 +557,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 /// </summary>
     /// <summary>
 /// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
-/// DeepSeek(3 行 + footer)需要更大空间,返回 322×232(比 207 高 25px);MiniMax(2 行双模块)改为 280×190;
+/// DeepSeek(3 行 + footer)需要更大空间,返回 322×232;MiniMax(2 行双模块)改为 280×190;
 /// OpenCode 返回 null view 但宿主仍需尺寸用于布局占位,同样返回 280×190。
 /// </summary>
 public PaperMiniViewSize PreferredMiniViewSize
@@ -594,15 +667,16 @@ public PaperMiniViewSize PreferredMiniViewSize
     }
 
     /// <summary>
-    /// 胶囊文本：货币符号 + 余额 +（可选）百分比，v3.1 风格 "¥12.34 · 6%"。
-    /// 文本由宿主 1.6 模板用宿主胶囊字体渲染；宿主按 PreferredWidth 给定内容宽度，
-    /// 配合估算余量，" · " 分隔不会截断。
+    /// 胶囊文本：MiniMax 走 "xx% · xx时xx分"；DeepSeek 走两段 "◉ ¥余额 · -¥今日消耗"，
+    /// 缺数据的段整段省略（避免出现 "--" / 空分隔符）。百分比圆环由视图层切到呼吸圆点，
+    /// 所以 ShowPercentage 不再影响 DeepSeek 文本。
     /// </summary>
     private static string BuildCapsuleText(
         BalanceSnapshot snapshot,
         BalanceSettings settings,
         PaperState state,
-        double riskRatio)
+        double riskRatio,
+        CostDay[]? costDays)
     {
         var sb = new StringBuilder();
         // MiniMax：胶囊显示 "xx% · xx时xx分"——百分比为 current_interval_remaining_percent，
@@ -634,25 +708,40 @@ public PaperMiniViewSize PreferredMiniViewSize
             }
             return sb.ToString();
         }
-        // DeepSeek：百分数在前，货币余额在后，格式 "xx% · ¥xx.xx"（百分数由设置开关）。
-        var hasPercent = settings.ShowPercentage
-            && snapshot.HasRemaining
-            && !double.IsNaN(snapshot.Remaining);
-        if (hasPercent)
-        {
-            var percent = (int)Math.Round(
-                Math.Clamp(riskRatio, 0, 1) * 100.0, MidpointRounding.AwayFromZero);
-            sb.Append(percent.ToString(CultureInfo.CurrentCulture));
-            sb.Append('%');
-            sb.Append(" · ");
-        }
+        // DeepSeek：两段拼接 "◉ ¥余额 · -¥今日消耗"。
+        // 余额段：永远显示，NaN/失败时由 Format.FormatAmount 输出 "—"。
+        // 圆点：呼吸圆点模式（趋势段不再出现在胶囊上，只在 MiniView 第 4 行）。
+        AppendBalanceSegment(sb, settings, snapshot);
+        // 今日消耗段：未配置 UsageToken 或无数据时整段省略（保留余额单段）。
+        AppendTodayCostSegment(sb, settings, costDays);
+        return sb.ToString();
+    }
+
+    /// <summary>余额段：货币符号 + 金额（NaN 由 FormatAmount 输出 "—"）。</summary>
+    private static void AppendBalanceSegment(StringBuilder sb, BalanceSettings settings, BalanceSnapshot snapshot)
+    {
         if (!string.IsNullOrEmpty(settings.CurrencySymbol))
         {
             sb.Append(settings.CurrencySymbol);
         }
-        // 无数据时 Format.FormatAmount(NaN) 输出 "—"。
         sb.Append(Format.FormatAmount(snapshot.Remaining));
-        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 今日消耗段：未配置 UsageToken / 无 _costDays / 今日为 0 时省略。
+    /// 始终前置 "-" 表示"减少了"（正号无意义），最终形如 "-¥1.20"。
+    /// </summary>
+    private static void AppendTodayCostSegment(StringBuilder sb, BalanceSettings settings, CostDay[]? costDays)
+    {
+        var today = MetricsAggregator.BuildCostTodayText(costDays, settings.CurrencySymbol);
+        if (string.IsNullOrEmpty(today))
+        {
+            return;
+        }
+        // BuildCostTodayText 已包含 currencySymbol 前缀，这里只补负号与分隔符，
+        // 避免双符号（如 "¥¥1.20"）。
+        sb.Append(" · -");
+        sb.Append(today);
     }
 
     /// <summary>

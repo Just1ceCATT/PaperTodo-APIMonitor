@@ -384,9 +384,9 @@ internal sealed partial class BalanceMiniView : Border
                 }
                 // 右下角:更新时间指示器,与 MiniMax _footerRow 的 _footer 行为一致,始终显示时间戳
                 _dsCacheText.Text = "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
-                // 左下角:缓存命中指示器,格式 "缓存命中: <命中数> Tokens · <缓存命中率>"
+                // 左下角:缓存命中率指示器,只显示命中率本身,不再展示具体命中 token 数(避免重复 + Row 3 已显 Tokens)
                 _dsCacheRate.Text = hasTokens && ds.CacheRateText != null
-                    ? "缓存命中: " + ds.TodayHitText + " Tokens · " + ds.CacheRateText
+                    ? "缓存命中 " + ds.CacheRateText
                     : "";
             }
         }

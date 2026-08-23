@@ -40,6 +40,8 @@ internal sealed class ViewPayloadBuilder
         var isMiniMax = _session.IsMiniMax;
         var ratio = _session.ComputeRiskRatioForCurrent();
         var riskColor = Format.ToHex(RiskClassifier.RiskColor(ratio));
+        // 余额趋势：DeepSeek 有效；MiniMax 不算（趋势是按金额口径的），给空键值让前端识别。
+        var trend = _session.CurrentTrend;
 
         string statusKind;
         if (string.IsNullOrWhiteSpace(status))
@@ -87,7 +89,15 @@ internal sealed class ViewPayloadBuilder
             ["todayHit"] = RiskClassifier.Finite(MetricsAggregator.BuildTodayHit(usageDays)),
             ["cacheRate"] = RiskClassifier.FiniteOrNull(MetricsAggregator.BuildTodayCacheRate(usageDays)),
             ["modelRemains"] = MetricsAggregator.BuildMiniMaxModelRemains(minimaxModelRemains),
-            ["usage"] = MetricsAggregator.BuildUsageArray(usageDays)
+            ["usage"] = MetricsAggregator.BuildUsageArray(usageDays),
+            // 余额趋势：30 分钟滑动窗口分析结果。前端可按 trendLevel 决定是否渲染。
+            // MiniMax / OpenCode 走"unknown"占位，前端识别后不显示。
+            ["trendLevel"] = TrendAnalyzer.LevelKey(trend.Level),
+            ["trendArrow"] = TrendAnalyzer.Arrow(trend.Level),
+            ["trendRatePerHour"] = RiskClassifier.Finite(trend.RatePerHour),
+            ["trendRelative"] = RiskClassifier.Finite(trend.RelativeRatePerHour),
+            ["trendSamples"] = trend.SampleCount,
+            ["trendDepletionHours"] = RiskClassifier.FiniteOrNull(trend.DepletionHours)
         };
 
         return JsonSerializer.Serialize(new Dictionary<string, object?>

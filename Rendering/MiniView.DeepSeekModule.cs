@@ -187,8 +187,6 @@ internal sealed partial class BalanceMiniView
         // 左下角:缓存命中指示器;右下角:刷新图标 + 更新时间指示器
         Grid.SetColumn(_dsCacheRate, 0);
         Grid.SetColumn(footRight, 1);
-        _dsRow3FootRow.Children.Add(_dsCacheRate);
-        _dsRow3FootRow.Children.Add(footRight);
         _dsRootGrid.Children.Add(_dsRow3FootRow);
 
         // _dsRootGrid 由构造函数统一加入 _root(与 _maxRootGrid 平级,互斥显示),

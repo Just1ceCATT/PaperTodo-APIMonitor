@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      链接主工程的纯逻辑源文件，避免引入 WPF/Windows-only 依赖。
+      TrendAnalyzer 与 BalanceSample 都刻意不引用 System.Windows.*，可被 net10.0 工程链接。
+      不要链接主 csproj 进来（UseWPF=true 会拖入 Windows-only 依赖，破坏纯逻辑测试）。
+    -->
+    <Compile Include="..\Models\BalanceSample.cs" Link="BalanceSample.cs" />
+    <Compile Include="..\Services\TrendAnalyzer.cs" Link="TrendAnalyzer.cs" />
+  </ItemGroup>
+
+</Project>
