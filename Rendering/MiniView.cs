@@ -74,6 +74,9 @@ internal sealed partial class BalanceMiniView : Border
     internal Path _weeklyClockGlyph = null!;
     internal Path _refreshGlyph = null!;
 
+    // 顶部供应商名:左对齐弱色小字号,作为内容分组标识;按 Provider(MiniMax / DeepSeek)显示对应文本。
+    internal TextBlock _providerHeader = null!;
+
     // MiniMax 双模块容器:_maxRootGrid(MiniMax 模式显示)。
     internal StackPanel _hourlyStack = null!;
     internal StackPanel _weeklyStack = null!;
@@ -139,19 +142,35 @@ internal sealed partial class BalanceMiniView : Border
         _hourlyFillBrush = hourlyFill;
         _weeklyFillBrush = weeklyFill;
 
-        // 内部 1 行 Grid:同时容纳 MiniMax 双模块(_maxRootGrid)与 DeepSeek 三列(_dsRootGrid)。
+        // 内部 2 行 Grid:row 0 高度 Auto 放供应商名(Collapsed 时高度 0),row 1 1* 容纳 MiniMax 双模块或 DeepSeek 三列。
         // 两个子树互斥:provider 是 MiniMax 时 _maxRootGrid 可见 _dsRootGrid 隐藏;DeepSeek 反之。
+        // 顶部 Auto 行仅在 Update 中按 Provider 决定显隐,DeepSeek 模式下隐藏后 row 1 高度恢复满血,不影响 DeepSeek 布局。
         // 不再用跨行 SetRowSpan(3),避免 Collapsed 状态下 Grid layout 引擎在 hourlyStack/divider/weeklyStack 同 Grid 下产生
         // row 分配冲突,导致 MiniMax 模式视觉错乱。
         _root = new Grid();
+        _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        // 供应商名:左对齐、弱色、字号 11、Medium,作为内容分组标识;默认 Collapsed,由 Update 按 Provider 决定文本与可见性。
+        _providerHeader = new TextBlock
+        {
+            Text = "",
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 0, 4),
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
 
         BuildMiniMaxModule();
         BuildDeepSeekModule();
 
-        // 把 _maxRootGrid 与 _dsRootGrid 加入 _root(MiniMax 模式默认显示,_dsRootGrid 默认 Collapsed)。
-        Grid.SetRow(_maxRootGrid, 0);
-        Grid.SetRow(_dsRootGrid, 0);
+        // _providerHeader 占 row 0;_maxRootGrid 与 _dsRootGrid 占 row 1(MiniMax 模式默认显示,_dsRootGrid 默认 Collapsed)。
+        Grid.SetRow(_providerHeader, 0);
+        _root.Children.Add(_providerHeader);
+        Grid.SetRow(_maxRootGrid, 1);
+        Grid.SetRow(_dsRootGrid, 1);
         _root.Children.Add(_maxRootGrid);
         _root.Children.Add(_dsRootGrid);
 
@@ -237,6 +256,12 @@ internal sealed partial class BalanceMiniView : Border
         _footer.FontSize = 10;
         _footer.Foreground = _weakBrush;
 
+        // 顶部供应商名:与 HourlyLabel(弱文字 12 Medium)同色,但字号略小(11),作为分组标识不喧宾夺主。
+        _providerHeader.FontFamily = font;
+        _providerHeader.FontSize = 11;
+        _providerHeader.FontWeight = FontWeights.Medium;
+        _providerHeader.Foreground = _weakBrush;
+
         // === DeepSeek 三行卡片字号设置 ===
         // DeepSeek 模块专用 brush 缓存:sparkline 用主题 accent(暖色);涨跌指示用固定 safe/danger 色。
         _dsAccentBrush = ToBrush(theme.AccentColor, "#FF9800");
@@ -312,6 +337,22 @@ internal sealed partial class BalanceMiniView : Border
     /// </summary>
     public void Update(MiniViewSnapshot snapshot, string statusText)
     {
+        // 顶部供应商名:按 Provider 设置文本与可见性;MiniMax / DeepSeek 显示对应名字,其他隐藏。
+        switch (snapshot.Provider)
+        {
+            case PaperState.MiniMax:
+                _providerHeader.Text = "MiniMax";
+                _providerHeader.Visibility = Visibility.Visible;
+                break;
+            case PaperState.DeepSeek:
+                _providerHeader.Text = "DeepSeek";
+                _providerHeader.Visibility = Visibility.Visible;
+                break;
+            default:
+                _providerHeader.Visibility = Visibility.Collapsed;
+                break;
+        }
+
         if (string.Equals(snapshot.Provider, PaperState.MiniMax, StringComparison.Ordinal))
         {
             // 整个 _maxRootGrid 显示,_dsRootGrid 隐藏,互斥且不互相影响 layout。
