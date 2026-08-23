@@ -26,7 +26,7 @@ internal sealed class BalanceDotCapsuleView : Grid
 {
     private readonly TextBlock _label;
     private readonly BalanceProgressRing _ring;
-    // 内圆点：5×5 DIP，居中叠在圆环上。
+    // 内圆点：6×6 DIP，居中叠在圆环上。
     private readonly Ellipse _dot;
 
     // 高峰期橙色常量：#FF9800 与 MiniMax 5h 进度条同源色。

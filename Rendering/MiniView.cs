@@ -352,11 +352,25 @@ internal sealed partial class BalanceMiniView : Border
                 else
                 {
                     _dsRow1HeaderRight.Visibility = Visibility.Visible;
-                    var arrow = ds.ChangeDirection == "up" ? "↑"
-                        : (ds.ChangeDirection == "down" ? "↓" : "→");
+                    string arrow;
+                    Brush directionBrush;
+                    switch (ds.ChangeDirection)
+                    {
+                        case "up":
+                            arrow = "↑";
+                            directionBrush = _dsDangerBrush;
+                            break;
+                        case "down":
+                            arrow = "↓";
+                            directionBrush = _dsSafeBrush;
+                            break;
+                        default:
+                            arrow = "→";
+                            directionBrush = _weakBrush;
+                            break;
+                    }
                     _dsRow1HeaderRight.Text = arrow + ds.ChangePercent.ToString("0.0", CultureInfo.CurrentCulture) + "%";
-                    _dsRow1HeaderRight.Foreground = ds.ChangeDirection == "up" ? _dsDangerBrush
-                        : (ds.ChangeDirection == "down" ? _dsSafeBrush : _weakBrush);
+                    _dsRow1HeaderRight.Foreground = directionBrush;
                 }
 
                 // Row 2:近 7 日消费 + 日均 + 主值 + sparkline
