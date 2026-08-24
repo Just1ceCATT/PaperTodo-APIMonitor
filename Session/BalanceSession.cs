@@ -462,9 +462,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     {
         _snapshot = snapshot;
 
-        // v3.1 算法：risk = threshold / balance（"阈值占余额的比例"）。
-        // 例：余额=120、阈值=20 → 0.167 Safe（绿）；余额=40、阈值=20 → 0.5 Warming 边缘（黄）；
-        //     余额=20、阈值=20 → 1.0 Overrun（红，满圆）。
+        // DS 已删除阈值风险比逻辑：riskRatio 固定 0，圆环颜色=Safe 绿、弧值=0（空环）。
+        // DeepSeek 胶囊仅显示文字 + 静态绿点，不再跟随阈值/余额做颜色档位变化。
         // MiniMax：额度按时长计费，风险用"已消耗比例"（100 − 剩余百分比），
         // 圆环弧值用剩余百分比（current_interval_remaining_percent / 100）。
         var isMiniMax = IsMiniMax;
@@ -836,7 +835,8 @@ public PaperMiniViewSize PreferredMiniViewSize
 
     /// <summary>
     /// 当前供应商的风险比例：MiniMax 用"已消耗比例"（100 − 剩余百分比），
-    /// DeepSeek 用阈值/余额；统一过滤 NaN/Infinity。
+    /// DeepSeek 已删除阈值风险比逻辑，固定返回 0（Safe 绿、弧值 0）。
+    /// 统一过滤 NaN/Infinity。
     /// internal:供 Payload/ViewPayloadBuilder 读取。
     /// </summary>
     internal double ComputeRiskRatioForCurrent()
@@ -845,7 +845,8 @@ public PaperMiniViewSize PreferredMiniViewSize
         {
             return RiskClassifier.Finite((100 - _minimaxRemainingPercent.Value) / 100.0);
         }
-        return RiskClassifier.Finite(RiskClassifier.ComputeRiskRatio(_snapshot.Remaining, _settings.BalanceThreshold));
+        // DeepSeek 路径：固定 0，胶囊颜色=Safe 绿、弧值=0（空环）。
+        return 0;
     }
 
 }

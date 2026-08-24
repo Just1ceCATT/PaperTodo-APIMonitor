@@ -33,11 +33,6 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .status-dot.err{background:var(--danger)}
 .status-dot.warn{background:var(--warn)}
 .status-sub{margin-top:6px;color:var(--dim);font-size:10px}
-.ring{width:clamp(54px,9.5vw,64px);height:clamp(54px,9.5vw,64px);border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--green) 0 0%,#383833 0% 100%);position:relative}
-.ring:after{content:"";position:absolute;inset:clamp(5px,0.9vw,6px);border-radius:50%;background:var(--s)}
-.ring span{position:relative;z-index:1;font:600 clamp(11px,2.1vw,14px) var(--serif);color:var(--green)}
-.ring.warn span{color:var(--warn)}
-.ring.danger span{color:var(--danger)}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);margin-bottom:27px}
 .metric{padding:0 clamp(12px,2.6vw,18px);border-left:1px solid var(--line)}
 .metric:first-child{border-left:0;padding-left:0}
@@ -99,9 +94,8 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 <body>
 <section class="panel">
 <main>
-  <!-- 圆环（左）+ 余额 + 状态 -->
+  <!-- 余额 + 状态（圆环组件已删除） -->
   <section class="top">
-    <div class="ring" id="ring"><span id="ringPct">--%</span></div>
     <div class="balance-block">
       <div>
         <div class="label">可用余额</div>
@@ -214,12 +208,6 @@ function fmtWanYi(n) {
   return "" + n;
 }
 
-function applyRiskTone(el, ratio) {
-  el.classList.remove("warn", "danger");
-  if (ratio >= 1) el.classList.add("danger");
-  else if (ratio >= 0.8) el.classList.add("warn");
-}
-
 function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
 
 function render(msg) {
@@ -263,16 +251,6 @@ function render(msg) {
     setText("statusText", d.status || "未配置");
     setText("statusSub", "请在设置页填写");
   }
-
-  // 风险环：圆环 + 进度条 + 颜色
-  var ratio = d.ratio || 0;
-  var pct = Math.round(Math.max(0, Math.min(ratio, 1)) * 100);
-  setText("ringPct", (d.hasBalance && ratio > 0) ? pct + "%" : "--");
-  var ring = document.getElementById("ring");
-  ring.style.background = "conic-gradient(" +
-    (d.riskColor || "#78d47d") + " 0 " + pct + "%, #383833 " + pct + "% 100%)";
-  applyRiskTone(ring, ratio);
-  if (ring.firstElementChild) ring.firstElementChild.style.color = d.riskColor || "#78d47d";
 
   // 三指标卡
   setText("costToday", d.costToday || "—");

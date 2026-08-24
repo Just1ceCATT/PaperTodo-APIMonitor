@@ -91,19 +91,6 @@ internal static class RiskClassifier
     /// <summary>Finite 的可空版本：非有限值返回 null。</summary>
     public static double? FiniteOrNull(double? value) =>
         value.HasValue && double.IsFinite(value.Value) ? value : null;
-
-    /// <summary>
-    /// 风险比例 v3.1 语义：threshold / balance。
-    /// balance &lt;= 0 或 threshold &lt;= 0 → 视为未配置，返回 0。
-    /// </summary>
-    public static double ComputeRiskRatio(double balance, double threshold)
-    {
-        if (threshold <= 0 || balance <= 0)
-        {
-            return 0;
-        }
-        return threshold / balance;
-    }
 }
 
 /// <summary>

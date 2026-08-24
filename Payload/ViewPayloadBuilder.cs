@@ -38,8 +38,6 @@ internal sealed class ViewPayloadBuilder
         var status = snapshot.StatusText ?? "";
         var hasData = snapshot.HasRemaining && !double.IsNaN(snapshot.Remaining);
         var isMiniMax = _session.IsMiniMax;
-        var ratio = _session.ComputeRiskRatioForCurrent();
-        var riskColor = Format.ToHex(RiskClassifier.RiskColor(ratio));
         // 余额趋势：DeepSeek 有效；MiniMax 不算（趋势是按金额口径的），给空键值让前端识别。
         var trend = _session.CurrentTrend;
 
@@ -75,8 +73,6 @@ internal sealed class ViewPayloadBuilder
             ["balance"] = hasData ? Format.FormatAmount(snapshot.Remaining) : "—",
             ["currency"] = isMiniMax ? "小时" : (ColorPalette.MapCurrencySymbolToCode(settings.CurrencySymbol) ?? settings.CurrencySymbol),
             ["currencySymbol"] = isMiniMax ? "" : settings.CurrencySymbol,
-            ["ratio"] = ratio,
-            ["riskColor"] = riskColor,
             ["updateTime"] = hasData
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
