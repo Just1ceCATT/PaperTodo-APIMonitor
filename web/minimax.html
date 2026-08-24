@@ -63,10 +63,11 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
 
   <header class="header">
     <div>
-      <h1>MiniMax Coding Plan</h1>
+      <h1 id="headerTitle">Coding Plan</h1>
     </div>
     <div class="header-meta">
       <div class="status" id="statusMain"><i class="status-dot" id="statusDot"></i><strong id="statusText">API 正常</strong></div>
+      <div id="credentialLevelRow" hidden>等级 · <span id="credentialLevelText">--</span></div>
       <div>最后更新 · <span id="updated">—</span></div>
     </div>
     <!-- 右上角供应商切换：点击 ⚙ 展开列表 -->
@@ -75,6 +76,8 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
       <div class="gear-menu" id="gearMenu" hidden>
         <button type="button" class="gear-item" data-provider="deepseek"><span class="gear-dot"></span>DeepSeek</button>
         <button type="button" class="gear-item" data-provider="minimax"><span class="gear-dot"></span>MiniMax</button>
+        <button type="button" class="gear-item" data-provider="zhipu"><span class="gear-dot"></span>ZhiPu GLM</button>
+        <button type="button" class="gear-item" data-provider="kimi"><span class="gear-dot"></span>Kimi For Coding</button>
         <button type="button" class="gear-item" data-provider="opencode"><span class="gear-dot"></span>OpenCode Go</button>
       </div>
     </div>
@@ -136,6 +139,13 @@ function applyTheme(t) {
   r.setProperty("--paper", t.paper || (t.dark ? "#181815" : "#f3efe7"));
 }
 
+// provider → 面板标题的映射。配额型 provider (MiniMax/ZhiPu/Kimi) 共用此面板。
+var HEADER_TITLES = {
+  minimax: "MiniMax Coding Plan",
+  zhipu:   "智谱 GLM Coding Plan",
+  kimi:    "Kimi For Coding"
+};
+
 function render(msg) {
   if (!msg) return;
   applyTheme(msg.theme);
@@ -151,6 +161,20 @@ function render(msg) {
       else b.classList.remove("active");
     });
   }
+  // 标题：按 provider 查表；非配额型 provider 不应到达此面板（host 会切到 monitor.html）。
+  setText("headerTitle", HEADER_TITLES[provider] || "Coding Plan");
+
+  // 套餐等级（ZhiPu data.level = max/pro/...），非 ZhiPu 或空时整行隐藏。
+  var credRow = document.getElementById("credentialLevelRow");
+  if (credRow) {
+    if (d.credentialLevel) {
+      credRow.hidden = false;
+      setText("credentialLevelText", d.credentialLevel);
+    } else {
+      credRow.hidden = true;
+    }
+  }
+
   var models = d.modelRemains || [];
   var general = null;
   models.forEach(function (m) { if (m.model === "general" && !general) general = m; });

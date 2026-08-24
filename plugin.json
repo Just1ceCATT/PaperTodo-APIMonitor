@@ -89,9 +89,43 @@
     {
       "id": "zhipuApiKey",
       "type": "string",
-      "name": "ZhiPu GLM(开发中)",
-      "description": "⚠️ 本地明文存储。ZhiPu GLM 供应商 Key；当前仅预留 Key 入口，监视面板返回「尚未适配该供应商」。",
+      "name": "ZhiPu GLM",
+      "description": "⚠️ 本地明文存储。ZhiPu GLM 供应商 Key。国际版从 z.ai 控制台获取；国内版从 open.bigmodel.cn 获取。",
       "placeholder": "zhipu key",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "zhipuRegion",
+      "type": "select",
+      "name": "智谱接入点",
+      "description": "国际版走 api.z.ai，国内版走 open.bigmodel.cn。默认国际版。",
+      "default": "global",
+      "options": [
+        { "value": "global", "name": "国际版(api.z.ai)" },
+        { "value": "china", "name": "国内版(open.bigmodel.cn)" }
+      ],
+      "category": "供应商 API key"
+    },
+    {
+      "id": "zhipuPlanType",
+      "type": "select",
+      "name": "智谱账户类型",
+      "description": "个人版 type=1（留空等价）/ 团队版 type=2（需 team org）。默认个人版。",
+      "default": "personal",
+      "options": [
+        { "value": "personal", "name": "个人版" },
+        { "value": "team", "name": "团队版" }
+      ],
+      "category": "供应商 API key"
+    },
+    {
+      "id": "kimiApiKey",
+      "type": "string",
+      "name": "Kimi For Coding",
+      "description": "⚠️ 本地明文存储。Kimi For Coding 供应商 Key；从 platform.kimi.com 控制台获取。",
+      "placeholder": "kimi key",
       "maxLength": 400,
       "default": "",
       "category": "供应商 API key"

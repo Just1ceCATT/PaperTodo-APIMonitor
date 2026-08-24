@@ -22,6 +22,9 @@ internal sealed class MiniMaxProvider
     /// <summary>general 模型（或首个）剩余百分比 0-100；BalanceSession 用来算"已消耗比例"。</summary>
     public double? RemainingPercent { get; private set; }
 
+    /// <summary>MiniMax 不返回套餐等级；始终 null。保留接口统一(ZhiPu 用)。</summary>
+    public string? CredentialLevel => null;
+
     private readonly HttpClient _http;
 
     public MiniMaxProvider(HttpClient http)

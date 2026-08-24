@@ -42,16 +42,23 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // 通过 internal getter 读取所需字段(避免 Session 暴露过多 mutable 字段)。
     private readonly ViewPayloadBuilder _payloadBuilder;
     // 三个 provider:DeepSeek 拉余额,MiniMax 拉余额 + model_remains,Usage 拉平台用量与消费。
+    // ZhiPu / Kimi 与 MiniMax 同构,共用 _minimax* 缓存字段(语义不变,只是名字带历史包袱)。
     // 共用 _http(超时 15s + UA),生命周期与 Session 一致。
     private readonly DeepSeekProvider _deepseek;
     private readonly MiniMaxProvider _minimax;
+    private readonly ZhiPuProvider _zhipu;
+    private readonly KimiProvider _kimi;
     private readonly UsageProvider _usage;
     private UsageDay[]? _usageDays;
     private CostDay[]? _costDays;
     // 今日各模型消费明细：model -> cost（元）。仅保留今日与昨日，便于卡片展示。
     private Dictionary<string, double>? _costTodayByModel;
+    // 配额型 provider (MiniMax / ZhiPu / Kimi) 的剩余百分比与 model_remains 缓存。
+    // 命名沿用 _minimax* 是历史包袱,语义已扩展到所有 5h+weekly 双桶 provider。
     private double? _minimaxRemainingPercent;
     private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? _minimaxModelRemains;
+    // ZhiPu 返回的 data.level(max / pro / ...),其他 provider 为 null。
+    private string? _credentialLevel;
     private PaperBodyTheme _theme;
     // 关闭胶囊圆环（来自 settings.disableRing）。ApplySettings 同步；CreateCapsuleView 读它传给胶囊构造。
     private bool _disableRing;
@@ -71,6 +78,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     internal CostDay[]? CostDays => _costDays;
     internal Dictionary<string, double>? CostTodayByModel => _costTodayByModel;
     internal List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? MiniMaxModelRemains => _minimaxModelRemains;
+    /// <summary>ZhiPu data.level(max / pro / ...);其他 provider 为 null。供 web 面板显示套餐等级。</summary>
+    internal string? CredentialLevel => _credentialLevel;
     /// <summary>当前 30 分钟窗口的余额趋势。每次读取都基于当前时间重新裁剪窗口并回归。</summary>
     internal BalanceTrend CurrentTrend => _trend.Analyze(DateTime.Now, _snapshot.Remaining);
 
@@ -112,6 +121,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _payloadBuilder = new ViewPayloadBuilder(this);
         _deepseek = new DeepSeekProvider(_http);
         _minimax = new MiniMaxProvider(_http);
+        _zhipu = new ZhiPuProvider(_http);
+        _kimi = new KimiProvider(_http);
         _usage = new UsageProvider(_http);
         _panel = new WebPanel.WebViewPanelHost();
         _panel.SetActiveProvider(_state.Provider);
@@ -229,8 +240,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _panel.SetActiveProvider(newProvider);
         _panel.ReloadForProvider(newProvider);
         // 重置 snapshot 避免显示旧 provider 的残留数据。
+        // 三个配额型 provider (MiniMax / ZhiPu / Kimi) 共用同一对缓存字段,这里一起清空。
         _minimaxModelRemains = null;
         _minimaxRemainingPercent = null;
+        _credentialLevel = null;
         // 清空所有胶囊视图缓存：不同 provider 对应不同胶囊类，下一次 CreateCapsuleView
         // 会按新 provider 实例化正确类型。
         _regularRingCapsuleView = null;
@@ -381,7 +394,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 拉取当前 provider 的余额。MiniMax → MiniMaxProvider;OpenCode / ZhiPu / MiMo / CodeX → "尚未适配";默认 DeepSeek。
+    /// 拉取当前 provider 的余额。MiniMax → MiniMaxProvider;ZhiPu → ZhiPuProvider;
+    /// Kimi → KimiProvider;OpenCode / MiMo / CodeX → "尚未适配";默认 DeepSeek。
     /// 失败/网络异常走 BalanceSnapshot.Error。
     /// </summary>
     private async Task<BalanceSnapshot> FetchBalanceAsync()
@@ -392,10 +406,28 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             // 把 model_remains / remaining_percent 同步给 Session 缓存,供 ViewPayload / RiskRatio 使用。
             _minimaxModelRemains = _minimax.ModelRemains;
             _minimaxRemainingPercent = _minimax.RemainingPercent;
+            _credentialLevel = _minimax.CredentialLevel;
+            return snap;
+        }
+        if (string.Equals(_state.Provider, PaperState.ZhiPu, StringComparison.Ordinal))
+        {
+            var snap = await _zhipu.FetchBalanceAsync(
+                _settings.ApiKey, _settings.ZhiPuRegion, _settings.ZhiPuPlanType
+            ).ConfigureAwait(false);
+            _minimaxModelRemains = _zhipu.ModelRemains;
+            _minimaxRemainingPercent = _zhipu.RemainingPercent;
+            _credentialLevel = _zhipu.CredentialLevel;
+            return snap;
+        }
+        if (string.Equals(_state.Provider, PaperState.Kimi, StringComparison.Ordinal))
+        {
+            var snap = await _kimi.FetchBalanceAsync(_settings.ApiKey).ConfigureAwait(false);
+            _minimaxModelRemains = _kimi.ModelRemains;
+            _minimaxRemainingPercent = _kimi.RemainingPercent;
+            _credentialLevel = _kimi.CredentialLevel;
             return snap;
         }
         if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal) ||
-            string.Equals(_state.Provider, PaperState.ZhiPu, StringComparison.Ordinal) ||
             string.Equals(_state.Provider, PaperState.MiMo, StringComparison.Ordinal) ||
             string.Equals(_state.Provider, PaperState.CodeX, StringComparison.Ordinal))
         {
@@ -464,12 +496,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
         // DS 已删除阈值风险比逻辑：riskRatio 固定 0，圆环颜色=Safe 绿、弧值=0（空环）。
         // DeepSeek 胶囊仅显示文字 + 静态绿点，不再跟随阈值/余额做颜色档位变化。
-        // MiniMax：额度按时长计费，风险用"已消耗比例"（100 − 剩余百分比），
-        // 圆环弧值用剩余百分比（current_interval_remaining_percent / 100）。
-        var isMiniMax = IsMiniMax;
+        // 配额型 provider (MiniMax / ZhiPu / Kimi)：风险用"已消耗比例"（100 − 剩余百分比），
+        // 圆环弧值用剩余百分比 / 100。
+        var isQuotaProvider = IsQuotaProvider;
         double riskRatio = ComputeRiskRatioForCurrent();
         var ringColor = RiskClassifier.RingColorHex(riskRatio);
-        var ringArc = isMiniMax
+        var ringArc = isQuotaProvider
             ? Math.Clamp(_minimaxRemainingPercent ?? 100, 0, 100) / 100.0
             : RiskClassifier.RingArcValue(riskRatio);
 
@@ -494,8 +526,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             // 1) 原地更新两个已缓存的 1.7 自定义视图（Regular / Docked）。
             //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
-            //    按 provider 分发到不同的胶囊类 —— 两种胶囊互不继承，改动其中一个不会牵连另一个。
-            if (isMiniMax)
+            //    按 provider 分发到不同的胶囊类 —— 配额型 (MiniMax/ZhiPu/Kimi) 共用 Ring，
+            //    其他 (DeepSeek/OpenCode/MiMo/CodeX) 共用 Dot。两种胶囊互不继承。
+            if (isQuotaProvider)
             {
                 _regularRingCapsuleView?.Update(text, ringColor, ringArc);
                 _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
@@ -571,12 +604,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>
     /// 协议 1.7 自定义胶囊视图：宿主为 Regular / Docked 各调一次并缓存；宽度变化时重新调用。
     /// 必须返回 fresh unparented FrameworkElement（宿主校验 Parent==null）。
-    /// 按当前 provider 分发到独立的胶囊类：MiniMax → BalanceRingCapsuleView，
-    /// DeepSeek / OpenCode → BalanceDotCapsuleView。两种胶囊互不继承、各自封装指示器。
+    /// 按当前 provider 分发到独立的胶囊类：配额型 (MiniMax / ZhiPu / Kimi) → BalanceRingCapsuleView，
+    /// 其他 (DeepSeek / OpenCode / MiMo / CodeX) → BalanceDotCapsuleView。
+    /// 两种胶囊互不继承、各自封装指示器。
     /// </summary>
     public FrameworkElement? CreateCapsuleView(PaperCapsuleViewContext context)
     {
-        if (IsMiniMax)
+        if (IsQuotaProvider)
         {
             var ringView = new BalanceRingCapsuleView(context);
             // 关闭圆环设置即时生效:首次创建时也按当前 _disableRing 决定圆环可见性。
@@ -677,27 +711,35 @@ public PaperMiniViewSize PreferredMiniViewSize
             return;
         }
 
-        if (IsMiniMax && _minimaxModelRemains != null && _minimaxModelRemains.Count > 0)
+        if (IsQuotaProvider && _minimaxModelRemains != null && _minimaxModelRemains.Count > 0)
         {
+            // 三家配额型 provider (MiniMax/ZhiPu/Kimi) 共用 model_remains 字段。
+            // MiniMax 真实填 general 模型；ZhiPu/Kimi 只放一条 ("default", 5hPct, 5hHours, weeklyPct, weeklyHours)。
+            // 优先匹配 "general"（MiniMax），找不到时 fallback 到首条（ZhiPu/Kimi）。
+            (string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)? picked = null;
             for (var i = 0; i < _minimaxModelRemains.Count; i++)
             {
                 var item = _minimaxModelRemains[i];
                 if (string.Equals(item.Model, "general", StringComparison.OrdinalIgnoreCase))
                 {
-                    var maxData = new BalanceMiniView.MiniMaxQuota(
-                        Percent: Math.Clamp(item.Percent, 0, 100),
-                        RemainingHours: item.Hours,
-                        WeeklyPercent: Math.Clamp(item.WeeklyPercent, 0, 100),
-                        WeeklyHours: item.WeeklyHours);
-                    _miniView.Update(
-                        new BalanceMiniView.MiniViewSnapshot(
-                            Provider: PaperState.MiniMax,
-                            MaxData: maxData,
-                            DeepSeekData: null),
-                        _snapshot.StatusText);
-                    return;
+                    picked = item;
+                    break;
                 }
             }
+            picked ??= _minimaxModelRemains[0];
+            var quota = picked.Value;
+            var maxData = new BalanceMiniView.MiniMaxQuota(
+                Percent: Math.Clamp(quota.Percent, 0, 100),
+                RemainingHours: quota.Hours,
+                WeeklyPercent: Math.Clamp(quota.WeeklyPercent, 0, 100),
+                WeeklyHours: quota.WeeklyHours);
+            _miniView.Update(
+                new BalanceMiniView.MiniViewSnapshot(
+                    Provider: _state.Provider,
+                    MaxData: maxData,
+                    DeepSeekData: null),
+                _snapshot.StatusText);
+            return;
         }
 
         if (string.Equals(_state.Provider, PaperState.DeepSeek, StringComparison.Ordinal))
@@ -828,20 +870,30 @@ public PaperMiniViewSize PreferredMiniViewSize
 
     /// <summary>
     /// 当前供应商是否为 MiniMax（额度按时长计费）。
-    /// internal:供 Payload/ViewPayloadBuilder 读取。
+    /// <summary>
+    /// 当前 provider 是否为 MiniMax。保留以兼容现有调用点；新代码优先用 IsQuotaProvider。
     /// </summary>
     internal bool IsMiniMax =>
         string.Equals(_state.Provider, PaperState.MiniMax, StringComparison.Ordinal);
 
     /// <summary>
-    /// 当前供应商的风险比例：MiniMax 用"已消耗比例"（100 − 剩余百分比），
+    /// 当前 provider 是否为 5h+weekly 双桶的"配额型" provider（MiniMax / ZhiPu / Kimi）。
+    /// 这三家共享同一个 5h 剩余% 缓存字段 + 同样的 ringColor/ringArc/riskRatio 算法。
+    /// </summary>
+    internal bool IsQuotaProvider =>
+        string.Equals(_state.Provider, PaperState.MiniMax, StringComparison.Ordinal) ||
+        string.Equals(_state.Provider, PaperState.ZhiPu, StringComparison.Ordinal) ||
+        string.Equals(_state.Provider, PaperState.Kimi, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 当前供应商的风险比例：配额型 (MiniMax/ZhiPu/Kimi) 用"已消耗比例"（100 − 剩余百分比），
     /// DeepSeek 已删除阈值风险比逻辑，固定返回 0（Safe 绿、弧值 0）。
     /// 统一过滤 NaN/Infinity。
     /// internal:供 Payload/ViewPayloadBuilder 读取。
     /// </summary>
     internal double ComputeRiskRatioForCurrent()
     {
-        if (IsMiniMax && _minimaxRemainingPercent.HasValue)
+        if (IsQuotaProvider && _minimaxRemainingPercent.HasValue)
         {
             return RiskClassifier.Finite((100 - _minimaxRemainingPercent.Value) / 100.0);
         }

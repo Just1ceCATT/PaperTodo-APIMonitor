@@ -73,6 +73,7 @@ internal sealed class ViewPayloadBuilder
             ["balance"] = hasData ? Format.FormatAmount(snapshot.Remaining) : "—",
             ["currency"] = isMiniMax ? "小时" : (ColorPalette.MapCurrencySymbolToCode(settings.CurrencySymbol) ?? settings.CurrencySymbol),
             ["currencySymbol"] = isMiniMax ? "" : settings.CurrencySymbol,
+            ["credentialLevel"] = _session.CredentialLevel ?? "",
             ["updateTime"] = hasData
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",

@@ -13,6 +13,7 @@ internal sealed record PaperState(string Provider)
     public const string MiniMax = "minimax";
     public const string OpenCode = "opencode";
     public const string ZhiPu = "zhipu";
+    public const string Kimi = "kimi";
     public const string MiMo = "mimo";
     public const string CodeX = "codex";
 }

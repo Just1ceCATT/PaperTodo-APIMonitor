@@ -23,22 +23,54 @@ internal static class HttpFetcher
     public static async Task<string?> FetchJsonAsync(
         HttpClient http, string url, string token, bool platformHeader = false)
     {
+        var (status, body) = await FetchRawAsync(
+            http, url, authToken: token, authBearer: true, platformHeader: platformHeader)
+            .ConfigureAwait(false);
+        if (status is null or not (>= 200 and < 300) || body == null)
+        {
+            return null;
+        }
+        return body;
+    }
+
+    /// <summary>
+    /// 低层 GET 请求：返回 (HTTP 状态码, 响应体)。不强制 Bearer、不 EnsureSuccessStatusCode。
+    /// 失败模式：
+    /// - 网络/解析异常：status=null, body=null
+    /// - 4xx/5xx：status=实际值, body=响应体（让 Provider 自行决定如何解读）
+    ///
+    /// 参数：
+    /// - authToken=null：不附加 Authorization 头
+    /// - authBearer=true：拼 "Bearer &lt;token&gt;"；false：拼 "&lt;token&gt;"（ZhiPu 等不要求 Bearer 的供应商）
+    /// - platformHeader=true：附加 x-app-version 头（DeepSeek platform 用）
+    /// </summary>
+    public static async Task<(int? StatusCode, string? Body)> FetchRawAsync(
+        HttpClient http, string url,
+        string? authToken = null,
+        bool authBearer = true,
+        bool platformHeader = false)
+    {
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            if (!string.IsNullOrWhiteSpace(authToken))
+            {
+                var raw = authBearer ? $"Bearer {authToken}" : authToken;
+                request.Headers.TryAddWithoutValidation("Authorization", raw);
+            }
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             if (platformHeader)
             {
                 request.Headers.TryAddWithoutValidation("x-app-version", PlatformAppVersion);
             }
             using var response = await http.SendAsync(request).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var status = (int)response.StatusCode;
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return (status, body);
         }
         catch
         {
-            return null;
+            return (null, null);
         }
     }
 

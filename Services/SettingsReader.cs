@@ -32,6 +32,7 @@ internal static class SettingsReader
             var zhipuKey = ReadString(root, "zhipuApiKey", "");
             var mimoKey = ReadString(root, "mimoApiKey", "");
             var codexKey = ReadString(root, "codexApiKey", "");
+            var kimiKey = ReadString(root, "kimiApiKey", "");
             var apiKey = provider switch
             {
                 PaperState.MiniMax => minimaxKey,
@@ -39,6 +40,7 @@ internal static class SettingsReader
                 PaperState.ZhiPu => zhipuKey,
                 PaperState.MiMo => mimoKey,
                 PaperState.CodeX => codexKey,
+                PaperState.Kimi => kimiKey,
                 _ => deepseekKey
             };
             return new BalanceSettings(
@@ -53,26 +55,40 @@ internal static class SettingsReader
                 zhipuKey,
                 mimoKey,
                 codexKey,
-                ReadBool(root, "disableDotBreath", false));
+                ReadBool(root, "disableDotBreath", false),
+                ReadString(root, "kimiApiKey", ""),
+                NormalizeZhiPuRegion(ReadString(root, "zhipuRegion", "global")),
+                NormalizeZhiPuPlanType(ReadString(root, "zhipuPlanType", "personal")));
         }
         catch
         {
-            // 解析失败时 12 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
+            // 解析失败时 15 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
             return new BalanceSettings(
-                "",      // ApiKey
-                "",      // UsageToken
-                60,      // PollSeconds
-                "¥",     // CurrencySymbol
-                20.0,    // BalanceThreshold
-                true,    // ShowPercentage
-                "",      // MiniViewFontFamily
-                false,   // DisableRing
-                "",      // ZhiPuApiKey
-                "",      // MiMoApiKey
-                "",      // CodeXApiKey
-                false);  // DisableDotBreath
+                "",         // ApiKey
+                "",         // UsageToken
+                60,         // PollSeconds
+                "¥",        // CurrencySymbol
+                20.0,       // BalanceThreshold
+                true,       // ShowPercentage
+                "",         // MiniViewFontFamily
+                false,      // DisableRing
+                "",         // ZhiPuApiKey
+                "",         // MiMoApiKey
+                "",         // CodeXApiKey
+                false,      // DisableDotBreath
+                "",         // KimiApiKey
+                "global",   // ZhiPuRegion
+                "personal"); // ZhiPuPlanType
         }
     }
+
+    /// <summary>ZhiPuRegion 合法值兜底：非法或缺失一律 global。</summary>
+    private static string NormalizeZhiPuRegion(string raw) =>
+        string.Equals(raw, "china", StringComparison.OrdinalIgnoreCase) ? "china" : "global";
+
+    /// <summary>ZhiPuPlanType 合法值兜底：非法或缺失一律 personal。</summary>
+    private static string NormalizeZhiPuPlanType(string raw) =>
+        string.Equals(raw, "team", StringComparison.OrdinalIgnoreCase) ? "team" : "personal";
 
     public static string ReadString(JsonElement root, string name, string fallback) =>
         root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
@@ -144,5 +160,5 @@ internal static class SettingsReader
     /// <summary>Provider 白名单，用于 WebView2 switchProvider 消息校验。</summary>
     public static bool IsValidProvider(string p) =>
         p == PaperState.DeepSeek || p == PaperState.MiniMax || p == PaperState.OpenCode ||
-        p == PaperState.ZhiPu || p == PaperState.MiMo || p == PaperState.CodeX;
+        p == PaperState.ZhiPu || p == PaperState.Kimi || p == PaperState.MiMo || p == PaperState.CodeX;
 }

@@ -337,11 +337,20 @@ internal sealed partial class BalanceMiniView : Border
     /// </summary>
     public void Update(MiniViewSnapshot snapshot, string statusText)
     {
-        // 顶部供应商名:按 Provider 设置文本与可见性;MiniMax / DeepSeek 显示对应名字,其他隐藏。
+        // 顶部供应商名:按 Provider 设置文本与可见性。
+        // 配额型 (MiniMax / ZhiPu / Kimi) 共享双进度条模块。
         switch (snapshot.Provider)
         {
             case PaperState.MiniMax:
                 _providerHeader.Text = "MiniMax";
+                _providerHeader.Visibility = Visibility.Visible;
+                break;
+            case PaperState.ZhiPu:
+                _providerHeader.Text = "ZhiPu GLM";
+                _providerHeader.Visibility = Visibility.Visible;
+                break;
+            case PaperState.Kimi:
+                _providerHeader.Text = "Kimi For Coding";
                 _providerHeader.Visibility = Visibility.Visible;
                 break;
             case PaperState.DeepSeek:
@@ -353,7 +362,10 @@ internal sealed partial class BalanceMiniView : Border
                 break;
         }
 
-        if (string.Equals(snapshot.Provider, PaperState.MiniMax, StringComparison.Ordinal))
+        // 配额型 provider (MiniMax / ZhiPu / Kimi) 共用 _maxRootGrid 双进度条。
+        if (string.Equals(snapshot.Provider, PaperState.MiniMax, StringComparison.Ordinal) ||
+            string.Equals(snapshot.Provider, PaperState.ZhiPu, StringComparison.Ordinal) ||
+            string.Equals(snapshot.Provider, PaperState.Kimi, StringComparison.Ordinal))
         {
             // 整个 _maxRootGrid 显示,_dsRootGrid 隐藏,互斥且不互相影响 layout。
             _maxRootGrid.Visibility = Visibility.Visible;
