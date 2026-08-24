@@ -32,6 +32,9 @@ internal sealed class BalanceDotCapsuleView : Grid
     // 高峰期橙色常量：#FF9800 与 MiniMax 5h 进度条同源色。
     private const string PeakDotColorHex = "#FF9800";
 
+    // 圆环 + 圆点列可见性缓存：防止外部反复调用 SetRingVisible 时重写 Column 宽度。
+    private bool _ringColumnVisible = true;
+
     // 呼吸动画只读一份，所有 BalanceDotCapsuleView 实例共享（Freeze 后线程安全）。
     private static readonly DoubleAnimation DotBreathAnimation = CreateBreathAnimation();
 
@@ -132,7 +135,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         // 圆点：高峰期强制橙色 + 呼吸；其他时段按 dotColorHex 静态。
         var dotColor = isPeakHour ? PeakDotColorHex : dotColorHex;
         _dot.Fill = ToBrush(dotColor, "#9E9E9E");
-        if (isPeakHour)
+        if (isPeakHour && _ringColumnVisible)
         {
             _dot.BeginAnimation(UIElement.OpacityProperty, DotBreathAnimation);
         }
@@ -167,6 +170,31 @@ internal sealed class BalanceDotCapsuleView : Grid
         track.Freeze();
         _ring.TrackBrush = track;
         _ring.InvalidateVisual();
+    }
+
+    /// <summary>
+    /// 切换圆环 + 圆点可见性（设置 disableRing 时调用）。
+    /// 关闭时圆环列 + gap 列折叠为 0 宽，圆点列也归 0；切回时恢复原宽度。
+    /// 关闭状态下即使 isPeakHour=true 也不再触发呼吸动画（避免残留闪烁）。
+    /// </summary>
+    public void SetRingVisible(bool visible)
+    {
+        _ringColumnVisible = visible;
+        // 5 列布局与 Ring 胶囊共用列宽规则：[6 pad][18 ring+dot][5 gap][* text][4 right pad]
+        ColumnDefinitions[1].Width = visible
+            ? new GridLength(18)
+            : new GridLength(0);
+        ColumnDefinitions[2].Width = visible
+            ? new GridLength(5)
+            : new GridLength(0);
+        _ring.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        _dot.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (!visible)
+        {
+            // 关闭后清掉任何残留的呼吸动画,避免不可见时还在跑 Opacity 动画。
+            _dot.BeginAnimation(UIElement.OpacityProperty, null);
+            _dot.Opacity = 1.0;
+        }
     }
 
     private static SolidColorBrush ToBrush(string value, string fallback)

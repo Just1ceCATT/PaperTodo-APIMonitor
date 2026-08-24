@@ -4,50 +4,21 @@
   "name": "API 余额监测",
   "description": "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色圆环。",
   "version": "1.2.0",
-  "apiVersion": "1.8",
+  "apiVersion": "2.0",
   "stateVersion": 2,
   "entry": "PaperTodo.Plugin.ApiBalanceMonitor.dll",
   "capabilities": [],
   "requires": [
     "backgroundUpdates"
   ],
+  "advancedSettings": true,
+  "primarySettings": 2,
+  "settingCategories": [
+    {
+      "name": "供应商 API key"
+    }
+  ],
   "settings": [
-    {
-      "id": "deepseekApiKey",
-      "type": "string",
-      "name": "DeepSeek API Key",
-      "description": "⚠️ 本地明文存储。仅 DeepSeek 供应商使用；切换供应商时不会复用它。",
-      "placeholder": "sk-…",
-      "maxLength": 400,
-      "default": ""
-    },
-    {
-      "id": "minimaxApiKey",
-      "type": "string",
-      "name": "MiniMax API Key",
-      "description": "⚠️ 本地明文存储。仅 MiniMax 供应商使用；切换供应商时不会复用它。",
-      "placeholder": "MiniMax key",
-      "maxLength": 400,
-      "default": ""
-    },
-    {
-      "id": "opencodeApiKey",
-      "type": "string",
-      "name": "OpenCode Go API Key",
-      "description": "⚠️ 本地明文存储。仅 OpenCode Go 供应商使用；切换供应商时不会复用它。",
-      "placeholder": "opencode key",
-      "maxLength": 400,
-      "default": ""
-    },
-    {
-      "id": "usageToken",
-      "type": "string",
-      "name": "用量 Token（可选）",
-      "description": "platform.deepseek.com 的用量查询 Token（非 API Key）。填写后监视面板显示近 7 天 Token 用量柱状图。留空则只监测余额。",
-      "placeholder": "platform 用量 token",
-      "maxLength": 400,
-      "default": ""
-    },
     {
       "id": "pollSeconds",
       "type": "number",
@@ -61,42 +32,82 @@
       "quick": true
     },
     {
-      "id": "currencySymbol",
-      "type": "select",
-      "name": "货币符号",
-      "default": "¥",
-      "options": [
-        { "value": "¥", "name": "¥  人民币" },
-        { "value": "$", "name": "$  美元" }
-      ]
-    },
-    {
-      "id": "balanceThreshold",
-      "type": "number",
-      "name": "余额提醒阈值",
-      "description": "当余额接近此值时圆环变黄、低于时变红。计算公式：阈值 / (余额 - 阈值)；阈值 / (余额 - 阈值) 小于 0.6 显示绿色，0.6-0.8 黄色，超过 0.8 红色。",
-      "min": 1,
-      "max": 99999,
-      "step": 1,
-      "default": 20,
-      "quick": true
-    },
-    {
-      "id": "showPercentage",
+      "id": "disableRing",
       "type": "boolean",
-      "name": "显示百分比",
-      "description": "胶囊文字右侧附加 · X%（需要接口同时提供总额字段）。",
-      "default": true,
+      "name": "关闭圆环",
+      "description": "勾选后胶囊不再显示圆环指示器，仅保留文字。MiniView 5h/周进度条不受影响。",
+      "default": false,
       "quick": true
     },
     {
-      "id": "miniViewFontFamily",
+      "id": "deepseekApiKey",
       "type": "string",
-      "name": "MiniView 字体",
-      "description": "覆盖全局字体,仅作用于 MiniView 显示。Windows 字体名如 Microsoft YaHei UI;macOS 字形名如 PingFang SC;Linux 字形名如 Source Han Sans CN、Noto Sans CJK SC。留空则跟随主题。",
-      "placeholder": "留空则跟随主题字体",
-      "maxLength": 80,
-      "default": ""
+      "name": "DeepSeek",
+      "description": "⚠️ 本地明文存储。仅 DeepSeek 供应商使用；切换供应商时不会复用它。",
+      "placeholder": "sk-…",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "usageToken",
+      "type": "string",
+      "name": "DeepSeek 用量查询 Token",
+      "description": "platform.deepseek.com 的用量查询 Token（非 API Key）。填写后监视面板显示近 7 天 Token 用量柱状图。留空则只监测余额。",
+      "placeholder": "platform 用量 token",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "minimaxApiKey",
+      "type": "string",
+      "name": "MiniMax",
+      "description": "⚠️ 本地明文存储。仅 MiniMax 供应商使用；切换供应商时不会复用它。",
+      "placeholder": "MiniMax key",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "opencodeApiKey",
+      "type": "string",
+      "name": "OpenCode Go(开发中)",
+      "description": "⚠️ 本地明文存储。仅 OpenCode Go 供应商使用；切换供应商时不会复用它；当前仅预留 Key 入口，监视面板返回「尚未适配该供应商」。",
+      "placeholder": "opencode key",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "zhipuApiKey",
+      "type": "string",
+      "name": "ZhiPu GLM(开发中)",
+      "description": "⚠️ 本地明文存储。ZhiPu GLM 供应商 Key；当前仅预留 Key 入口，监视面板返回「尚未适配该供应商」。",
+      "placeholder": "zhipu key",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "mimoApiKey",
+      "type": "string",
+      "name": "MiMo(开发中)",
+      "description": "⚠️ 本地明文存储。MiMo 供应商 Key；当前仅预留 Key 入口，监视面板返回「尚未适配该供应商」。",
+      "placeholder": "mimo key",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
+    },
+    {
+      "id": "codexApiKey",
+      "type": "string",
+      "name": "CodeX(开发中)",
+      "description": "⚠️ 本地明文存储。CodeX 供应商 Key；当前仅预留 Key 入口，监视面板返回「尚未适配该供应商」。",
+      "placeholder": "codex key",
+      "maxLength": 400,
+      "default": "",
+      "category": "供应商 API key"
     }
   ]
 }

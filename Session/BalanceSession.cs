@@ -53,6 +53,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private double? _minimaxRemainingPercent;
     private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? _minimaxModelRemains;
     private PaperBodyTheme _theme;
+    // 关闭胶囊圆环（来自 settings.disableRing）。ApplySettings 同步；CreateCapsuleView 读它传给胶囊构造。
+    private bool _disableRing;
     // 30 分钟滑动窗口趋势分析器：只吃成功拉取的 DeepSeek 余额样本，纯内存不持久化，
     // 插件重启后重新积累（前 5 分钟显示"采集中"）。与阈值风险是两套独立指标。
     private readonly TrendAnalyzer _trend = new();
@@ -282,6 +284,15 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     {
         _settings = s;
         _miniViewFontFamily = s.MiniViewFontFamily;
+        // 关闭圆环同步：变化时刷新已缓存的胶囊视图,避免下次 CreateCapsuleView 才能看到效果。
+        if (_disableRing != s.DisableRing)
+        {
+            _disableRing = s.DisableRing;
+            _regularRingCapsuleView?.SetRingVisible(!_disableRing);
+            _dockedRingCapsuleView?.SetRingVisible(!_disableRing);
+            _regularDotCapsuleView?.SetRingVisible(!_disableRing);
+            _dockedDotCapsuleView?.SetRingVisible(!_disableRing);
+        }
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
         _timer.Interval = interval;
@@ -349,7 +360,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// 拉取当前 provider 的余额。MiniMax → MiniMaxProvider;OpenCode → "尚未适配";默认 DeepSeek。
+    /// 拉取当前 provider 的余额。MiniMax → MiniMaxProvider;OpenCode / ZhiPu / MiMo / CodeX → "尚未适配";默认 DeepSeek。
     /// 失败/网络异常走 BalanceSnapshot.Error。
     /// </summary>
     private async Task<BalanceSnapshot> FetchBalanceAsync()
@@ -362,8 +373,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _minimaxRemainingPercent = _minimax.RemainingPercent;
             return snap;
         }
-        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
+        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal) ||
+            string.Equals(_state.Provider, PaperState.ZhiPu, StringComparison.Ordinal) ||
+            string.Equals(_state.Provider, PaperState.MiMo, StringComparison.Ordinal) ||
+            string.Equals(_state.Provider, PaperState.CodeX, StringComparison.Ordinal))
         {
+            // 预留 Key 入口但不发起真实请求,与 AGENTS.md「不要为 OpenCode Go 引入半成品 UI」契约一致。
             return BalanceSnapshot.Error("尚未适配该供应商");
         }
         // DeepSeek（默认）
@@ -520,6 +535,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         if (IsMiniMax)
         {
             var ringView = new BalanceRingCapsuleView(context);
+            // 关闭圆环设置即时生效:首次创建时也按当前 _disableRing 决定圆环可见性。
+            ringView.SetRingVisible(!_disableRing);
             // 首次返回时立即填入最新状态，避免宿主先展示空 view 再被 Update 刷新。
             ringView.Update(_latestCapsuleSnapshot.Text, _latestCapsuleSnapshot.RingColorHex, _latestCapsuleSnapshot.RingArc);
             if (context.Surface == PaperCapsuleSurfaceKind.Docked)
@@ -534,6 +551,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         var dotView = new BalanceDotCapsuleView(context);
+        // DeepSeek/OpenCode/ZhiPu/MiMo/CodeX 走 BalanceDotCapsuleView,关闭圆环时内圆点也一并隐藏。
+        dotView.SetRingVisible(!_disableRing);
         dotView.Update(
             _latestCapsuleSnapshot.Text,
             _latestCapsuleSnapshot.RingColorHex,

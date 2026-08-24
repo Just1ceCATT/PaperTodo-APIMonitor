@@ -18,6 +18,8 @@ internal sealed class BalanceRingCapsuleView : Grid
 {
     private readonly TextBlock _label;
     private readonly BalanceProgressRing _ring;
+    // 圆环列可见性缓存:防止外部反复调用 SetRingVisible 时重写 Column 宽度。
+    private bool _ringColumnVisible = true;
 
     // FontFamily 缓存：theme.FontFamily 是字符串，按字符串相等判断避免重复构造。
     // 避免每次 ApplyTheme 都触发 WPF 字体回退链解析（首次解析可达 100ms 级）。
@@ -72,6 +74,24 @@ internal sealed class BalanceRingCapsuleView : Grid
         _ring.Value = Math.Clamp(ringArc, 0, 1);
         _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
         _ring.InvalidateVisual();
+    }
+
+    /// <summary>
+    /// 切换圆环可见性（设置 disableRing 时调用）。关闭后圆环列折叠为 0 宽,
+    /// 文字列左移填满;切回时恢复原宽度,胶囊宽度不会抖动（Columns 已声明）。
+    /// </summary>
+    public void SetRingVisible(bool visible)
+    {
+        _ringColumnVisible = visible;
+        // Column 1 是圆环列（[6 pad][18 ring][5 gap][* text][4 right pad]）。
+        // 关闭时宽度归 0,gap 列也归 0,文字列自动扩到剩余空间。
+        ColumnDefinitions[1].Width = visible
+            ? new GridLength(18)
+            : new GridLength(0);
+        ColumnDefinitions[2].Width = visible
+            ? new GridLength(5)
+            : new GridLength(0);
+        _ring.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>

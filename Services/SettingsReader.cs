@@ -29,10 +29,16 @@ internal static class SettingsReader
             }
             var minimaxKey = ReadString(root, "minimaxApiKey", "");
             var opencodeKey = ReadString(root, "opencodeApiKey", "");
+            var zhipuKey = ReadString(root, "zhipuApiKey", "");
+            var mimoKey = ReadString(root, "mimoApiKey", "");
+            var codexKey = ReadString(root, "codexApiKey", "");
             var apiKey = provider switch
             {
                 PaperState.MiniMax => minimaxKey,
                 PaperState.OpenCode => opencodeKey,
+                PaperState.ZhiPu => zhipuKey,
+                PaperState.MiMo => mimoKey,
+                PaperState.CodeX => codexKey,
                 _ => deepseekKey
             };
             return new BalanceSettings(
@@ -42,11 +48,27 @@ internal static class SettingsReader
                 ReadString(root, "currencySymbol", "¥"),
                 ReadDouble(root, "balanceThreshold", 20.0),
                 ReadBool(root, "showPercentage", true),
-                ReadString(root, "miniViewFontFamily", ""));
+                ReadString(root, "miniViewFontFamily", ""),
+                ReadBool(root, "disableRing", false),
+                zhipuKey,
+                mimoKey,
+                codexKey);
         }
         catch
         {
-            return new BalanceSettings("", "", 60, "¥", 20.0, true, "");
+            // 解析失败时 11 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
+            return new BalanceSettings(
+                "",      // ApiKey
+                "",      // UsageToken
+                60,      // PollSeconds
+                "¥",     // CurrencySymbol
+                20.0,    // BalanceThreshold
+                true,    // ShowPercentage
+                "",      // MiniViewFontFamily
+                false,   // DisableRing
+                "",      // ZhiPuApiKey
+                "",      // MiMoApiKey
+                "");     // CodeXApiKey
         }
     }
 
@@ -119,5 +141,6 @@ internal static class SettingsReader
 
     /// <summary>Provider 白名单，用于 WebView2 switchProvider 消息校验。</summary>
     public static bool IsValidProvider(string p) =>
-        p == PaperState.DeepSeek || p == PaperState.MiniMax || p == PaperState.OpenCode;
+        p == PaperState.DeepSeek || p == PaperState.MiniMax || p == PaperState.OpenCode ||
+        p == PaperState.ZhiPu || p == PaperState.MiMo || p == PaperState.CodeX;
 }
