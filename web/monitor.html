@@ -79,6 +79,15 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .bar-label{position:absolute;bottom:-26px;color:var(--dim);font:clamp(10px,1.8vw,11px) var(--serif);background:var(--s);padding:1px 5px;border-radius:3px;white-space:nowrap;line-height:1.2;z-index:2}
 .bar-label.current{color:var(--text)}
 .bottom{display:flex;justify-content:space-between;margin-top:13px;color:var(--dim);font:9px var(--serif)}
+.hooks{margin-top:18px;padding:14px 18px 18px;border:1px solid var(--line);border-radius:10px;background:var(--s)}
+.hooks-title{font:600 12px/1 var(--serif);color:var(--text);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.hooks-title::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);animation:hook-pulse 2s ease-in-out infinite}
+@keyframes hook-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hooks-list{list-style:none;padding:0;margin:0;font:11px/1.6 var(--serif);color:var(--dim)}
+.hooks-list li{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--line)}
+.hooks-list li:last-child{border-bottom:0}
+.hooks-list .h-time{color:var(--dim);font-variant-numeric:tabular-nums;flex-shrink:0}
+.hooks-list .h-text{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 @media(max-width:520px){
   main{padding:21px 18px 17px}
   .top{display:block}
@@ -178,6 +187,12 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
       <span id="updateTime">—</span>
     </footer>
   </section>
+
+  <!-- Claude Code Hook 活动流：最近 5 条 hook 事件 -->
+  <section class="hooks" id="hooksSection" hidden>
+    <div class="hooks-title">Claude 活动</div>
+    <ul class="hooks-list" id="hooksList"></ul>
+  </section>
 </main>
 </section>
 <script>
@@ -211,6 +226,29 @@ function fmtWanYi(n) {
 }
 
 function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
+
+// Claude Code hook 活动流：按数组顺序渲染最近 5 条；空数组隐藏整个 section。
+function renderHooks(hooks) {
+  var section = document.getElementById("hooksSection");
+  var list = document.getElementById("hooksList");
+  if (!section || !list) return;
+  if (!hooks || hooks.length === 0) { section.hidden = true; list.innerHTML = ""; return; }
+  section.hidden = false;
+  var html = "";
+  for (var i = 0; i < hooks.length; i++) {
+    var h = hooks[i];
+    var txt = (h.summary || h.event || "").toString();
+    html += '<li><span class="h-time">' + escapeHtml(h.time || "") +
+            '</span><span class="h-text" title="' + escapeHtml(txt) + '">' +
+            escapeHtml(txt) + '</span></li>';
+  }
+  list.innerHTML = html;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" })[c];
+  });
+}
 
 function render(msg) {
   if (!msg) return;
@@ -321,6 +359,7 @@ function render(msg) {
   currentUsage = d.usage || [];
   renderChart();
   setText("updateTime", d.updateTime || "—");
+  renderHooks(d.hooks || []);
 }
 
 // 选定时段重新过滤渲染（不重新请求 C#）

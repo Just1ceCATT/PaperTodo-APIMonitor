@@ -74,6 +74,8 @@ internal sealed class ViewPayloadBuilder
             ["currency"] = isMiniMax ? "小时" : (ColorPalette.MapCurrencySymbolToCode(settings.CurrencySymbol) ?? settings.CurrencySymbol),
             ["currencySymbol"] = isMiniMax ? "" : settings.CurrencySymbol,
             ["credentialLevel"] = _session.CredentialLevel ?? "",
+            ["hooks"] = BuildHooks(_session.HookEventWindow),
+            ["hookServerPort"] = _session.HookServerPort ?? 0,
             ["updateTime"] = hasData
                 ? "更新于 " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                 : "",
@@ -102,5 +104,26 @@ internal sealed class ViewPayloadBuilder
             ["theme"] = themePayload,
             ["data"] = data
         });
+    }
+
+    /// <summary>
+    /// 把 hook 事件滑窗转成 dict 数组（前端按顺序渲染）。
+    /// 每条形如 { event, tool, summary, time }。
+    /// </summary>
+    private static object[] BuildHooks(IReadOnlyList<HookEvent> window)
+    {
+        var result = new object[window.Count];
+        for (var i = 0; i < window.Count; i++)
+        {
+            var h = window[i];
+            result[i] = new Dictionary<string, object?>
+            {
+                ["event"] = h.EventName,
+                ["tool"] = h.ToolName ?? "",
+                ["summary"] = h.Summary,
+                ["time"] = h.ReceivedAt.ToString("HH:mm:ss", CultureInfo.CurrentCulture)
+            };
+        }
+        return result;
     }
 }

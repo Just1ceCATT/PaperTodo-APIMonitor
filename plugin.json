@@ -131,6 +131,16 @@
       "category": "供应商 API key"
     },
     {
+      "id": "hooksPort",
+      "type": "number",
+      "name": "Claude Code Hook 监听端口",
+      "description": "插件在 127.0.0.1 上启动 HTTP 服务器接收 Claude Code hook POST。默认 17890，端口被占用时自动 +1 ~ +4。修改后重启 PaperTodo 生效。",
+      "min": 1024,
+      "max": 65535,
+      "step": 1,
+      "default": 17890
+    },
+    {
       "id": "mimoApiKey",
       "type": "string",
       "name": "MiMo(开发中)",

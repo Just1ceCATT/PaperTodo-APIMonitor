@@ -50,6 +50,15 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
 .gauge-track i{display:block;height:100%;background:var(--ink);border-radius:999px;transition:width .5s ease}
 .gauge-track i.warning{background:var(--accent)}
 .gauge-foot{margin-top:9px;color:var(--muted);font-size:clamp(11px,1.6vw,12px)}
+.hooks{margin-top:clamp(14px,2vw,20px);padding:clamp(14px,2.4vw,18px) clamp(14px,2.4vw,18px) clamp(18px,2.6vw,24px);border:1px solid var(--line);border-radius:10px;background:var(--paper-deep)}
+.hooks-title{font:600 clamp(12px,1.8vw,14px) var(--serif);color:var(--ink);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.hooks-title::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:hook-pulse 2s ease-in-out infinite}
+@keyframes hook-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hooks-list{list-style:none;padding:0;margin:0;font:12px/1.6 var(--serif);color:var(--muted)}
+.hooks-list li{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--soft-line)}
+.hooks-list li:last-child{border-bottom:0}
+.hooks-list .h-time{color:var(--muted);font-variant-numeric:tabular-nums;flex-shrink:0}
+.hooks-list .h-text{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 @media(max-width:760px){
   .page{padding:26px 22px}
   .header{display:block}
@@ -104,6 +113,12 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
         <div class="gauge-foot" id="weeklyFoot">—</div>
       </div>
     </div>
+  </section>
+
+  <!-- Claude Code Hook 活动流：最近 5 条 hook 事件 -->
+  <section class="hooks" id="hooksSection" hidden>
+    <div class="hooks-title">Claude 活动</div>
+    <ul class="hooks-list" id="hooksList"></ul>
   </section>
 
 </main>
@@ -188,6 +203,9 @@ function render(msg) {
   else { main.classList.add("err"); dot.classList.add("err"); setText("statusText", d.status || "异常"); }
   setText("updated", d.updateTime || "—");
 
+  // Claude Code hook 活动流
+  renderHooks(d.hooks || []);
+
   // Hero：聚焦 general —— 双进度条（每五小时 / 每周）+ 重置倒计时
   var ib = document.getElementById("intervalBar");
   var wb = document.getElementById("weeklyBar");
@@ -212,6 +230,29 @@ function render(msg) {
 }
 
 window.__renderBalance = function (msg) { try { render(msg); } catch (e) {} };
+
+// Claude Code hook 活动流：按数组顺序渲染最近 5 条；空数组隐藏整个 section。
+function renderHooks(hooks) {
+  var section = document.getElementById("hooksSection");
+  var list = document.getElementById("hooksList");
+  if (!section || !list) return;
+  if (!hooks || hooks.length === 0) { section.hidden = true; list.innerHTML = ""; return; }
+  section.hidden = false;
+  var html = "";
+  for (var i = 0; i < hooks.length; i++) {
+    var h = hooks[i];
+    var txt = (h.summary || h.event || "").toString();
+    html += '<li><span class="h-time">' + escapeHtml(h.time || "") +
+            '</span><span class="h-text" title="' + escapeHtml(txt) + '">' +
+            escapeHtml(txt) + '</span></li>';
+  }
+  list.innerHTML = html;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" })[c];
+  });
+}
 if (bridge) {
   bridge.addEventListener("message", function (e) { try { render(JSON.parse(e.data)); } catch (e) {} });
   bridge.postMessage({ type: "ready" });

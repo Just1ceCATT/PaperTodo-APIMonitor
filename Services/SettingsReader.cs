@@ -58,11 +58,12 @@ internal static class SettingsReader
                 ReadBool(root, "disableDotBreath", false),
                 ReadString(root, "kimiApiKey", ""),
                 NormalizeZhiPuRegion(ReadString(root, "zhipuRegion", "global")),
-                NormalizeZhiPuPlanType(ReadString(root, "zhipuPlanType", "personal")));
+                NormalizeZhiPuPlanType(ReadString(root, "zhipuPlanType", "personal")),
+                NormalizeHooksPort(ReadInt(root, "hooksPort", 17890)));
         }
         catch
         {
-            // 解析失败时 15 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
+            // 解析失败时 16 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
             return new BalanceSettings(
                 "",         // ApiKey
                 "",         // UsageToken
@@ -78,9 +79,14 @@ internal static class SettingsReader
                 false,      // DisableDotBreath
                 "",         // KimiApiKey
                 "global",   // ZhiPuRegion
-                "personal"); // ZhiPuPlanType
+                "personal", // ZhiPuPlanType
+                17890);     // HooksPort
         }
     }
+
+    /// <summary>HooksPort 合法值兜底：合法范围 [1024, 65535]，非法或缺失一律 17890。</summary>
+    private static int NormalizeHooksPort(int raw) =>
+        raw is >= 1024 and <= 65535 ? raw : 17890;
 
     /// <summary>ZhiPuRegion 合法值兜底：非法或缺失一律 global。</summary>
     private static string NormalizeZhiPuRegion(string raw) =>

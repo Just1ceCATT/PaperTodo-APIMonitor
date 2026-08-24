@@ -26,4 +26,5 @@ internal sealed record BalanceSettings(
     bool DisableDotBreath,
     string KimiApiKey,
     string ZhiPuRegion,
-    string ZhiPuPlanType);
+    string ZhiPuPlanType,
+    int HooksPort);

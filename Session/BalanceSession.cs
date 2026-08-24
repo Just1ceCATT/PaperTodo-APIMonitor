@@ -80,6 +80,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     internal List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? MiniMaxModelRemains => _minimaxModelRemains;
     /// <summary>ZhiPu data.level(max / pro / ...);其他 provider 为 null。供 web 面板显示套餐等级。</summary>
     internal string? CredentialLevel => _credentialLevel;
+    /// <summary>最近的 Claude Code hook 事件；用于胶囊 ToolTip 第二行。</summary>
+    internal HookEvent LatestHookEvent => _latestHookEvent;
+    /// <summary>滑窗：最近 5 条 hook 事件；用于 Web 面板"Claude 活动"列表。</summary>
+    internal IReadOnlyList<HookEvent> HookEventWindow => _hookEventWindow.ToArray();
+    /// <summary>HookEventServer 实际端口（启动失败时为 null）。</summary>
+    internal int? HookServerPort => _hookServer?.ActualPort;
     /// <summary>当前 30 分钟窗口的余额趋势。每次读取都基于当前时间重新裁剪窗口并回归。</summary>
     internal BalanceTrend CurrentTrend => _trend.Analyze(DateTime.Now, _snapshot.Remaining);
 
@@ -97,6 +103,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // CreateCapsuleView 在首次被宿主调用前就需要拿到最新状态，所以单独缓存一份不可变快照。
     // 初值 CapsuleSnapshot.Empty 保证首屏胶囊始终有内容（"—" / 灰 / 0 弧）。
     private CapsuleSnapshot _latestCapsuleSnapshot = CapsuleSnapshot.Empty;
+
+    // Claude Code hook 事件：最新一条 + 最近 5 条滑窗，供胶囊 ToolTip 与 Web 面板展示。
+    // HookEventServer 接收 POST 后在 UI 线程 marshal 入队。
+    private HookEvent _latestHookEvent = HookEvent.Empty;
+    private readonly Queue<HookEvent> _hookEventWindow = new();
+    private const int HookEventWindowCapacity = 5;
+    private HookEventServer? _hookServer;
 
     // WebView2 监视面板
     private bool _disposed;
@@ -146,6 +159,68 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _peakCheckTimer.Start();
         }
         // WebView2 延迟到首次布局后初始化，避免阻塞宿主启动。
+
+        // 启动 Claude Code hook HTTP 服务器：监听 127.0.0.1，loopback 不暴露外部网络。
+        // 端口冲突自动 +1 ~ +4 重试；全失败则禁用 hook 集成（不影响余额主功能）。
+        StartHookServer();
+    }
+
+    /// <summary>
+    /// 启动 HookEventServer 并订阅事件。HookReceived 回调在后台线程触发，
+    /// 通过 Dispatcher.Invoke marshal 到 UI 线程后写缓存 + 触发 UpdateSnapshot。
+    /// </summary>
+    private void StartHookServer()
+    {
+        _hookServer = new HookEventServer();
+        _hookServer.HookReceived += OnHookReceived;
+        if (!_hookServer.Start(_settings.HooksPort))
+        {
+            // 端口冲突：5 个候选端口都被占。停掉 server 走"无 hook"模式，
+            // 胶囊仅显示余额,不影响 DeepSeek / MiniMax / ZhiPu / Kimi 主功能。
+            _hookServer.Dispose();
+            _hookServer = null;
+        }
+    }
+
+    private void OnHookReceived(HookEventPayload payload)
+    {
+        // 从 HTTP 后台线程 marshal 到 UI 线程（BalanceSession 创建在 STA）。
+        var dispatcher = System.Windows.Threading.Dispatcher.FromThread(Thread.CurrentThread);
+        if (dispatcher != null && !dispatcher.CheckAccess())
+        {
+            dispatcher.BeginInvoke(() => OnHookReceived(payload));
+            return;
+        }
+        var hook = new HookEvent(
+            EventName: payload.EventName,
+            ToolName: payload.ToolName,
+            Summary: payload.Summary,
+            ReceivedAt: payload.ReceivedAt);
+        _latestHookEvent = hook;
+        if (_hookEventWindow.Count >= HookEventWindowCapacity)
+        {
+            _hookEventWindow.Dequeue();
+        }
+        _hookEventWindow.Enqueue(hook);
+        // 推 Web 面板：payload 自动包含最近 5 条 hook 事件（ViewPayloadBuilder 会读）。
+        _panel.PostSnapshot(_payloadBuilder.Build());
+        // 推胶囊：只动 ToolTip，不动 text/round/riskRatio。
+        // _latestCapsuleSnapshot 已是余额快照；ToolTip 在此处拼接 hook 第二行。
+        if (_latestCapsuleSnapshot is not null)
+        {
+            var toolTip = BuildCapsuleToolTipWithHook(_latestCapsuleSnapshot.Text);
+            PushCapsulePresentation(_latestCapsuleSnapshot.Text, toolTip);
+        }
+    }
+
+    /// <summary>拼胶囊 ToolTip：余额第一行 + 最近 hook 第二行（如果存在）。</summary>
+    private string BuildCapsuleToolTipWithHook(string balanceText)
+    {
+        if (_latestHookEvent.EventName.Length == 0)
+        {
+            return balanceText;
+        }
+        return $"{balanceText}\n{_latestHookEvent.Summary}";
     }
 
     public FrameworkElement View => _panel.ViewRoot;
@@ -179,6 +254,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _timer.Stop();
         _peakCheckTimer.Stop();
         _http.Dispose();
+        // HookEventServer：先取消订阅再 Stop,避免 Stop 后还有未完成的回调飞过来。
+        if (_hookServer != null)
+        {
+            _hookServer.HookReceived -= OnHookReceived;
+            _hookServer.Dispose();
+            _hookServer = null;
+        }
         // 清空 1.7 视图缓存：宿主在下次 body session 重建时会请求新的 view，
         // 旧引用指向的元素已经被宿主丢弃，保留只会徒增引用计数。
         _regularRingCapsuleView = null;
@@ -512,6 +594,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         var toolTip = string.IsNullOrEmpty(snapshot.StatusText)
             ? text
             : $"{text}\n{snapshot.StatusText}";
+        // 追加 hook 事件到 ToolTip 末尾（如果存在）。
+        if (_latestHookEvent.EventName.Length > 0)
+        {
+            toolTip = $"{toolTip}\n{_latestHookEvent.Summary}";
+        }
 
         // 胶囊 signature：文本/风险比/颜色/状态文本 之外追加趋势等级，避免趋势变化时漏刷新胶囊。
         var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText + "|" + TrendAnalyzer.LevelKey(trend.Level) + "|" + trend.SampleCount.ToString(CultureInfo.InvariantCulture);
