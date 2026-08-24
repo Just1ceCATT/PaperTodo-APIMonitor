@@ -285,6 +285,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _settings = s;
         _miniViewFontFamily = s.MiniViewFontFamily;
         // 关闭圆环同步：变化时刷新已缓存的胶囊视图,避免下次 CreateCapsuleView 才能看到效果。
+        // 同时重推 SetCapsulePresentation，胶囊总宽度立即缩短 23 DIP（18 ring + 5 gap），
+        // 而不是文字左移占据原圆环位置。
         if (_disableRing != s.DisableRing)
         {
             _disableRing = s.DisableRing;
@@ -292,6 +294,14 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _dockedRingCapsuleView?.SetRingVisible(!_disableRing);
             _regularDotCapsuleView?.SetRingVisible(!_disableRing);
             _dockedDotCapsuleView?.SetRingVisible(!_disableRing);
+            // 已拉取过的情况下重推胶囊宽度；未拉取时下次 UpdateSnapshot 会自然带上新公式。
+            if (_latestCapsuleSnapshot is not null)
+            {
+                var toolTip = string.IsNullOrEmpty(_snapshot?.StatusText)
+                    ? _latestCapsuleSnapshot.Text
+                    : $"{_latestCapsuleSnapshot.Text}\n{_snapshot.StatusText}";
+                PushCapsulePresentation(_latestCapsuleSnapshot.Text, toolTip);
+            }
         }
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
@@ -488,32 +498,16 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
             // 2) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
             //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
-            //    PreferredWidth = 全部固定列宽(33) + textWidth + 0.1 余量。
-            //    Grid 列布局 [6 pad][18 ring][5 gap][* text][4 right pad]，
-            //    固定列总宽 = 6+18+5+4 = 33。差额 0.1 极致贴边。
+            //    PreferredWidth = 固定列宽 + textWidth + 0.1 余量。
+            //    Grid 列布局 [6 pad][18 ring][5 gap][* text][4 right pad]；
+            //    关闭圆环后 ring/gap 两列折叠为 0，固定列只剩 [6 pad][* text][4 right pad]。
             //    textWidth 用 MeasureTextWidth(主题字体 TextBlock.Measure + DesiredSize.Width)
             //    与 customView 渲染完全同源，避免亚像素舍入差异导致省略。
             //    Components 保留 1 项最小 Text 占位（Length > 0 让 Normalize 不返回 null，
             //    customView != null 时宿主跳过 1.6 模板不渲染它们）。
             //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
             //    PlainText 用于跨队列拖动的纯文字回退。
-            var textWidth = Math.Ceiling(MeasureTextWidth(text));
-            var preferredWidth = 6 + 18 + 5 + textWidth + 4 + 0.1;
-            _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
-            {
-                PreferredWidth = preferredWidth,
-                PlainText = text,
-                ToolTip = toolTip,
-                Components = new[]
-                {
-                    new PaperCapsuleComponent
-                    {
-                        Kind = PaperCapsuleComponentKind.Text,
-                        Text = text,
-                        Fill = true
-                    }
-                }
-            });
+            PushCapsulePresentation(text, toolTip);
         }
 
         // 1.8 边缘预览视图刷新：依赖 _minimaxModelRemains / _minimaxRemainingPercent，
@@ -522,6 +516,46 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
         // 面板（HTML）每次拉取后都推送：余额可能不变但用量/时间变了。
         _panel.PostSnapshot(_payloadBuilder.Build());
+    }
+
+    // 胶囊列宽常量（与 BalanceRingCapsuleView / BalanceDotCapsuleView 的 Grid 列宽同步）。
+    // Grid 列布局：[6 pad][18 ring][5 gap][* text][4 right pad]。
+    // 关闭圆环时 ring/gap 两列折叠为 0，固定列只剩 6+4=10。
+    private const double CapsuleLeftPadWidth = 6;
+    private const double CapsuleRingColumnWidth = 18;
+    private const double CapsuleGapColumnWidth = 5;
+    private const double CapsuleRightPadWidth = 4;
+
+    /// <summary>
+    /// 协议层通道：调用 SetCapsulePresentation 推胶囊给宿主。
+    /// 必须每次调用，否则宿主判定 `_pluginCapsulePresentation == null` 会清空胶囊槽。
+    ///
+    /// PreferredWidth 根据 _disableRing 动态计算：开启圆环 33 + textWidth，关闭后只剩 10 + textWidth。
+    /// ApplySettings 切换 disableRing 后也会立即重推，确保胶囊宽度立即缩短 23 DIP，
+    /// 而不是文字左移占据原圆环位置。
+    /// </summary>
+    private void PushCapsulePresentation(string text, string toolTip)
+    {
+        var textWidth = Math.Ceiling(MeasureTextWidth(text));
+        var fixedColumns = _disableRing
+            ? CapsuleLeftPadWidth + CapsuleRightPadWidth
+            : CapsuleLeftPadWidth + CapsuleRingColumnWidth + CapsuleGapColumnWidth + CapsuleRightPadWidth;
+        var preferredWidth = fixedColumns + textWidth + 0.1;
+        _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
+        {
+            PreferredWidth = preferredWidth,
+            PlainText = text,
+            ToolTip = toolTip,
+            Components = new[]
+            {
+                new PaperCapsuleComponent
+                {
+                    Kind = PaperCapsuleComponentKind.Text,
+                    Text = text,
+                    Fill = true
+                }
+            }
+        });
     }
 
     /// <summary>
