@@ -55,6 +55,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private PaperBodyTheme _theme;
     // 关闭胶囊圆环（来自 settings.disableRing）。ApplySettings 同步；CreateCapsuleView 读它传给胶囊构造。
     private bool _disableRing;
+    // 关闭 DeepSeek 等 Dot 胶囊在高峰期的圆点呼吸动效（来自 settings.disableDotBreath）。
+    // 仅影响 BalanceDotCapsuleView；MiniMax 胶囊无内圆点，本标志不生效。
+    private bool _disableDotBreath;
     // 30 分钟滑动窗口趋势分析器：只吃成功拉取的 DeepSeek 余额样本，纯内存不持久化，
     // 插件重启后重新积累（前 5 分钟显示"采集中"）。与阈值风险是两套独立指标。
     private readonly TrendAnalyzer _trend = new();
@@ -302,6 +305,14 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                     : $"{_latestCapsuleSnapshot.Text}\n{_snapshot.StatusText}";
                 PushCapsulePresentation(_latestCapsuleSnapshot.Text, toolTip);
             }
+        }
+        // 关闭圆点呼吸动效同步：仅 Dot 胶囊受影响,MiniMax 胶囊无内圆点。
+        // 立即关闭已有的呼吸动画(若正在运行),切回开启后下次 Update 在高峰期自然重启。
+        if (_disableDotBreath != s.DisableDotBreath)
+        {
+            _disableDotBreath = s.DisableDotBreath;
+            _regularDotCapsuleView?.SetDotBreathEnabled(!_disableDotBreath);
+            _dockedDotCapsuleView?.SetDotBreathEnabled(!_disableDotBreath);
         }
         var interval = TimeSpan.FromSeconds(
             Math.Max(15, Math.Min(3600, s.PollSeconds)));
@@ -587,6 +598,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         var dotView = new BalanceDotCapsuleView(context);
         // DeepSeek/OpenCode/ZhiPu/MiMo/CodeX 走 BalanceDotCapsuleView,关闭圆环时内圆点也一并隐藏。
         dotView.SetRingVisible(!_disableRing);
+        // 关闭呼吸动效设置首次创建时即时生效,与 _disableRing 同步应用。
+        dotView.SetDotBreathEnabled(!_disableDotBreath);
         dotView.Update(
             _latestCapsuleSnapshot.Text,
             _latestCapsuleSnapshot.RingColorHex,

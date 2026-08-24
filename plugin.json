@@ -40,6 +40,13 @@
       "quick": true
     },
     {
+      "id": "disableDotBreath",
+      "type": "boolean",
+      "name": "关闭圆点呼吸动效",
+      "description": "勾选后 DeepSeek 胶囊在高峰期不再触发圆点呼吸动效；圆点仍按风险档位静态显示橙色。",
+      "default": false
+    },
+    {
       "id": "deepseekApiKey",
       "type": "string",
       "name": "DeepSeek",

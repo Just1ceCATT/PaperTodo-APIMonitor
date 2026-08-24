@@ -52,11 +52,12 @@ internal static class SettingsReader
                 ReadBool(root, "disableRing", false),
                 zhipuKey,
                 mimoKey,
-                codexKey);
+                codexKey,
+                ReadBool(root, "disableDotBreath", false));
         }
         catch
         {
-            // 解析失败时 11 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
+            // 解析失败时 12 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
             return new BalanceSettings(
                 "",      // ApiKey
                 "",      // UsageToken
@@ -68,7 +69,8 @@ internal static class SettingsReader
                 false,   // DisableRing
                 "",      // ZhiPuApiKey
                 "",      // MiMoApiKey
-                "");     // CodeXApiKey
+                "",      // CodeXApiKey
+                false);  // DisableDotBreath
         }
     }
 

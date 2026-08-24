@@ -35,6 +35,10 @@ internal sealed class BalanceDotCapsuleView : Grid
     // 圆环 + 圆点列可见性缓存：防止外部反复调用 SetRingVisible 时重写 Column 宽度。
     private bool _ringColumnVisible = true;
 
+    // 高峰期圆点呼吸动效开关：默认 true；disableDotBreath=true 时改为静态显示,
+    // 即使 isPeakHour=true 也不再触发 Opacity 动画。
+    private bool _dotBreathEnabled = true;
+
     // 呼吸动画只读一份，所有 BalanceDotCapsuleView 实例共享（Freeze 后线程安全）。
     private static readonly DoubleAnimation DotBreathAnimation = CreateBreathAnimation();
 
@@ -133,9 +137,12 @@ internal sealed class BalanceDotCapsuleView : Grid
         _ring.InvalidateVisual();
 
         // 圆点：高峰期强制橙色 + 呼吸；其他时段按 dotColorHex 静态。
+        // 呼吸条件 = isPeakHour && _ringColumnVisible && _dotBreathEnabled。
+        // 关闭圆环时整个圆点列不可见，禁止触发动画（避免不可见时还在跑 Opacity 动画）；
+        // 关闭呼吸动效（disableDotBreath）时即使在高峰期也保持静态。
         var dotColor = isPeakHour ? PeakDotColorHex : dotColorHex;
         _dot.Fill = ToBrush(dotColor, "#9E9E9E");
-        if (isPeakHour && _ringColumnVisible)
+        if (isPeakHour && _ringColumnVisible && _dotBreathEnabled)
         {
             _dot.BeginAnimation(UIElement.OpacityProperty, DotBreathAnimation);
         }
@@ -192,6 +199,22 @@ internal sealed class BalanceDotCapsuleView : Grid
         if (!visible)
         {
             // 关闭后清掉任何残留的呼吸动画,避免不可见时还在跑 Opacity 动画。
+            _dot.BeginAnimation(UIElement.OpacityProperty, null);
+            _dot.Opacity = 1.0;
+        }
+    }
+
+    /// <summary>
+    /// 切换圆点呼吸动效（设置 disableDotBreath 时调用）。
+    /// 关闭后圆点在高峰期不再触发 Opacity 动画，保持静态显示；
+    /// 切回开启后下次 Update 在 isPeakHour=true 时会重新触发动画。
+    /// </summary>
+    public void SetDotBreathEnabled(bool enabled)
+    {
+        _dotBreathEnabled = enabled;
+        if (!enabled)
+        {
+            // 立即清掉可能正在跑的呼吸动画,Opacity 回归 1.0 静态显示。
             _dot.BeginAnimation(UIElement.OpacityProperty, null);
             _dot.Opacity = 1.0;
         }
