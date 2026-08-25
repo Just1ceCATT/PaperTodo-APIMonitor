@@ -268,10 +268,20 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                   _dockedRingCapsuleView != null ||
                   _regularDotCapsuleView != null ||
                   _dockedDotCapsuleView != null;
+        // 路由策略:含打勾的色变 overlay（StopImage / PermissionImage / FailureImage）只在 MiniMax 胶囊上显示,
+        // 避免 DeepSeek（BalanceDotCapsuleView）的圆环外接设计被对勾动画视觉干扰。
+        // 不含打勾的 spinner overlay（PreToolSpinner / PostToolSpinner）仍是信息性提示,在两个胶囊上都显示。
+        bool isColorOverlay = kind is HookOverlayKind.StopImage
+                                   or HookOverlayKind.PermissionImage
+                                   or HookOverlayKind.FailureImage;
         _regularRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
         _dockedRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
-        _regularDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
-        _dockedDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        if (!isColorOverlay)
+        {
+            // spinner 类型:DeepSeek 胶囊也显示。
+            _regularDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+            _dockedDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        }
         // 缓存 overlay 文本,让 PushCapsulePresentation 用它算宽度避免省略
         _activeOverlayText = kind switch
         {

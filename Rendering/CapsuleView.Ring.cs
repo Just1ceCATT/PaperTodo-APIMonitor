@@ -77,11 +77,27 @@ internal sealed class BalanceRingCapsuleView : Grid
     private readonly TextBlock _overlaySpinnerText = new();
     private readonly RotateTransform _overlaySpinnerRotate = new();
     private readonly DoubleAnimation _overlaySpinnerAnim = new();
+    // spinner badge 蓝色背景:冻结后跨帧复用,渲染期不再做线程检查;
+    // 提取为静态字段,允许多实例共用同一 frozen 实例。
+    private static readonly SolidColorBrush SpinnerBadgeBrush = CreateFrozenSpinnerBrush();
+    private static SolidColorBrush CreateFrozenSpinnerBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
+        brush.Freeze();
+        return brush;
+    }
     private DispatcherTimer? _overlayCountdown;
     // Color overlay 缓存原始值,倒计时恢复时用
     private string? _storedLabelText;
     private string? _storedRingColorHex;
     private double _storedRingArc;
+    // Update 节流字段:仅当颜色字符串/弧值真正变化时才覆盖/重绘
+    private string? _lastRingColorHex;
+    private double _lastAppliedArc = -1.0;
+    // 复用 DispatcherTimer 实例:fade-in / countdown timer 不再每次 new,
+    // Tick handler 用实例方法代替 lambda,避免高频 hook 事件下的 GC 分配。
+    private readonly DispatcherTimer _fadeInTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private string? _pendingFadeInText;
 
     private void BuildOverlayLayer()
     {
@@ -98,11 +114,13 @@ internal sealed class BalanceRingCapsuleView : Grid
         _overlaySpinnerAnim.To = 360;
         _overlaySpinnerAnim.Duration = TimeSpan.FromSeconds(1.5);
         _overlaySpinnerAnim.RepeatBehavior = RepeatBehavior.Forever;
-        _overlaySpinnerAnim.EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut };
+        // 线性匀速:原 SineEase EaseInOut + Forever 在每圈两端速度归零,看起来每 1.5s 停顿一帧;
+        // spinner 的视觉惯例是匀速旋转,这里移除缓动。
+        _overlaySpinnerAnim.EasingFunction = null;
         _overlaySpinnerBadge.Width = 14;
         _overlaySpinnerBadge.Height = 14;
         _overlaySpinnerBadge.CornerRadius = new CornerRadius(2);
-        _overlaySpinnerBadge.Background = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
+        _overlaySpinnerBadge.Background = SpinnerBadgeBrush;
         _overlaySpinnerBadge.HorizontalAlignment = HorizontalAlignment.Left;
         _overlaySpinnerBadge.VerticalAlignment = VerticalAlignment.Center;
         _overlaySpinnerBadge.RenderTransform = _overlaySpinnerRotate;
@@ -150,8 +168,8 @@ internal sealed class BalanceRingCapsuleView : Grid
     public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir)
     {
         // 先清掉旧倒计时与动画
-        _overlayCountdown?.Stop();
-        _overlayCountdown = null;
+        StopOverlayCountdown();
+        _fadeInTimer.Stop();
         _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
         _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
         _overlaySpinnerText.Visibility = Visibility.Collapsed;
@@ -165,17 +183,18 @@ internal sealed class BalanceRingCapsuleView : Grid
             return;
         }
 
+        // 颜色方案:参考 HTML 示范用 #68E534(鲜艳绿)。Permission/Failure 仍按现有色系保留风险辨识度。
         if (kind == HookOverlayKind.StopImage)
         {
-            ShowColorOverlay("任务完成", "#4CAF50", 1.0, durationSeconds);
+            ShowColorOverlay("任务完成", "#68E534", durationSeconds);
         }
         else if (kind == HookOverlayKind.PermissionImage)
         {
-            ShowColorOverlay("等待回复", "#FF9800", 1.0, durationSeconds);
+            ShowColorOverlay("等待回复", "#FF9800", durationSeconds);
         }
         else if (kind == HookOverlayKind.FailureImage)
         {
-            ShowColorOverlay("执行异常", "#F44336", 1.0, durationSeconds);
+            ShowColorOverlay("执行异常", "#F44336", durationSeconds);
         }
         else if (kind == HookOverlayKind.PreToolSpinner)
         {
@@ -190,30 +209,47 @@ internal sealed class BalanceRingCapsuleView : Grid
     }
 
     /// <summary>
-    /// 临时修改 _label.Text + _ring 颜色 + arc,显示 hook 状态。
+    /// 临时修改 _label.Text + _ring 颜色,显示 hook 状态。
     /// 倒计时后由 RestoreColorOverlayIfAny 恢复。
+    ///
+    /// 动画时序参考"圆环 ease-in-out 闭合 → 对勾 ease-out 描边 → 文本 ease-in-out 淡入"的 CSS 成功动画节奏:
+    ///   - 圆环闭合 fill: 400ms (BeginCheckmarkAnimation 内置,ease-in-out)
+    ///   - 对勾描边 stroke: BeginTime = 350ms, Duration = 350ms (ease-out)
+    ///   - 文本淡入 fade-in: BeginTime = 500ms, Duration = 350ms (ease-in-out)
+    ///   - 总时长 ~850ms
     /// </summary>
-    private void ShowColorOverlay(string text, string ringColorHex, double arc, int durationSeconds)
+    private void ShowColorOverlay(string text, string ringColorHex, int durationSeconds)
     {
         _storedLabelText = _label.Text;
         _storedRingColorHex = _ring.ForegroundBrush is SolidColorBrush sb ? sb.Color.ToString() : null;
         _storedRingArc = _ring.Value;
-        _label.Text = text;
+        // 字符淡出淡入:先把 _label 隐藏,然后延迟显示文本并触发 fade-in。
+        _label.Text = "";
+        _label.Opacity = 0;
+        // 设置圆环颜色 + 重置对勾状态;BeginCheckmarkAnimation 内部从当前 Value 插值到 1.0(ease-in-out),
+        // 圆环会"生长"到满,不再像之前那样先 Value=1.0 后跳过 fill 动画。
         _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
-        _ring.Value = Math.Clamp(arc, 0, 1);
-        _ring.InvalidateVisual();
+        _ring.ResetCheckmark();
         _label.InvalidateMeasure();
-        // 倒计时恢复余额快照
-        _overlayCountdown = new DispatcherTimer { Interval = TimeSpan.FromSeconds(durationSeconds) };
-        _overlayCountdown.Tick += (_, _) =>
-        {
-            _overlayCountdown?.Stop();
-            _overlayCountdown = null;
-            RestoreColorOverlayIfAny();
-        };
+        // 触发动画:圆环闭合 + 短暂停留 + 对勾描边
+        _ring.BeginCheckmarkAnimation();
+        // 延迟显示新文本(让圆环闭合动画先跑起来),500ms 后显示文字并触发 fade-in。
+        // 复用 _fadeInTimer 实例(handler 用实例方法,避免每次 new lambda 闭包)。
+        _fadeInTimer.Stop();
+        _fadeInTimer.Tick -= OnFadeInTick;
+        _fadeInTimer.Tick += OnFadeInTick;
+        _pendingFadeInText = text;
+        _fadeInTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _fadeInTimer.Start();
+        // 倒计时恢复余额快照:复用 _overlayCountdown,停掉旧 tick handler 后再加新 handler。
+        _overlayCountdown ??= new DispatcherTimer();
+        _overlayCountdown.Stop();
+        _overlayCountdown.Tick -= OnCountdownTick;
+        _overlayCountdown.Tick += OnCountdownTick;
+        _overlayCountdown.Interval = TimeSpan.FromSeconds(durationSeconds);
         _overlayCountdown.Start();
         PaperTodo.Plugin.ApiBalanceMonitor.Services.HookTrace.Write(
-            $"ShowColorOverlay AFTER text='{_label.Text}'");
+            $"ShowColorOverlay AFTER text='{text}' ring={ringColorHex}");
     }
 
     /// <summary>恢复暂存的 _label.Text / _ring 颜色 / arc;若未暂存则不动。</summary>
@@ -228,9 +264,10 @@ internal sealed class BalanceRingCapsuleView : Grid
         {
             _ring.ForegroundBrush = ToBrush(_storedRingColorHex, "#9E9E9E");
             _ring.Value = _storedRingArc;
-            _ring.InvalidateVisual();
             _storedRingColorHex = null;
         }
+        // 重置对勾动画:隐藏 + 停止正在跑的 StrokeDashOffset 动画
+        _ring.ResetCheckmark();
     }
 
     private void ShowSpinnerOverlay(string text)
@@ -246,8 +283,8 @@ internal sealed class BalanceRingCapsuleView : Grid
     /// <summary>外部在 Update() 时清掉 spinner overlay(spinner 是"持续型")。</summary>
     public void HideHookOverlay()
     {
-        _overlayCountdown?.Stop();
-        _overlayCountdown = null;
+        StopOverlayCountdown();
+        _fadeInTimer.Stop();
         _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
         _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
         _overlaySpinnerText.Visibility = Visibility.Collapsed;
@@ -257,15 +294,28 @@ internal sealed class BalanceRingCapsuleView : Grid
 
     /// <summary>
     /// MiniMax 胶囊刷新：文本 + 圆环弧值 / 颜色（圆环颜色由风险档位 / 剩余百分比决定）。
-    /// text 真正变化时触发 350ms 淡入（避免每次 polling tick 都闪）。
+    /// text 真正变化时触发 350ms 淡入（避免每次 polling tick 都闪）；
+    /// 圆环值/颜色未变时不再 InvalidateVisual（避免空挥）。
     /// </summary>
     public void Update(string text, string ringColorHex, double ringArc)
     {
         var textChanged = _label.Text != text;
         _label.Text = text;
-        _ring.Value = Math.Clamp(ringArc, 0, 1);
-        _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
-        _ring.InvalidateVisual();
+        var clampedArc = Math.Clamp(ringArc, 0, 1);
+        _ring.Value = clampedArc;
+        // 颜色变化才覆盖前景 brush:同一 string 多次 ToBrush 颜色相同但实例不同，
+        // ToBrush 已 Freeze，引用变化时仍触发圆环重渲染，这里仅当真正改变时覆盖。
+        if (!string.Equals(_lastRingColorHex, ringColorHex, StringComparison.OrdinalIgnoreCase))
+        {
+            _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
+            _lastRingColorHex = ringColorHex;
+        }
+        // ring 值变更超过 1‰ 时才显式 InvalidateVisual；否则由缓存机制避免重复渲染。
+        if (Math.Abs(clampedArc - _lastAppliedArc) > 0.001)
+        {
+            _ring.InvalidateVisual();
+            _lastAppliedArc = clampedArc;
+        }
         // 余额快照推送时清掉 spinner overlay（spinner 持续到下一次 Update）;
         // PNG overlay 已经有自己的倒计时,自然结束。
         if (_overlayLayer.Visibility == Visibility.Visible &&
@@ -281,8 +331,9 @@ internal sealed class BalanceRingCapsuleView : Grid
     }
 
     /// <summary>
-    /// 文字淡入：Opacity 0 → 1, 350ms CubicEase EaseOut。
+    /// 文字淡入:Opacity 0 → 1, 350ms CubicEase EaseOut。
     /// 只动 _label.Opacity，不影响呼吸动效与 disableRing 的列宽。
+    /// 用于常规 Update 的 textChanged 路径（轻量、快速反馈）。
     /// </summary>
     private void BeginLabelFadeIn()
     {
@@ -295,6 +346,51 @@ internal sealed class BalanceRingCapsuleView : Grid
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
         _label.BeginAnimation(UIElement.OpacityProperty, anim);
+    }
+
+    /// <summary>
+    /// 文字淡入(慢速):Opacity 0 → 1, 350ms CubicEase EaseInOut。
+    /// 用于 hook overlay 路径,匹配 HTML CSS "Payment Success" ease-in-out 节奏,感官更顺滑。
+    /// </summary>
+    private void BeginLabelFadeInSlow()
+    {
+        _label.Opacity = 0;
+        var anim = new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = TimeSpan.FromMilliseconds(350),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        };
+        _label.BeginAnimation(UIElement.OpacityProperty, anim);
+    }
+
+    /// <summary>_fadeInTimer Tick 实例方法:替换原 lambda,避免每次 ShowColorOverlay 都分配闭包。</summary>
+    private void OnFadeInTick(object? sender, EventArgs e)
+    {
+        _fadeInTimer.Stop();
+        if (_pendingFadeInText != null)
+        {
+            _label.Text = _pendingFadeInText;
+            _pendingFadeInText = null;
+        }
+        // 慢速淡入:ease-in-out,350ms,匹配 HTML CSS "Payment Success" 标题 0.6s ease-in-out 的节奏。
+        BeginLabelFadeInSlow();
+    }
+
+    /// <summary>_overlayCountdown Tick 实例方法:替换原 lambda。</summary>
+    private void OnCountdownTick(object? sender, EventArgs e)
+    {
+        StopOverlayCountdown();
+        RestoreColorOverlayIfAny();
+    }
+
+    /// <summary>统一的倒计时停止动作:Stop + 解除 handler 订阅,保留实例供下次复用。</summary>
+    private void StopOverlayCountdown()
+    {
+        if (_overlayCountdown == null) return;
+        _overlayCountdown.Stop();
+        _overlayCountdown.Tick -= OnCountdownTick;
     }
 
     /// <summary>
