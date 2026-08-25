@@ -27,4 +27,10 @@ internal sealed record BalanceSettings(
     string KimiApiKey,
     string ZhiPuRegion,
     string ZhiPuPlanType,
-    int HooksPort);
+    int HooksPort,
+    bool NotifyOnStop,
+    bool NotifyOnPreToolUse,
+    bool NotifyOnPostToolUse,
+    bool NotifyOnPermissionRequest,
+    bool NotifyOnPostToolUseFailure,
+    int HookOverlayDurationSeconds);

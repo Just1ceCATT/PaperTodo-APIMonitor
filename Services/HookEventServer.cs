@@ -2,6 +2,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using PaperTodo.Plugin.ApiBalanceMonitor.Models;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Services;
 
@@ -174,7 +175,8 @@ internal sealed class HookEventServer : IDisposable
                 EventName: eventName,
                 ToolName: toolName,
                 Summary: summary,
-                ReceivedAt: DateTime.Now);
+                ReceivedAt: DateTime.Now,
+                Overlay: MapOverlay(eventName));
         }
         catch
         {
@@ -196,6 +198,20 @@ internal sealed class HookEventServer : IDisposable
             ("SessionEnd", _) => "Claude: 会话结束",
             _ => $"Claude: {eventName}"
         };
+
+    /// <summary>
+    /// 把 Claude Code event 名映射到胶囊 overlay 类型。
+    /// 决定渲染策略：3 个事件用 PNG 临时覆盖（带倒计时），2 个事件用旋转沙漏（持续到下次 Update）。
+    /// </summary>
+    private static HookOverlayKind MapOverlay(string eventName) => eventName switch
+    {
+        "Stop" => HookOverlayKind.StopImage,
+        "PermissionRequest" => HookOverlayKind.PermissionImage,
+        "PostToolUseFailure" => HookOverlayKind.FailureImage,
+        "PreToolUse" => HookOverlayKind.PreToolSpinner,
+        "PostToolUse" => HookOverlayKind.PostToolSpinner,
+        _ => HookOverlayKind.None
+    };
 
     private static void WriteJson(HttpListenerContext ctx, int status, object body)
     {
@@ -228,4 +244,5 @@ internal sealed record HookEventPayload(
     string EventName,
     string? ToolName,
     string Summary,
-    DateTime ReceivedAt);
+    DateTime ReceivedAt,
+    HookOverlayKind Overlay);

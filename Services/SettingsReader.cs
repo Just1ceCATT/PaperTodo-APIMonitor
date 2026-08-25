@@ -59,11 +59,17 @@ internal static class SettingsReader
                 ReadString(root, "kimiApiKey", ""),
                 NormalizeZhiPuRegion(ReadString(root, "zhipuRegion", "global")),
                 NormalizeZhiPuPlanType(ReadString(root, "zhipuPlanType", "personal")),
-                NormalizeHooksPort(ReadInt(root, "hooksPort", 17890)));
+                NormalizeHooksPort(ReadInt(root, "hooksPort", 17890)),
+                ReadBool(root, "notifyOnStop", true),
+                ReadBool(root, "notifyOnPreToolUse", true),
+                ReadBool(root, "notifyOnPostToolUse", true),
+                ReadBool(root, "notifyOnPermissionRequest", true),
+                ReadBool(root, "notifyOnPostToolUseFailure", true),
+                NormalizeOverlaySeconds(ReadInt(root, "hookOverlayDurationSeconds", 3)));
         }
         catch
         {
-            // 解析失败时 16 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
+            // 解析失败时 22 个字段全部回退到默认值,保证 BalanceSettings 字段顺序与 record 一致。
             return new BalanceSettings(
                 "",         // ApiKey
                 "",         // UsageToken
@@ -80,9 +86,19 @@ internal static class SettingsReader
                 "",         // KimiApiKey
                 "global",   // ZhiPuRegion
                 "personal", // ZhiPuPlanType
-                17890);     // HooksPort
+                17890,      // HooksPort
+                true,       // NotifyOnStop
+                true,       // NotifyOnPreToolUse
+                true,       // NotifyOnPostToolUse
+                true,       // NotifyOnPermissionRequest
+                true,       // NotifyOnPostToolUseFailure
+                3);         // HookOverlayDurationSeconds
         }
     }
+
+    /// <summary>HookOverlayDurationSeconds 合法值兜底：范围 [1, 30]，非法或缺失一律 3。</summary>
+    private static int NormalizeOverlaySeconds(int raw) =>
+        raw is >= 1 and <= 30 ? raw : 3;
 
     /// <summary>HooksPort 合法值兜底：合法范围 [1024, 65535]，非法或缺失一律 17890。</summary>
     private static int NormalizeHooksPort(int raw) =>

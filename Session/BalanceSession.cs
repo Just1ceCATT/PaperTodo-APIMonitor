@@ -109,6 +109,16 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private HookEvent _latestHookEvent = HookEvent.Empty;
     private readonly Queue<HookEvent> _hookEventWindow = new();
     private const int HookEventWindowCapacity = 5;
+    // hook overlay 待应用缓存：OnHookReceived 时如果 capsule view 还未创建（lazy 缓存），
+    // 暂存 overlay kind + 触发时刻。CreateCapsuleView 创建 view 后立即应用。
+    private HookOverlayKind _pendingOverlayKind = HookOverlayKind.None;
+    private DateTime _pendingOverlayAt;
+    private int _pendingOverlayDuration;
+    // 当前激活的 overlay text：用于 SetCapsulePresentation 重推让 host 用 overlay 文本算宽度（避免省略）。
+    private string? _activeOverlayText;
+    // Color overlay 倒计时：到时清掉 _activeOverlayText 并 RepushCapsulePresentation 恢复余额显示。
+    // 由 BalanceSession 统一管理，避免 view 内部 timer 与 host 宽度计算脱节。
+    private DispatcherTimer? _activeOverlayTimer;
     private HookEventServer? _hookServer;
 
     // WebView2 监视面板
@@ -158,6 +168,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             _peakCheckTimer.Start();
         }
+
         // WebView2 延迟到首次布局后初始化，避免阻塞宿主启动。
 
         // 启动 Claude Code hook HTTP 服务器：监听 127.0.0.1，loopback 不暴露外部网络。
@@ -191,11 +202,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             dispatcher.BeginInvoke(() => OnHookReceived(payload));
             return;
         }
+        // 按 settings 过滤：未启用的 hook 事件直接丢弃，不写缓存、不推面板。
+        if (!IsHookEnabled(payload.EventName))
+        {
+            return;
+        }
         var hook = new HookEvent(
             EventName: payload.EventName,
             ToolName: payload.ToolName,
             Summary: payload.Summary,
-            ReceivedAt: payload.ReceivedAt);
+            ReceivedAt: payload.ReceivedAt,
+            Overlay: payload.Overlay);
         _latestHookEvent = hook;
         if (_hookEventWindow.Count >= HookEventWindowCapacity)
         {
@@ -204,14 +221,215 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _hookEventWindow.Enqueue(hook);
         // 推 Web 面板：payload 自动包含最近 5 条 hook 事件（ViewPayloadBuilder 会读）。
         _panel.PostSnapshot(_payloadBuilder.Build());
-        // 推胶囊：只动 ToolTip，不动 text/round/riskRatio。
-        // _latestCapsuleSnapshot 已是余额快照；ToolTip 在此处拼接 hook 第二行。
-        if (_latestCapsuleSnapshot is not null)
+        Services.HookTrace.Write($"post-snapshot event={payload.EventName} kind={payload.Overlay} regularRing={_regularRingCapsuleView != null} regularDot={_regularDotCapsuleView != null}");
+        // 胶囊 overlay：ApplyHookOverlayToCapsules 内部已 RepushCapsulePresentation 用 overlay 文本
+        // 推 host,避免胶囊按余额文本宽度省略。
+        try
         {
-            var toolTip = BuildCapsuleToolTipWithHook(_latestCapsuleSnapshot.Text);
-            PushCapsulePresentation(_latestCapsuleSnapshot.Text, toolTip);
+            ApplyHookOverlayToCapsules(payload.Overlay);
+            Services.HookTrace.Write($"overlay-applied activeText={_activeOverlayText ?? "null"} pendingKind={_pendingOverlayKind}");
+        }
+        catch (Exception ex)
+        {
+            Services.HookTrace.Write($"ApplyHookOverlayToCapsules THREW: {ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// 把 overlay 推给当前两个缓存的胶囊视图（Regular + Docked）。
+    /// Ring view (MiniMax/ZhiPu/Kimi) + Dot view (DeepSeek/OpenCode/MiMo/CodeX) 都接收。
+    /// 必须 marshal 到 view 所在 dispatcher,否则 WPF 跨线程访问会抛 InvalidOperationException。
+    /// </summary>
+    private void ApplyHookOverlayToCapsules(HookOverlayKind kind)
+    {
+        // view 所在 dispatcher（view 由 host 在自己的 dispatcher 上创建）
+        var targetDispatcher = _regularRingCapsuleView?.Dispatcher
+                            ?? _dockedRingCapsuleView?.Dispatcher
+                            ?? _regularDotCapsuleView?.Dispatcher
+                            ?? _dockedDotCapsuleView?.Dispatcher;
+        if (targetDispatcher != null && !targetDispatcher.CheckAccess())
+        {
+            // 后台线程 → view 线程
+            targetDispatcher.BeginInvoke(() => ApplyHookOverlayToCapsules(kind));
+            return;
+        }
+
+        if (kind == HookOverlayKind.None)
+        {
+            _pendingOverlayKind = HookOverlayKind.None;
+            _activeOverlayText = null;
+            return;
+        }
+        // PaperBodyContext 不暴露插件目录,用当前 dll 路径向上取父目录。
+        var pluginDir = System.IO.Path.GetDirectoryName(
+            System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+        var seconds = _settings.HookOverlayDurationSeconds;
+        var any = _regularRingCapsuleView != null ||
+                  _dockedRingCapsuleView != null ||
+                  _regularDotCapsuleView != null ||
+                  _dockedDotCapsuleView != null;
+        _regularRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        _dockedRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        _regularDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        _dockedDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        // 缓存 overlay 文本,让 PushCapsulePresentation 用它算宽度避免省略
+        _activeOverlayText = kind switch
+        {
+            HookOverlayKind.StopImage => "✓ 任务完成",
+            HookOverlayKind.PermissionImage => "等待回复",
+            HookOverlayKind.FailureImage => "✗ 执行异常",
+            HookOverlayKind.PreToolSpinner => "准备调用工具",
+            HookOverlayKind.PostToolSpinner => "文件编辑完成",
+            _ => null
+        };
+        if (!any)
+        {
+            _pendingOverlayKind = kind;
+            _pendingOverlayAt = DateTime.UtcNow;
+            _pendingOverlayDuration = seconds;
+        }
+        else
+        {
+            _pendingOverlayKind = HookOverlayKind.None;
+            // 重推 SetCapsulePresentation,让 host 用 overlay 文本算宽度
+            RepushCapsulePresentation();
+        }
+        // Color overlay：启动统一倒计时,到时清掉 _activeOverlayText 并 RepushCapsulePresentation
+        // 恢复余额显示。Spinner 类型不倒计时（持续到下次 Update）。
+        if (kind is HookOverlayKind.StopImage or
+            HookOverlayKind.PermissionImage or
+            HookOverlayKind.FailureImage)
+        {
+            _activeOverlayTimer?.Stop();
+            _activeOverlayTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(seconds)
+            };
+            _activeOverlayTimer.Tick += (_, _) =>
+            {
+                _activeOverlayTimer?.Stop();
+                _activeOverlayTimer = null;
+                _activeOverlayText = null;
+                RepushCapsulePresentation();
+            };
+            _activeOverlayTimer.Start();
+        }
+        else
+        {
+            // Spinner overlay：清掉旧 timer,不启动新 timer,等下次 Update 清掉 overlay
+            _activeOverlayTimer?.Stop();
+            _activeOverlayTimer = null;
+        }
+    }
+
+    /// <summary>
+    /// 用 _activeOverlayText 或回退到 _latestCapsuleSnapshot.Text 推 SetCapsulePresentation。
+    /// hook overlay 期间：用原余额文本宽度 + PlainText=overlay 文本,避免 host 重建 customView。
+    /// host 在 PreferredWidth 变化 > 0.001 时会清缓存重建 view,插件缓存的 _regularRingCapsuleView
+    /// 会被丢弃,导致后续 SetHookOverlay 操作失效。
+    /// </summary>
+    private void RepushCapsulePresentation()
+    {
+        if (_latestCapsuleSnapshot is null) return;
+        var text = _activeOverlayText ?? _latestCapsuleSnapshot.Text;
+        var status = string.IsNullOrEmpty(_snapshot?.StatusText) ? null : _snapshot.StatusText;
+        var toolTip = string.IsNullOrEmpty(status) ? text : $"{text}\n{status}";
+        if (_activeOverlayText != null && _latestHookEvent.EventName.Length > 0)
+        {
+            toolTip = $"{toolTip}\n{_latestHookEvent.Summary}";
+        }
+        Services.HookTrace.Write($"RepushCapsulePresentation text='{text}' active={_activeOverlayText ?? "null"}");
+        if (_activeOverlayText != null)
+        {
+            // 冻结宽度：原余额文本宽度,只换 PlainText。view 内部 _label.Text 已改成 overlay 文本,
+            // host 用 PlainText 测宽度(对应原宽度),view 内部画短文本。
+            PushCapsulePresentationRaw(text, toolTip, _latestCapsulePreferredWidth);
+        }
+        else
+        {
+            PushCapsulePresentation(text, toolTip);
+        }
+    }
+
+    // 缓存原余额快照的 PreferredWidth,hook overlay 期间冻结,避免 host 重建 view。
+    private double _latestCapsulePreferredWidth;
+
+    /// <summary>推 SetCapsulePresentation 但指定具体 PreferredWidth（不等 textWidth 重算）。</summary>
+    private void PushCapsulePresentationRaw(string text, string toolTip, double preferredWidth)
+    {
+        _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
+        {
+            PreferredWidth = preferredWidth,
+            PlainText = text,
+            ToolTip = toolTip,
+            Components = new[]
+            {
+                new PaperCapsuleComponent
+                {
+                    Kind = PaperCapsuleComponentKind.Text,
+                    Text = text,
+                    Fill = true
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// 当 capsule view 刚被创建时,补发未应用的 hook overlay。
+    /// Spinner overlay 总是补发(Color 已过期则不发)。
+    /// </summary>
+    private void ApplyPendingOverlayToView(FrameworkElement view)
+    {
+        if (_pendingOverlayKind == HookOverlayKind.None) return;
+        // Spinner 持续型:无论何时 view 创建后都立即应用
+        if (_pendingOverlayKind is HookOverlayKind.PreToolSpinner or HookOverlayKind.PostToolSpinner)
+        {
+            var pluginDir = System.IO.Path.GetDirectoryName(
+                System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+            switch (view)
+            {
+                case BalanceRingCapsuleView r:
+                    r.SetHookOverlay(_pendingOverlayKind, 0, pluginDir);
+                    break;
+                case BalanceDotCapsuleView d:
+                    d.SetHookOverlay(_pendingOverlayKind, 0, pluginDir);
+                    break;
+            }
+            return;
+        }
+        // Color overlay:检查是否在 durationSeconds 窗口内
+        var elapsed = DateTime.UtcNow - _pendingOverlayAt;
+        if (elapsed.TotalSeconds > _pendingOverlayDuration) return;
+        var remaining = _pendingOverlayDuration - (int)elapsed.TotalSeconds;
+        if (remaining < 1) remaining = 1;
+        var dir = System.IO.Path.GetDirectoryName(
+            System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+        switch (view)
+        {
+            case BalanceRingCapsuleView r:
+                r.SetHookOverlay(_pendingOverlayKind, remaining, dir);
+                break;
+            case BalanceDotCapsuleView d:
+                d.SetHookOverlay(_pendingOverlayKind, remaining, dir);
+                break;
+        }
+        // 仅补发一次,避免重复触发倒计时
+        _pendingOverlayKind = HookOverlayKind.None;
+    }
+
+    /// <summary>
+    /// 根据 eventName 判断是否启用：映射到 settings 的 5 个 NotifyOn* 字段。
+    /// 未知事件默认放行（向前兼容未来新增事件类型）。
+    /// </summary>
+    private bool IsHookEnabled(string eventName) => eventName switch
+    {
+        "Stop" => _settings.NotifyOnStop,
+        "PreToolUse" => _settings.NotifyOnPreToolUse,
+        "PostToolUse" => _settings.NotifyOnPostToolUse,
+        "PermissionRequest" => _settings.NotifyOnPermissionRequest,
+        "PostToolUseFailure" => _settings.NotifyOnPostToolUseFailure,
+        _ => true
+    };
 
     /// <summary>拼胶囊 ToolTip：余额第一行 + 最近 hook 第二行（如果存在）。</summary>
     private string BuildCapsuleToolTipWithHook(string balanceText)
@@ -343,6 +561,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     public void OnPresentationChanged(bool expanded) { }
     public void OnThemeChanged(PaperBodyTheme theme)
     {
+        // 字体/字号变化时,_label 已用新字体渲染,但 host 的 PreferredWidth 还是旧字体测的;
+        // 必须重推让 host 用新字体重新算宽度,否则会出现"67% · 0时10..."截断。
+        var fontChanged = !string.Equals(_theme.FontFamily, theme.FontFamily, StringComparison.Ordinal)
+                          || Math.Abs(_theme.FontScale - theme.FontScale) > 1e-6;
         _theme = theme;
         // 主题切换：同时更新两种胶囊缓存（provider 可能切换过），由胶囊内部 ApplyTheme
         // 各自处理 Brush 重建。
@@ -352,10 +574,23 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _dockedDotCapsuleView?.ApplyTheme(theme);
         _miniView?.ApplyTheme(theme);
         _panel.PostSnapshot(_payloadBuilder.Build());
+        if (fontChanged && _latestCapsuleSnapshot is not null)
+        {
+            // 修复 A：字体变化必须重推 host,让 PreferredWidth 用新字体宽度。
+            RepushCapsulePresentation();
+        }
     }
 
     public void OnTypographyChanged(PaperBodyTheme theme) => OnThemeChanged(theme);
-    public void OnDpiChanged() { }
+    public void OnDpiChanged()
+    {
+        // 修复 E：DPI 切换让 logicalDIP / physicalPixel 比例改变,旧 PreferredWidth
+        // 与新 DPI 不匹配,重推让 host 按新 DPI 重新布局。
+        if (_latestCapsuleSnapshot is not null)
+        {
+            RepushCapsulePresentation();
+        }
+    }
 
     public void OnSettingsChanged(string settingsJson)
     {
@@ -548,16 +783,25 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     // ---------------- 快照 & 胶囊渲染 ----------------
 
     /// <summary>
-/// 按主题字体精确测量文本宽度（DIP），与 customView 中 TextBlock 同源以避免亚像素舍入差异。
-/// 失败回退为每个字符 7 DIP 的线性估算。
-/// </summary>
+    /// 按主题字体精确测量文本宽度（DIP），与 customView 中 TextBlock 同源以避免亚像素舍入差异。
+    /// 失败回退为每个字符 7 DIP 的线性估算。
+    /// FontFamily 用字段缓存避免每次 new FontFamily(string) 走字体回退链（首次解析可达 100ms 级）,
+    /// 与 view 内 _cachedFontFamily 模式对齐。
+    /// </summary>
+    private FontFamily? _cachedMeasureFontFamily;
+    private string? _cachedMeasureFontFamilySource;
     private double MeasureTextWidth(string text)
     {
         try
         {
+            if (_cachedMeasureFontFamilySource != _theme.FontFamily || _cachedMeasureFontFamily == null)
+            {
+                _cachedMeasureFontFamily = new FontFamily(_theme.FontFamily);
+                _cachedMeasureFontFamilySource = _theme.FontFamily;
+            }
             var probe = new TextBlock
             {
-                FontFamily = new FontFamily(_theme.FontFamily),
+                FontFamily = _cachedMeasureFontFamily,
                 FontSize = 12.0 * Math.Clamp(_theme.FontScale, 0.85, 1.2),
                 FontWeight = FontWeights.Normal,
                 Text = text
@@ -611,24 +855,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             // 隐式时序契约,CreateCapsuleView 直接从这里读取。
             _latestCapsuleSnapshot = capsule;
 
-            // 1) 原地更新两个已缓存的 1.7 自定义视图（Regular / Docked）。
-            //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
-            //    按 provider 分发到不同的胶囊类 —— 配额型 (MiniMax/ZhiPu/Kimi) 共用 Ring，
-            //    其他 (DeepSeek/OpenCode/MiMo/CodeX) 共用 Dot。两种胶囊互不继承。
-            if (isQuotaProvider)
-            {
-                _regularRingCapsuleView?.Update(text, ringColor, ringArc);
-                _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
-            }
-            else
-            {
-                _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
-                _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
-            }
-
+            // 修复 C：先推 host 宽度（让下一帧 layout 拿到正确 PreferredWidth）,
+            // 再原地刷新 view 文本。颠倒顺序会导致一帧内"新宽文本 + 旧 PreferredWidth"
+            // 触发 CharacterEllipsis 闪烁。
             // 2) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
             //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
-            //    PreferredWidth = 固定列宽 + textWidth + 0.1 余量。
+            //    PreferredWidth = 固定列宽 + textWidth + 3 DIP 余量（修复 B）。
             //    Grid 列布局 [6 pad][18 ring][5 gap][* text][4 right pad]；
             //    关闭圆环后 ring/gap 两列折叠为 0，固定列只剩 [6 pad][* text][4 right pad]。
             //    textWidth 用 MeasureTextWidth(主题字体 TextBlock.Measure + DesiredSize.Width)
@@ -638,6 +870,40 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
             //    PlainText 用于跨队列拖动的纯文字回退。
             PushCapsulePresentation(text, toolTip);
+
+            // 1) 原地更新两个已缓存的 1.7 自定义视图（Regular + Docked）。
+            //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
+            //    按 provider 分发到不同的胶囊类 —— 配额型 (MiniMax/ZhiPu/Kimi) 共用 Ring，
+            //    其他 (DeepSeek/OpenCode/MiMo/CodeX) 共用 Dot。两种胶囊互不继承。
+            //    hook overlay 期间跳过 view.Update,避免覆盖 SetHookOverlay 设的临时状态;
+            //    RepushCapsulePresentation 已用 overlay 文本推 host,胶囊宽度正确。
+            //    Spinner 类型由 Update 触发 HideHookOverlay 恢复余额显示。
+            if (_activeOverlayText is null)
+            {
+                if (isQuotaProvider)
+                {
+                    _regularRingCapsuleView?.Update(text, ringColor, ringArc);
+                    _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
+                }
+                else
+                {
+                    _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                    _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                }
+            }
+            else if (!isQuotaProvider &&
+                     (_activeOverlayText == "准备调用工具" || _activeOverlayText == "文件编辑完成"))
+            {
+                // Spinner overlay 持续到下次 Update:余额更新时清掉 overlay 状态
+                _regularDotCapsuleView?.HideHookOverlay();
+                _dockedDotCapsuleView?.HideHookOverlay();
+                _activeOverlayTimer?.Stop();
+                _activeOverlayTimer = null;
+                _activeOverlayText = null;
+                _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+            }
+            // Color overlay 期间 view 状态保留,由倒计时到时统一恢复。
         }
 
         // 1.8 边缘预览视图刷新：依赖 _minimaxModelRemains / _minimaxRemainingPercent，
@@ -663,6 +929,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// PreferredWidth 根据 _disableRing 动态计算：开启圆环 33 + textWidth，关闭后只剩 10 + textWidth。
     /// ApplySettings 切换 disableRing 后也会立即重推，确保胶囊宽度立即缩短 23 DIP，
     /// 而不是文字左移占据原圆环位置。
+    ///
+    /// 修复 B：余量 0.1 → 3 DIP,覆盖 glyph overhang / DPI 舍入 / 字体回退抖动,杜绝 CharacterEllipsis 截断。
     /// </summary>
     private void PushCapsulePresentation(string text, string toolTip)
     {
@@ -670,7 +938,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         var fixedColumns = _disableRing
             ? CapsuleLeftPadWidth + CapsuleRightPadWidth
             : CapsuleLeftPadWidth + CapsuleRingColumnWidth + CapsuleGapColumnWidth + CapsuleRightPadWidth;
-        var preferredWidth = fixedColumns + textWidth + 0.1;
+        // 3 DIP 余量：覆盖字体 glyph overhang（CJK 右 bearing 1-1.5 DIP）+ DPI 舍入 + 字体回退抖动。
+        // 0.1 在 125%+ DPI 下基本归零,实测 3 DIP 是当前最稳的下界。
+        var preferredWidth = fixedColumns + textWidth + 3.0;
+        _latestCapsulePreferredWidth = preferredWidth;
         _context.Paper.SetCapsulePresentation(new PaperCapsulePresentation
         {
             PreferredWidth = preferredWidth,
@@ -712,6 +983,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             {
                 _regularRingCapsuleView = ringView;
             }
+            ApplyPendingOverlayToView(ringView);
             return ringView;
         }
 
@@ -734,6 +1006,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             _regularDotCapsuleView = dotView;
         }
+        ApplyPendingOverlayToView(dotView);
         return dotView;
     }
 

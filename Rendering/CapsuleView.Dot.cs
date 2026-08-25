@@ -3,6 +3,8 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
+using System.Windows.Threading;
+using PaperTodo.Plugin.ApiBalanceMonitor.Models;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
@@ -95,7 +97,178 @@ internal sealed class BalanceDotCapsuleView : Grid
         Grid.SetColumn(_label, 3);
         Children.Add(_label);
 
+        // Overlay 层：跨 5 列覆盖在 ring+dot+label 上,hook 触发时显示。
+        BuildOverlayLayer();
+
         ApplyTheme(context.Theme);
+    }
+
+    // ----- Overlay 渲染（hook 触发时临时覆盖胶囊） -----
+    private readonly Grid _overlayLayer = new();
+    private readonly Border _overlaySpinnerBadge = new();
+    private readonly TextBlock _overlaySpinnerText = new();
+    private readonly RotateTransform _overlaySpinnerRotate = new();
+    private readonly DoubleAnimation _overlaySpinnerAnim = new();
+    private DispatcherTimer? _overlayCountdown;
+    // Color overlay 缓存原始值,倒计时恢复时用
+    private string? _storedLabelText;
+    private string? _storedDotFillHex;
+
+    private void BuildOverlayLayer()
+    {
+        _overlayLayer.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _overlayLayer.VerticalAlignment = VerticalAlignment.Stretch;
+        _overlayLayer.IsHitTestVisible = false;
+        _overlayLayer.Background = Brushes.Transparent;
+        _overlayLayer.Visibility = Visibility.Collapsed;
+        Grid.SetColumnSpan(_overlayLayer, 5);
+        Children.Add(_overlayLayer);
+
+        _overlaySpinnerRotate.Angle = 0;
+        _overlaySpinnerAnim.From = 0;
+        _overlaySpinnerAnim.To = 360;
+        _overlaySpinnerAnim.Duration = TimeSpan.FromSeconds(1.5);
+        _overlaySpinnerAnim.RepeatBehavior = RepeatBehavior.Forever;
+        _overlaySpinnerAnim.EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut };
+        _overlaySpinnerBadge.Width = 14;
+        _overlaySpinnerBadge.Height = 14;
+        _overlaySpinnerBadge.CornerRadius = new CornerRadius(2);
+        _overlaySpinnerBadge.Background = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
+        _overlaySpinnerBadge.HorizontalAlignment = HorizontalAlignment.Left;
+        _overlaySpinnerBadge.VerticalAlignment = VerticalAlignment.Center;
+        _overlaySpinnerBadge.RenderTransform = _overlaySpinnerRotate;
+        _overlaySpinnerBadge.RenderTransformOrigin = new Point(0.5, 0.5);
+        _overlaySpinnerBadge.Child = BuildHourglassGlyph();
+        _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
+
+        _overlaySpinnerText.Margin = new Thickness(20, 0, 0, 0);
+        _overlaySpinnerText.VerticalAlignment = VerticalAlignment.Center;
+        _overlaySpinnerText.FontSize = 12.0;
+        _overlaySpinnerText.FontWeight = FontWeights.Medium;
+        _overlaySpinnerText.Foreground = ToBrush("#2196F3", "#707070");
+        _overlaySpinnerText.Visibility = Visibility.Collapsed;
+
+        var spinnerRow = new Grid();
+        spinnerRow.Children.Add(_overlaySpinnerBadge);
+        spinnerRow.Children.Add(_overlaySpinnerText);
+        _overlayLayer.Children.Add(spinnerRow);
+    }
+
+    /// <summary>蓝色沙漏图形：上三角 + 下三角。</summary>
+    private static FrameworkElement BuildHourglassGlyph()
+    {
+        var canvas = new Canvas { Width = 14, Height = 14, Background = Brushes.Transparent };
+        var top = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse("M 2,1 L 12,1 L 7,7 Z"),
+            Fill = Brushes.White
+        };
+        var bottom = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse("M 7,7 L 12,13 L 2,13 Z"),
+            Fill = Brushes.White
+        };
+        canvas.Children.Add(top);
+        canvas.Children.Add(bottom);
+        return canvas;
+    }
+
+    /// <summary>
+    /// 设置 hook overlay：用 WPF 原生 ring+text 实现 PNG 描述的效果。
+    /// - Color overlay (Stop/Permission/Failure):改 _label.Text + _dot.Fill,带倒计时恢复
+    /// - Spinner overlay (PreTool/PostTool):蓝色沙漏 + 文本,持续到下次 Update
+    /// </summary>
+    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir)
+    {
+        _overlayCountdown?.Stop();
+        _overlayCountdown = null;
+        _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+        _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
+        _overlaySpinnerText.Visibility = Visibility.Collapsed;
+        RestoreColorOverlayIfAny();
+
+        if (kind == HookOverlayKind.None)
+        {
+            _overlayLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (kind == HookOverlayKind.StopImage)
+        {
+            ShowColorOverlay("任务完成", "#4CAF50", durationSeconds);
+        }
+        else if (kind == HookOverlayKind.PermissionImage)
+        {
+            ShowColorOverlay("等待回复", "#FF9800", durationSeconds);
+        }
+        else if (kind == HookOverlayKind.FailureImage)
+        {
+            ShowColorOverlay("执行异常", "#F44336", durationSeconds);
+        }
+        else if (kind == HookOverlayKind.PreToolSpinner)
+        {
+            ShowSpinnerOverlay("准备调用工具");
+        }
+        else if (kind == HookOverlayKind.PostToolSpinner)
+        {
+            ShowSpinnerOverlay("文件编辑完成");
+        }
+    }
+
+    /// <summary>
+    /// Color overlay（PNG 描述的固定状态）：改 _label.Text + _dot.Fill。
+    /// 倒计时后由 RestoreColorOverlayIfAny 恢复。
+    /// </summary>
+    private void ShowColorOverlay(string text, string dotColorHex, int durationSeconds)
+    {
+        _storedLabelText = _label.Text;
+        _storedDotFillHex = _dot.Fill is SolidColorBrush sb ? sb.Color.ToString() : null;
+        _label.Text = text;
+        _dot.Fill = ToBrush(dotColorHex, "#9E9E9E");
+        _overlayCountdown = new DispatcherTimer { Interval = TimeSpan.FromSeconds(durationSeconds) };
+        _overlayCountdown.Tick += (_, _) =>
+        {
+            _overlayCountdown?.Stop();
+            _overlayCountdown = null;
+            RestoreColorOverlayIfAny();
+        };
+        _overlayCountdown.Start();
+    }
+
+    /// <summary>恢复暂存的 _label.Text / _dot.Fill；未暂存则不动。</summary>
+    private void RestoreColorOverlayIfAny()
+    {
+        if (_storedLabelText != null)
+        {
+            _label.Text = _storedLabelText;
+            _storedLabelText = null;
+        }
+        if (_storedDotFillHex != null)
+        {
+            _dot.Fill = ToBrush(_storedDotFillHex, "#9E9E9E");
+            _storedDotFillHex = null;
+        }
+    }
+
+    private void ShowSpinnerOverlay(string text)
+    {
+        _overlaySpinnerText.Text = text;
+        _overlaySpinnerBadge.Visibility = Visibility.Visible;
+        _overlaySpinnerText.Visibility = Visibility.Visible;
+        _overlayLayer.Visibility = Visibility.Visible;
+        _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, _overlaySpinnerAnim);
+    }
+
+    /// <summary>外部在 Update() 时清掉 spinner overlay(spinner 是"持续型")。</summary>
+    public void HideHookOverlay()
+    {
+        _overlayCountdown?.Stop();
+        _overlayCountdown = null;
+        _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+        _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
+        _overlaySpinnerText.Visibility = Visibility.Collapsed;
+        RestoreColorOverlayIfAny();
+        _overlayLayer.Visibility = Visibility.Collapsed;
     }
 
     private static DoubleAnimation CreateBreathAnimation()
@@ -127,6 +300,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         string dotColorHex,
         bool isPeakHour)
     {
+        var textChanged = _label.Text != text;
         _label.Text = text;
 
         // 圆环：仅作轮廓底色，不显示风险颜色弧。ForegroundBrush 用 Brushes.Transparent，
@@ -151,6 +325,27 @@ internal sealed class BalanceDotCapsuleView : Grid
             // 清掉动画引用，Opacity 回到默认 1.0（静态）。
             _dot.BeginAnimation(UIElement.OpacityProperty, null);
             _dot.Opacity = 1.0;
+        }
+
+        // 文字真正变化时触发淡入；polling tick 不变 text 则不闪。
+        // spinner overlay 持续到下一次 Update：检测后清掉,恢复余额快照文本。
+        if (_overlayLayer.Visibility == Visibility.Visible &&
+            (_overlaySpinnerBadge.Visibility == Visibility.Visible ||
+             _overlaySpinnerText.Visibility == Visibility.Visible))
+        {
+            HideHookOverlay();
+        }
+        if (textChanged)
+        {
+            _label.Opacity = 0;
+            var anim = new DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = TimeSpan.FromMilliseconds(350),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            _label.BeginAnimation(UIElement.OpacityProperty, anim);
         }
     }
 
@@ -202,6 +397,8 @@ internal sealed class BalanceDotCapsuleView : Grid
             _dot.BeginAnimation(UIElement.OpacityProperty, null);
             _dot.Opacity = 1.0;
         }
+        // 修复 D：列宽变了，文字可显示宽度变了，强制重测避免一帧截断。
+        _label.InvalidateMeasure();
     }
 
     /// <summary>
