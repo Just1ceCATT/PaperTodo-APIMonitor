@@ -23,7 +23,15 @@ namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 /// </summary>
 internal sealed class BalanceProgressRing : FrameworkElement
 {
-    public double Value { get; set; }
+    // Value 必须是真正的 DependencyProperty 包装（getter/setter 调用 GetValue/SetValue），
+    // 否则 BeginAnimation(ValueProperty, ...) 启动的动画插值不会反映到 OnRender 读到的 backing field，
+    // 圆环会一直停在默认值 0。
+    // 自动属性（public double Value { get; set; }）的 setter 只写私有字段，与 ValueProperty 完全脱钩。
+    public double Value
+    {
+        get => (double)GetValue(ValueProperty);
+        set => SetValue(ValueProperty, value);
+    }
     public Brush ForegroundBrush { get; set; } = Brushes.Gray;
     public Brush TrackBrush { get; set; } = Brushes.LightGray;
 
@@ -132,6 +140,31 @@ internal sealed class BalanceProgressRing : FrameworkElement
             _checkmarkTotalLength = 13.6;
         }
         return base.ArrangeOverride(finalSize);
+    }
+
+    /// <summary>
+    /// 触发"圆环绘制"动画：每次从 0（顶部 12 点钟方向）顺时针画到 targetValue。
+    /// 默认时长 500ms，使用 ease-in-out 曲线模拟"画线"手感（慢启动、中间加速、缓结束）。
+    /// 颜色跟随 ForegroundBrush（按风险等级：Safe 绿、Warn 橙、Risk 红），与最终弧度色一致。
+    /// 调用方应在 Update 检测到 ringArc 变化时调用；微小变化（≤1‰）的过滤由调用方决定。
+    /// 注意：本动画每次都从 0 重画——余额下降时会"走一整圈"才能到新位置（设计取舍）。
+    /// </summary>
+    public void BeginDrawAnimation(double targetValue, int durationMs = 500)
+    {
+        var clampedTarget = Math.Clamp(targetValue, 0, 1);
+        // 目标为 0 时直接清零,避免无意义的 0→0 动画
+        if (clampedTarget <= 0.001)
+        {
+            BeginAnimation(ValueProperty, null);
+            Value = 0;
+            return;
+        }
+        var anim = new DoubleAnimation(0.0, clampedTarget,
+            TimeSpan.FromMilliseconds(durationMs))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        };
+        BeginAnimation(ValueProperty, anim);
     }
 
     /// <summary>

@@ -355,19 +355,20 @@ internal sealed class BalanceRingCapsuleView : Grid
         var textChanged = _label.Text != text;
         _label.Text = text;
         var clampedArc = Math.Clamp(ringArc, 0, 1);
-        _ring.Value = clampedArc;
+        // 圆环弧度变更超过 1‰ 时触发"从 0 顺时针绘制"动画（用户要求"绘制而不是凭空出现"）。
+        // 颜色由 ForegroundBrush 决定（绿色 Safe、橙色 Warn、红色 Risk），与最终弧度色一致。
+        // BeginAnimation 启动的 ValueProperty 动画带 AffectsRender,自动逐帧重绘,无需显式 InvalidateVisual。
+        if (Math.Abs(clampedArc - _lastAppliedArc) > 0.001)
+        {
+            _ring.BeginDrawAnimation(clampedArc);
+            _lastAppliedArc = clampedArc;
+        }
         // 颜色变化才覆盖前景 brush:同一 string 多次 ToBrush 颜色相同但实例不同，
         // ToBrush 已 Freeze，引用变化时仍触发圆环重渲染，这里仅当真正改变时覆盖。
         if (!string.Equals(_lastRingColorHex, ringColorHex, StringComparison.OrdinalIgnoreCase))
         {
             _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
             _lastRingColorHex = ringColorHex;
-        }
-        // ring 值变更超过 1‰ 时才显式 InvalidateVisual；否则由缓存机制避免重复渲染。
-        if (Math.Abs(clampedArc - _lastAppliedArc) > 0.001)
-        {
-            _ring.InvalidateVisual();
-            _lastAppliedArc = clampedArc;
         }
         // 余额快照推送时清掉 spinner overlay（spinner 持续到下一次 Update）;
         // PNG overlay 已经有自己的倒计时,自然结束。
