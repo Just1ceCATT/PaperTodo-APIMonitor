@@ -254,19 +254,25 @@ internal sealed class BalanceRingCapsuleView : Grid
     private void ShowSpinnerOverlay(string text)
     {
         // Spinner overlay（替换模式）：与 ShowColorOverlay 共用 RestoreColorOverlayIfAny 路径。
-        // - 暂存 _label.Text / _ring 当前颜色
-        // - 把 _label.Text 替换为 spinner 文本,_ring.ForegroundBrush 替换为 spinner 蓝(#2196F3)
-        // - 圆环从 0 顺时针画到 1(500ms ease-in-out,无对勾描边)
-        // 不创建覆盖层、不旋转沙漏、不带倒计时 —— 与 StopImage 等 Color overlay 走同一恢复路径。
+        // - 暂存 _label.Text / _ring 当前颜色 / 圆环 Value
+        // - 把 _label.Text 替换为 spinner 文本
+        // - _ring.ForegroundBrush 替换为 spinner 蓝(#2196F3)
+        // - 圆环 Opacity=0 完全消失(底圈也透明),让沙漏独占视觉
+        // - 沙漏描边→旋转循环动画(1秒描边 + 1秒旋转,RepeatBehavior=Forever)
+        //   —— 替代圆环填充动画,传达"工具调用进行中"语义(类似对勾描边的"画线"效果)。
+        // 不创建覆盖层、不带倒计时 —— 与 StopImage 等 Color overlay 走同一恢复路径。
         _storedLabelText = _label.Text;
         _storedRingColorHex = _ring.ForegroundBrush is SolidColorBrush sb ? sb.Color.ToString() : null;
-        // 注意：不暂存 _storedRingArc —— spinner 期间圆环强制 0→1,恢复时 RestoreColorOverlayIfAny
-        // 会启动 1→0 收缩动画(400ms ease-out),但该动画会被下一次 view.Update 的 BeginDrawAnimation
-        // 立即终止(同一 DP),所以视觉上是"硬切到 0 → 重新画到 latestArc",符合"每次从 0 重画"的设计取舍。
+        _storedRingArc = _ring.Value;
+        // 必须暂存当前 _storedRingArc(spinner 之前的 Value):HideHookOverlay → RestoreColorOverlayIfAny
+        // 启动的"收缩动画" To=_storedRingArc 等于当前 Value(spinner 期间圆环 Value 不变),
+        // 视觉上 Value 不动;若不暂存,_storedRingArc 保持默认 0,RestoreColorOverlayIfAny 会启动
+        // Value 1→0 收缩动画(spinner 期间圆环是 0.5 的话会突然收缩到 0,视觉突兀)。
 
         _label.Text = text;
         _ring.ForegroundBrush = SpinnerBadgeBrush;
-        _ring.BeginDrawAnimation(1.0);
+        _ring.Opacity = 0; // 圆环完全隐藏(沙漏独占视觉);HideHookOverlay reset 到 1
+        _ring.BeginHourglassAnimation();
         // Spinner 类型无倒计时:持续到下次 Update 由外部 HideHookOverlay 清掉。
     }
 
@@ -280,6 +286,8 @@ internal sealed class BalanceRingCapsuleView : Grid
         _ring.Opacity = 1;
         // spinner 期间改动的 _label.Text / _ring.ForegroundBrush 由 RestoreColorOverlayIfAny 恢复。
         RestoreColorOverlayIfAny();
+        // 沙漏是 spinner 期间的瞬时动画,结束必须隐藏并停止描边动画。
+        _ring.StopHourglassAnimation();
     }
 
     /// <summary>

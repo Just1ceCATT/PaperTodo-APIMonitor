@@ -70,6 +70,44 @@ internal sealed class BalanceProgressRing : FrameworkElement
         return brush;
     }
 
+    // 沙漏动画:Path 元素作为视觉子节点,StrokeDashOffset 动画实现描边绘制。
+    // 几何用像素绝对坐标(对 18×18 圆环设计),不用 Stretch=Fill。
+    //   左上 (4,2) → 右上 (14,2) → 颈 (9,9) → 右下 (14,16) → 左下 (4,16) → 颈 (9,9) → Z(回左上)
+    // 形成上下两个三角通过颈相连的沙漏形状;顶点距圆心 ≤ 8.06 px,被圆环完整包裹。
+    // 路径总长 = 10 + √74 + √74 + 10 + √74 + √74 ≈ 54.41 px(由 ArrangeOverride 重算,字段初值仅兜底)。
+    // spinner overlay 用此动画替代圆环填充,传达"工具调用进行中"语义:
+    //   - 1 秒描边动画(从无到完整沙漏)
+    //   - 1 秒旋转动画(0° → 360°)
+    //   - 循环 RepeatBehavior=Forever:画一遍 → 转一圈 → 画一遍 → 转一圈 → ...
+    private Path? _hourglassPath;
+    private double _hourglassTotalLength = 54.41;
+    // 沙漏旋转 RenderTransform:由 BeginHourglassAnimation 启动的 Storyboard 驱动,
+    // CenterX/CenterY 在 ArrangeOverride 中设置为控件中心。
+    private readonly RotateTransform _hourglassRotateTransform = new();
+    // Storyboard 引用:BeginHourglassAnimation 创建,StopHourglassAnimation 终止。
+    // 保留字段避免 BeginHourglassAnimation 期间被 GC。
+    private Storyboard? _hourglassStoryboard;
+
+    // 沙漏描边色:与 spinner badge 同色系蓝色 #2196F3,提取为静态冻结实例。
+    private static readonly SolidColorBrush DefaultHourglassStroke =
+        CreateFrozenStroke(Color.FromRgb(0x21, 0x96, 0xF3));
+
+    /// <summary>设置沙漏描边颜色(默认蓝,可被调用方覆盖)。</summary>
+    public void SetHourglassBrush(Brush brush)
+    {
+        if (_hourglassPath != null && brush != null)
+        {
+            if (!brush.IsFrozen && brush is SolidColorBrush scb)
+            {
+                var frozen = new SolidColorBrush(scb.Color) { Opacity = scb.Opacity };
+                frozen.Freeze();
+                _hourglassPath.Stroke = frozen;
+                return;
+            }
+            _hourglassPath.Stroke = brush;
+        }
+    }
+
     public BalanceProgressRing()
     {
         // 几何路径:用像素绝对坐标(直接对 18×18 圆环设计)，不用 Stretch=Fill,
@@ -95,6 +133,31 @@ internal sealed class BalanceProgressRing : FrameworkElement
         };
         AddVisualChild(_checkmarkPath);
         AddLogicalChild(_checkmarkPath);
+
+        // 沙漏 Path:几何完全在圆环内(18×18 圆环,沙漏占 10×14 px 安全区)。
+        // 顶点距圆心:左上/右上 (4,2)/(14,2)=8.06/8.06,颈 (9,9)=0,右下/左下 (14,16)/(4,16)=8.06/8.06,
+        // 均 ≤ 8.06 px,被圆环完整包裹且不贴内边。
+        // 像素路径总长:10 + √74 + √74 + 10 + √74 + √74 ≈ 54.41 px(ArrangeOverride 重算,初值兜底)。
+        // spinner overlay 触发此动画,传达"工具调用进行中"语义(替代圆环填充动画)。
+        _hourglassPath = new Path
+        {
+            Stroke = DefaultHourglassStroke,
+            StrokeThickness = 1.5,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            // 实线 + 100 间隙;动画时 dashOffset 从 54.41 → 0,沿路径"画沙漏"。
+            StrokeDashArray = new DoubleCollection { 0, 100 },
+            StrokeDashOffset = 54.41,
+            Data = Geometry.Parse("M 4,2 L 14,2 L 9,9 L 14,16 L 4,16 L 9,9 Z"),
+            Stretch = Stretch.None,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+            // RenderTransform:沙漏旋转动画的承载(CenterX/CenterY 由 ArrangeOverride 设置)。
+            RenderTransform = _hourglassRotateTransform
+        };
+        AddVisualChild(_hourglassPath);
+        AddLogicalChild(_hourglassPath);
     }
 
     /// <summary>设置对勾描边颜色(默认绿,可被调用方覆盖为红/橙等)。</summary>
@@ -114,11 +177,15 @@ internal sealed class BalanceProgressRing : FrameworkElement
         }
     }
 
-    protected override int VisualChildrenCount => 1;
+    protected override int VisualChildrenCount => 2;
     protected override Visual? GetVisualChild(int index)
     {
-        if (index == 0) return _checkmarkPath;
-        throw new System.ArgumentOutOfRangeException(nameof(index));
+        return index switch
+        {
+            0 => _checkmarkPath,
+            1 => _hourglassPath,
+            _ => throw new System.ArgumentOutOfRangeException(nameof(index))
+        };
     }
 
     protected override System.Windows.Size MeasureOverride(System.Windows.Size availableSize)
@@ -138,6 +205,16 @@ internal sealed class BalanceProgressRing : FrameworkElement
             // 用像素绝对坐标绘制对勾,总长为屏幕像素长度 13.6 px(由 18×18 圆环大小直接决定)。
             // 父级 BalanceProgressRing 强制 Width=Height=18,所以这里不用再按尺寸缩放。
             _checkmarkTotalLength = 13.6;
+        }
+        if (_hourglassPath != null)
+        {
+            _hourglassPath.Arrange(new Rect(finalSize));
+            // 沙漏路径:2 段水平 10px + 4 段对角 sqrt(74)≈8.602px = 54.41 px
+            // (用于 StrokeDashArray/StrokeDashOffset 的描边动画)。
+            _hourglassTotalLength = 54.41;
+            // 旋转中心:控件中心,让旋转动画视觉对称(18×18 控件 → 中心 (9, 9))。
+            _hourglassRotateTransform.CenterX = finalSize.Width / 2.0;
+            _hourglassRotateTransform.CenterY = finalSize.Height / 2.0;
         }
         return base.ArrangeOverride(finalSize);
     }
@@ -165,6 +242,73 @@ internal sealed class BalanceProgressRing : FrameworkElement
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
         };
         BeginAnimation(ValueProperty, anim);
+    }
+
+    /// <summary>
+    /// 触发"沙漏描边 → 旋转 → 描边 → 旋转 → ..."无限循环动画,spinner overlay 期间显示,
+    /// 传达"工具调用进行中"语义。
+    /// Storyboard 串联两个动画:
+    ///   - 描边动画(strokeMs,默认 1000ms):StrokeDashOffset 从 totalLength 画到 0
+    ///   - 旋转动画(rotateMs,默认 1000ms):RotateTransform.Angle 从 0° 转到 360°
+    /// Storyboard.RepeatBehavior=Forever 让两个动画顺序重复(画一遍 → 转一圈 → 画一遍 → 转一圈 → ...)。
+    /// 圆环 Value 不会被本动画修改(沙漏独立于圆环)。
+    /// </summary>
+    public void BeginHourglassAnimation(int strokeMs = 1000, int rotateMs = 1000)
+    {
+        if (_hourglassPath == null) return;
+
+        // 先停掉旧 Storyboard(如果 BeginHourglassAnimation 被多次调用)
+        StopHourglassAnimation();
+
+        _hourglassPath.Visibility = Visibility.Visible;
+        var totalLength = _hourglassTotalLength;
+        _hourglassPath.StrokeDashArray = new DoubleCollection { totalLength, totalLength };
+        _hourglassPath.StrokeDashOffset = totalLength; // 初始:沙漏不可见
+
+        // Storyboard:描边 → 旋转 → 循环
+        var sb = new Storyboard { RepeatBehavior = RepeatBehavior.Forever };
+
+        // 描边动画 1 秒
+        var strokeAnim = new DoubleAnimation(totalLength, 0, TimeSpan.FromMilliseconds(strokeMs))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(strokeAnim, _hourglassPath);
+        Storyboard.SetTargetProperty(strokeAnim, new PropertyPath(Path.StrokeDashOffsetProperty));
+        sb.Children.Add(strokeAnim);
+
+        // 旋转动画 1 秒,BeginTime = 描边完成后
+        var rotateAnim = new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(rotateMs))
+        {
+            BeginTime = TimeSpan.FromMilliseconds(strokeMs),
+            EasingFunction = null // 线性匀速旋转
+        };
+        Storyboard.SetTarget(rotateAnim, _hourglassRotateTransform);
+        Storyboard.SetTargetProperty(rotateAnim, new PropertyPath(RotateTransform.AngleProperty));
+        sb.Children.Add(rotateAnim);
+
+        _hourglassStoryboard = sb;
+        sb.Begin();
+    }
+
+    /// <summary>立即停止沙漏动画(描边+旋转)并隐藏(用于 spinner 结束)。</summary>
+    public void StopHourglassAnimation()
+    {
+        // 终止 Storyboard(同时终止描边动画和旋转动画)
+        if (_hourglassStoryboard != null)
+        {
+            _hourglassStoryboard.Stop();
+            _hourglassStoryboard = null;
+        }
+        if (_hourglassPath != null)
+        {
+            // 防御性:即使 Storyboard 已 Stop,也清掉可能残留的本地动画
+            _hourglassPath.BeginAnimation(Path.StrokeDashOffsetProperty, null);
+            _hourglassPath.Visibility = Visibility.Collapsed;
+            _hourglassPath.StrokeDashOffset = _hourglassTotalLength;
+        }
+        _hourglassRotateTransform.BeginAnimation(RotateTransform.AngleProperty, null);
+        _hourglassRotateTransform.Angle = 0;
     }
 
     /// <summary>
