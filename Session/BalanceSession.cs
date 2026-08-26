@@ -83,7 +83,16 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>最近的 Claude Code hook 事件；用于胶囊 ToolTip 第二行。</summary>
     internal HookEvent LatestHookEvent => _latestHookEvent;
     /// <summary>滑窗：最近 5 条 hook 事件；用于 Web 面板"Claude 活动"列表。</summary>
-    internal IReadOnlyList<HookEvent> HookEventWindow => _hookEventWindow.ToArray();
+    internal IReadOnlyList<HookEvent> HookEventWindow
+    {
+        get
+        {
+            lock (_hookLock)
+            {
+                return _hookEventWindow.ToArray();
+            }
+        }
+    }
     /// <summary>HookEventServer 实际端口（启动失败时为 null）。</summary>
     internal int? HookServerPort => _hookServer?.ActualPort;
     /// <summary>当前 30 分钟窗口的余额趋势。每次读取都基于当前时间重新裁剪窗口并回归。</summary>
@@ -105,10 +114,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private CapsuleSnapshot _latestCapsuleSnapshot = CapsuleSnapshot.Empty;
 
     // Claude Code hook 事件：最新一条 + 最近 5 条滑窗，供胶囊 ToolTip 与 Web 面板展示。
-    // HookEventServer 接收 POST 后在 UI 线程 marshal 入队。
+    // HookEventServer 接收 POST 后由后台线程触发 HookReceived；OnHookReceived 在 UI 线程 marshal 入队。
     private HookEvent _latestHookEvent = HookEvent.Empty;
     private readonly Queue<HookEvent> _hookEventWindow = new();
     private const int HookEventWindowCapacity = 5;
+    // UI 线程 dispatcher：OnHookReceived 在后台线程触发时，统一 marshal 进来。
+    // BalanceSession 由宿主在 STA UI 线程创建，Dispatcher.CurrentDispatcher 在此返回 UI dispatcher。
+    // 缓存下来避免每次重新查询(也避免再次踩中"Dispatcher.FromThread(Thread.CurrentThread) 返回 null"的坑)。
+    private readonly Dispatcher _uiDispatcher;
+    // _hookEventWindow / _latestHookEvent 的锁：深度防御，即便 marshaling 漏改某处，
+    // 也不会让 Queue 内部状态被并发破坏(Queue<T> 不是线程安全的)。
+    private readonly object _hookLock = new();
     // hook overlay 待应用缓存：OnHookReceived 时如果 capsule view 还未创建（lazy 缓存），
     // 暂存 overlay kind + 触发时刻。CreateCapsuleView 创建 view 后立即应用。
     private HookOverlayKind _pendingOverlayKind = HookOverlayKind.None;
@@ -129,6 +145,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     public BalanceSession(PaperBodyContext context)
     {
+        // 必须在所有字段赋值之前：此时线程上下文是 STA UI 线程(否则后面 DispatcherTimer 创建会抛异常)，
+        // 缓存 UI dispatcher 用于 OnHookReceived 后台线程 marshal。
+        _uiDispatcher = Dispatcher.CurrentDispatcher;
         _context = context;
         _theme = context.Body.Theme;
         _state = ReadState(context.StateJson);
@@ -178,7 +197,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     /// <summary>
     /// 启动 HookEventServer 并订阅事件。HookReceived 回调在后台线程触发，
-    /// 通过 Dispatcher.Invoke marshal 到 UI 线程后写缓存 + 触发 UpdateSnapshot。
+    /// OnHookReceived 通过缓存的 _uiDispatcher marshal 到 UI 线程后写缓存 + 触发 UpdateSnapshot。
     /// </summary>
     private void StartHookServer()
     {
@@ -195,11 +214,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     private void OnHookReceived(HookEventPayload payload)
     {
-        // 从 HTTP 后台线程 marshal 到 UI 线程（BalanceSession 创建在 STA）。
-        var dispatcher = System.Windows.Threading.Dispatcher.FromThread(Thread.CurrentThread);
-        if (dispatcher != null && !dispatcher.CheckAccess())
+        // 修复:用缓存的 UI dispatcher 判断,而不是 Dispatcher.FromThread(Thread.CurrentThread)。
+        // 后者在线程池线程上永远返回 null,导致 marshaling 形同虚设。
+        if (!_uiDispatcher.CheckAccess())
         {
-            dispatcher.BeginInvoke(() => OnHookReceived(payload));
+            _uiDispatcher.BeginInvoke(() => OnHookReceived(payload));
             return;
         }
         // 按 settings 过滤：未启用的 hook 事件直接丢弃，不写缓存、不推面板。
@@ -214,11 +233,15 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             ReceivedAt: payload.ReceivedAt,
             Overlay: payload.Overlay);
         _latestHookEvent = hook;
-        if (_hookEventWindow.Count >= HookEventWindowCapacity)
+        // 锁内只做 Queue mutation;把 _payloadBuilder.Build() 放到锁外,避免重入。
+        lock (_hookLock)
         {
-            _hookEventWindow.Dequeue();
+            if (_hookEventWindow.Count >= HookEventWindowCapacity)
+            {
+                _hookEventWindow.Dequeue();
+            }
+            _hookEventWindow.Enqueue(hook);
         }
-        _hookEventWindow.Enqueue(hook);
         // 推 Web 面板：payload 自动包含最近 5 条 hook 事件（ViewPayloadBuilder 会读）。
         _panel.PostSnapshot(_payloadBuilder.Build());
         Services.HookTrace.Write($"post-snapshot event={payload.EventName} kind={payload.Overlay} regularRing={_regularRingCapsuleView != null} regularDot={_regularDotCapsuleView != null}");
