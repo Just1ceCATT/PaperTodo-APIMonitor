@@ -483,16 +483,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _ => true
     };
 
-    /// <summary>拼胶囊 ToolTip：余额第一行 + 最近 hook 第二行（如果存在）。</summary>
-    private string BuildCapsuleToolTipWithHook(string balanceText)
-    {
-        if (_latestHookEvent.EventName.Length == 0)
-        {
-            return balanceText;
-        }
-        return $"{balanceText}\n{_latestHookEvent.Summary}";
-    }
-
     public FrameworkElement View => _panel.ViewRoot;
 
     public void Commit() { /* 设置由宿主管理，正文无草稿 */ }
@@ -710,8 +700,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     // ---------------- HTTP 拉取 ----------------
 
-    private const string DeepSeekBalanceUrl = "https://api.deepseek.com/user/balance";
-
     private async Task PollAsync()
     {
         if (string.IsNullOrWhiteSpace(_settings.ApiKey))
@@ -823,13 +811,6 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
         _trend.Add(now, snapshot.Remaining);
     }
-
-    /// <summary>
-/// MiniMax Coding Plan 用量接口：GET /v1/api/openplatform/coding_plan/remains。
-/// 返回各模型的剩余时长（remains_time）与剩余百分比。
-/// 逻辑已迁到 Services/MiniMaxProvider,保留此注释段作为归档位置。
-/// </summary>
-
 
     /// <summary>
     // ---------------- 快照 & 胶囊渲染 ----------------

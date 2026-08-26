@@ -5,6 +5,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using PaperTodo.Plugin.ApiBalanceMonitor.Models;
+using PaperTodo.Plugin.ApiBalanceMonitor.Payload;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
@@ -165,7 +166,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         _storedLabelText = _label.Text;
         _storedDotFillHex = _dot.Fill is SolidColorBrush sb ? sb.Color.ToString() : null;
         _label.Text = text;
-        _dot.Fill = ToBrush(dotColorHex, "#9E9E9E");
+        _dot.Fill = Format.ToFrozenBrush(dotColorHex, "#9E9E9E");
         _overlayCountdown = new DispatcherTimer { Interval = TimeSpan.FromSeconds(durationSeconds) };
         _overlayCountdown.Tick += (_, _) =>
         {
@@ -186,7 +187,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         }
         if (_storedDotFillHex != null)
         {
-            _dot.Fill = ToBrush(_storedDotFillHex, "#9E9E9E");
+            _dot.Fill = Format.ToFrozenBrush(_storedDotFillHex, "#9E9E9E");
             _storedDotFillHex = null;
         }
     }
@@ -259,7 +260,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         // 关闭圆环时整个圆点列不可见，禁止触发动画（避免不可见时还在跑 Opacity 动画）；
         // 关闭呼吸动效（disableDotBreath）时即使在高峰期也保持静态。
         var dotColor = isPeakHour ? PeakDotColorHex : dotColorHex;
-        _dot.Fill = ToBrush(dotColor, "#9E9E9E");
+        _dot.Fill = Format.ToFrozenBrush(dotColor, "#9E9E9E");
         if (isPeakHour && _ringColumnVisible && _dotBreathEnabled)
         {
             _dot.BeginAnimation(UIElement.OpacityProperty, DotBreathAnimation);
@@ -303,7 +304,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         _label.FontFamily = _cachedFontFamily;
         _label.FontSize = 12.0 * scale;
         _label.FontWeight = FontWeights.Normal;
-        _label.Foreground = ToBrush(theme.WeakTextColor, "#707070");
+        _label.Foreground = Format.ToFrozenBrush(theme.WeakTextColor, "#707070");
 
         // 外圆环底色：浅白色（alpha ≈ 70/255 ≈ 27%），弱视觉锚点。深色主题下清晰可见，
         // 浅色主题下与背景融为一体只剩微弱轮廓，符合"外环不需要颜色、仅作衬托"的设计意图。
@@ -354,29 +355,5 @@ internal sealed class BalanceDotCapsuleView : Grid
             _dot.BeginAnimation(UIElement.OpacityProperty, null);
             _dot.Opacity = 1.0;
         }
-    }
-
-    private static SolidColorBrush ToBrush(string value, string fallback)
-    {
-        SolidColorBrush brush;
-        try
-        {
-            brush = new SolidColorBrush(
-                (Color)ColorConverter.ConvertFromString(value)!);
-        }
-        catch
-        {
-            try
-            {
-                brush = new SolidColorBrush(
-                    (Color)ColorConverter.ConvertFromString(fallback)!);
-            }
-            catch
-            {
-                brush = new SolidColorBrush(Colors.Gray);
-            }
-        }
-        brush.Freeze();
-        return brush;
     }
 }

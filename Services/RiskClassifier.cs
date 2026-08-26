@@ -3,7 +3,7 @@ using System.Windows.Media;
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Services;
 
 /// <summary>
-/// v3.1 风险档位阈值（ClassifyRisk 与 RiskColor / RingColorHex 共用）。
+/// v3.1 风险档位阈值（Classify 与 RingColorHex 共用）。
 /// 阈值与色板绑定在同一个类，避免改阈值漏改色或反之。
 /// </summary>
 internal static class RiskClassifier
@@ -17,12 +17,6 @@ internal static class RiskClassifier
     private const string HexWarming = "#FFC107";
     private const string HexSafe    = "#4CAF50";
     private const string HexGray    = "#9E9E9E";
-
-    public static readonly Color ColorOverrun = Color.FromRgb(0xF4, 0x43, 0x36);
-    public static readonly Color ColorDanger  = Color.FromRgb(0xFF, 0x98, 0x00);
-    public static readonly Color ColorWarming = Color.FromRgb(0xFF, 0xC1, 0x07);
-    public static readonly Color ColorSafe    = Color.FromRgb(0x4C, 0xAF, 0x50);
-    public static readonly Color ColorGray    = Color.FromRgb(0x9E, 0x9E, 0x9E);
 
     public enum State { Safe, Warming, Danger, Overrun }
 
@@ -52,37 +46,6 @@ internal static class RiskClassifier
     {
         if (ratio >= 1.0) return 1.0;
         return Math.Clamp(ratio, 0, 1);
-    }
-
-    /// <summary>v3.1 风险环颜色（含过渡渐变）：绿 → 黄 → 橙 → 红；未未配置阈值时灰。</summary>
-    public static Color RiskColor(double ratio)
-    {
-        if (ratio <= 0)
-        {
-            return ColorGray;
-        }
-        if (ratio >= OverrunRatio)
-        {
-            return ColorOverrun;
-        }
-        if (ratio >= DangerRatio)
-        {
-            return Lerp(ColorWarming, ColorDanger, (ratio - DangerRatio) / 0.2);
-        }
-        if (ratio >= WarmingRatio)
-        {
-            return Lerp(ColorSafe, ColorWarming, (ratio - WarmingRatio) / 0.3);
-        }
-        return ColorSafe;
-    }
-
-    public static Color Lerp(Color from, Color to, double t)
-    {
-        t = Math.Clamp(t, 0, 1);
-        return Color.FromRgb(
-            (byte)(from.R + (to.R - from.R) * t),
-            (byte)(from.G + (to.G - from.G) * t),
-            (byte)(from.B + (to.B - from.B) * t));
     }
 
     /// <summary>NaN/±Infinity 归一为 0，避免 JsonSerializer 序列化时抛异常。</summary>

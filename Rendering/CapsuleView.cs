@@ -58,18 +58,6 @@ internal sealed class BalanceProgressRing : FrameworkElement
     private Path? _checkmarkPath;
     private double _checkmarkTotalLength = 34.9;
 
-    // 默认对勾描边色:提取为静态冻结实例,允许多线程共享并走 WPF 渲染快路径。
-    // 默认绿色与 StopImage 同色系,在绿色圆环上显示同色描边。
-    private static readonly SolidColorBrush DefaultCheckmarkStroke =
-        CreateFrozenStroke(Color.FromRgb(0x4C, 0xAF, 0x50));
-
-    private static SolidColorBrush CreateFrozenStroke(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
-
     // 沙漏动画:Path 元素作为视觉子节点,StrokeDashOffset 动画实现描边绘制。
     // 几何用像素绝对坐标(对 18×18 圆环设计),不用 Stretch=Fill。
     //   左上 (4,2) → 右上 (14,2) → 颈 (9,9) → 右下 (14,16) → 左下 (4,16) → 颈 (9,9) → Z(回左上)
@@ -88,28 +76,15 @@ internal sealed class BalanceProgressRing : FrameworkElement
     // 保留字段避免 BeginHourglassAnimation 期间被 GC。
     private Storyboard? _hourglassStoryboard;
 
-    // 沙漏描边色:与 spinner badge 同色系蓝色 #2196F3,提取为静态冻结实例。
-    private static readonly SolidColorBrush DefaultHourglassStroke =
-        CreateFrozenStroke(Color.FromRgb(0x21, 0x96, 0xF3));
-
-    /// <summary>设置沙漏描边颜色(默认蓝,可被调用方覆盖)。</summary>
-    public void SetHourglassBrush(Brush brush)
-    {
-        if (_hourglassPath != null && brush != null)
-        {
-            if (!brush.IsFrozen && brush is SolidColorBrush scb)
-            {
-                var frozen = new SolidColorBrush(scb.Color) { Opacity = scb.Opacity };
-                frozen.Freeze();
-                _hourglassPath.Stroke = frozen;
-                return;
-            }
-            _hourglassPath.Stroke = brush;
-        }
-    }
-
     public BalanceProgressRing()
     {
+        // 对勾描边色:与 StopImage 同色系绿色 #4CAF50,在绿色圆环上显示同色描边。
+        // 构造期一次性冻结,允许多线程共享并走 WPF 渲染快路径。
+        var checkmarkStroke = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+        checkmarkStroke.Freeze();
+        // 沙漏描边色:与 spinner badge 同色系蓝色 #2196F3。
+        var hourglassStroke = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
+        hourglassStroke.Freeze();
         // 几何路径:用像素绝对坐标(直接对 18×18 圆环设计)，不用 Stretch=Fill,
         // 避免非正方形 bbox 在拉伸时把拐点推到 18×18 边缘外、与圆环 stroke 视觉重叠。
         // 顶点全部落在距圆心 ≤ 6.5 px 的内圈安全区(圆环内边 = 中心 7.5 - stroke/2 = 6.5)。
@@ -118,7 +93,7 @@ internal sealed class BalanceProgressRing : FrameworkElement
         // 像素路径总长:5.0 + 8.6 ≈ 13.6 px（用于设置 dasharray / dashoffset）.
         _checkmarkPath = new Path
         {
-            Stroke = DefaultCheckmarkStroke,
+            Stroke = checkmarkStroke,
             StrokeThickness = 2,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
@@ -141,7 +116,7 @@ internal sealed class BalanceProgressRing : FrameworkElement
         // spinner overlay 触发此动画,传达"工具调用进行中"语义(替代圆环填充动画)。
         _hourglassPath = new Path
         {
-            Stroke = DefaultHourglassStroke,
+            Stroke = hourglassStroke,
             StrokeThickness = 1.5,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
@@ -158,23 +133,6 @@ internal sealed class BalanceProgressRing : FrameworkElement
         };
         AddVisualChild(_hourglassPath);
         AddLogicalChild(_hourglassPath);
-    }
-
-    /// <summary>设置对勾描边颜色(默认绿,可被调用方覆盖为红/橙等)。</summary>
-    public void SetCheckmarkBrush(Brush brush)
-    {
-        if (_checkmarkPath != null && brush != null)
-        {
-            // 防御性冻结:外部传未冻结的 Brush 时,clone 后冻结避免渲染期间走慢路径。
-            if (!brush.IsFrozen && brush is SolidColorBrush scb)
-            {
-                var frozen = new SolidColorBrush(scb.Color) { Opacity = scb.Opacity };
-                frozen.Freeze();
-                _checkmarkPath.Stroke = frozen;
-                return;
-            }
-            _checkmarkPath.Stroke = brush;
-        }
     }
 
     protected override int VisualChildrenCount => 2;

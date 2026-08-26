@@ -28,24 +28,6 @@ internal static class Format
             : asDecimal.ToString("F2", CultureInfo.CurrentCulture);
     }
 
-    /// <summary>万/亿简写（"12345" → "1.2万"），负数/NaN 返回 "—"。</summary>
-    public static string FormatWanYi(double n)
-    {
-        if (!double.IsFinite(n) || n < 0)
-        {
-            return NaNPlaceholder;
-        }
-        if (n >= 1e8)
-        {
-            return (n / 1e8).ToString("0.0", CultureInfo.CurrentCulture) + "亿";
-        }
-        if (n >= 1e4)
-        {
-            return (n / 1e4).ToString("0.0", CultureInfo.CurrentCulture) + "万";
-        }
-        return ((long)Math.Round(n)).ToString(CultureInfo.CurrentCulture);
-    }
-
     /// <summary>千分位逗号分隔（1000 → "1,000"），负数返回 "0"。</summary>
     public static string FormatThousands(double n)
     {
@@ -105,10 +87,6 @@ internal static class Format
         return (rate.Value * 100).ToString("0.00", CultureInfo.CurrentCulture) + "%";
     }
 
-    /// <summary>Color → "#RRGGBB"。</summary>
-    public static string ToHex(Color color) =>
-        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
-
     /// <summary>确保 hex 字符串以 "#" 前缀，缺失时回退到 fallback。</summary>
     public static string NormalizeHex(string? value, string fallback)
     {
@@ -117,5 +95,33 @@ internal static class Format
             return fallback;
         }
         return value.StartsWith("#") ? value : "#" + value;
+    }
+
+    /// <summary>
+    /// hex 字符串 → 冻结的 SolidColorBrush。解析失败回退到 fallback，再失败则用 Colors.Gray。
+    /// 冻结让 WPF 渲染走快路径并允许跨线程共享，供所有 view 复用。
+    /// </summary>
+    public static SolidColorBrush ToFrozenBrush(string value, string fallback)
+    {
+        SolidColorBrush brush;
+        try
+        {
+            brush = new SolidColorBrush(
+                (Color)ColorConverter.ConvertFromString(value)!);
+        }
+        catch
+        {
+            try
+            {
+                brush = new SolidColorBrush(
+                    (Color)ColorConverter.ConvertFromString(fallback)!);
+            }
+            catch
+            {
+                brush = new SolidColorBrush(Colors.Gray);
+            }
+        }
+        brush.Freeze();
+        return brush;
     }
 }

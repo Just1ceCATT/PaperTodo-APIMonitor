@@ -4,6 +4,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using PaperTodo.Plugin.ApiBalanceMonitor.Models;
+using PaperTodo.Plugin.ApiBalanceMonitor.Payload;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
@@ -225,7 +226,7 @@ internal sealed class BalanceRingCapsuleView : Grid
         {
             // 颜色瞬时切:Brush 是冻结的,且 ToBrush 会冻结;若要走颜色过渡需创建 mutable brush 临时挂上,
             // 复杂度高收益低。这里保瞬时。
-            _ring.ForegroundBrush = ToBrush(_storedRingColorHex, "#9E9E9E");
+            _ring.ForegroundBrush = Format.ToFrozenBrush(_storedRingColorHex, "#9E9E9E");
 
             // 修复 C:移除原先的 Value 0→_storedRingArc 启动动画(被 HideHookOverlay 末尾
             // 的 BeginAnimation(null) 立即取消,无视觉意义)。Value 由 HideHookOverlay 末尾
@@ -330,7 +331,7 @@ internal sealed class BalanceRingCapsuleView : Grid
         // ToBrush 已 Freeze，引用变化时仍触发圆环重渲染，这里仅当真正改变时覆盖。
         if (!string.Equals(_lastRingColorHex, ringColorHex, StringComparison.OrdinalIgnoreCase))
         {
-            _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
+            _ring.ForegroundBrush = Format.ToFrozenBrush(ringColorHex, "#9E9E9E");
             _lastRingColorHex = ringColorHex;
         }
         // spinner overlay 改用替换模式后不再有 _overlayLayer / _overlaySpinner* 状态可检测,
@@ -419,7 +420,7 @@ internal sealed class BalanceRingCapsuleView : Grid
         // Phase B+C 起点:重置 ring 状态 + 启动 Value 0→1(圆环填充动画)+ ring Opacity 0→1 fade-in
         _label.Text = "";
         _label.Opacity = 0;
-        _ring.ForegroundBrush = ToBrush(_lastHookColorHex ?? "#68E534", "#9E9E9E");
+        _ring.ForegroundBrush = Format.ToFrozenBrush(_lastHookColorHex ?? "#68E534", "#9E9E9E");
         _ring.ResetCheckmark();
         _ring.Value = 0; // 强制从 0 开始填充,Value→0→1 即可见出"画圆环"动画
 
@@ -492,37 +493,13 @@ internal sealed class BalanceRingCapsuleView : Grid
         _label.FontFamily = _cachedFontFamily;
         _label.FontSize = 12.0 * scale;
         _label.FontWeight = FontWeights.Normal;
-        _label.Foreground = ToBrush(theme.WeakTextColor, "#707070");
+        _label.Foreground = Format.ToFrozenBrush(theme.WeakTextColor, "#707070");
 
-        var accent = ToBrush(theme.AccentColor, "#B07A31");
+        var accent = Format.ToFrozenBrush(theme.AccentColor, "#B07A31");
         var track = new SolidColorBrush(
             Color.FromArgb(38, accent.Color.R, accent.Color.G, accent.Color.B));
         track.Freeze();
         _ring.TrackBrush = track;
         _ring.InvalidateVisual();
-    }
-
-    private static SolidColorBrush ToBrush(string value, string fallback)
-    {
-        SolidColorBrush brush;
-        try
-        {
-            brush = new SolidColorBrush(
-                (Color)ColorConverter.ConvertFromString(value)!);
-        }
-        catch
-        {
-            try
-            {
-                brush = new SolidColorBrush(
-                    (Color)ColorConverter.ConvertFromString(fallback)!);
-            }
-            catch
-            {
-                brush = new SolidColorBrush(Colors.Gray);
-            }
-        }
-        brush.Freeze();
-        return brush;
     }
 }

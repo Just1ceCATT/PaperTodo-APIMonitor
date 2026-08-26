@@ -177,25 +177,15 @@ internal sealed partial class BalanceMiniView : Border
         Child = _root;
     }
 
-    /// <summary>
-    /// Session 在 OnSettingsChanged 中调用,推送最新的字体覆盖源。
-    /// 留空表示跟随主题,非空时优先使用。
-    /// </summary>
-    public void SetFontOverride(string fontOverride)
-    {
-        _fontOverride = fontOverride;
-        ApplyTheme(_theme);
-    }
-
     /// <summary>主题切换:重建 Brush 缓存、字号、字体、容器与进度条配色。</summary>
     public void ApplyTheme(PaperBodyTheme theme)
     {
         _theme = theme;
         Background = BuildContainerBackground(theme.IsDark);
-        _textBrush = ToBrush(theme.TextColor, "#202020");
-        _weakBrush = ToBrush(theme.WeakTextColor, "#707070");
-        _accentBrush = ToBrush(theme.AccentColor, "#B07A31");
-        _barTrackBrush = ToBrush(theme.IsDark ? "#28FFFFFF" : "#22000000", "#22000000");
+        _textBrush = Format.ToFrozenBrush(theme.TextColor, "#202020");
+        _weakBrush = Format.ToFrozenBrush(theme.WeakTextColor, "#707070");
+        _accentBrush = Format.ToFrozenBrush(theme.AccentColor, "#B07A31");
+        _barTrackBrush = Format.ToFrozenBrush(theme.IsDark ? "#28FFFFFF" : "#22000000", "#22000000");
 
         // 字体源:插件设置 miniViewFontFamily 非空时覆盖主题字体,留空跟随主题。
         var fontSource = !string.IsNullOrEmpty(_fontOverride)
@@ -264,11 +254,11 @@ internal sealed partial class BalanceMiniView : Border
 
         // === DeepSeek 三行卡片字号设置 ===
         // DeepSeek 模块专用 brush 缓存:sparkline 用主题 accent(暖色);涨跌指示用固定 safe/danger 色。
-        _dsAccentBrush = ToBrush(theme.AccentColor, "#FF9800");
-        _dsSafeBrush = ToBrush(theme.IsDark ? "#78d47d" : "#4CAF50", "#4CAF50");
-        _dsDangerBrush = ToBrush(theme.IsDark ? "#e28787" : "#F44336", "#F44336");
+        _dsAccentBrush = Format.ToFrozenBrush(theme.AccentColor, "#FF9800");
+        _dsSafeBrush = Format.ToFrozenBrush(theme.IsDark ? "#78d47d" : "#4CAF50", "#4CAF50");
+        _dsDangerBrush = Format.ToFrozenBrush(theme.IsDark ? "#e28787" : "#F44336", "#F44336");
         // Badge pill 背景:深 25% / 浅 15% 橙调半透明,与 5h 橙(#FF9800)视觉同源。
-        _dsBadgeBackgroundBrush = ToBrush(theme.IsDark ? "#40FF9800" : "#26FF9800", "#26FF9800");
+        _dsBadgeBackgroundBrush = Format.ToFrozenBrush(theme.IsDark ? "#40FF9800" : "#26FF9800", "#26FF9800");
         _dsRow1Badge.Background = _dsBadgeBackgroundBrush;
 
         // 行间分割线:复用 _barTrackBrush,与 MiniMax _divider 同源。
@@ -470,31 +460,6 @@ internal sealed partial class BalanceMiniView : Border
         _cachedFontFamily = new FontFamily(source);
         _cachedFontFamilySource = source;
         return _cachedFontFamily;
-    }
-
-    private static SolidColorBrush ToBrush(string value, string fallback)
-    {
-        SolidColorBrush brush;
-        try
-        {
-            brush = new SolidColorBrush(
-                (Color)ColorConverter.ConvertFromString(value)!);
-        }
-        catch
-        {
-            try
-            {
-                brush = new SolidColorBrush(
-                    (Color)ColorConverter.ConvertFromString(fallback)!);
-            }
-            catch
-            {
-                brush = new SolidColorBrush(Colors.Gray);
-            }
-        }
-        // 冻结 brush:让 WPF 渲染系统走快路径,并允许跨线程共享。
-        brush.Freeze();
-        return brush;
     }
 
     /// <summary>
