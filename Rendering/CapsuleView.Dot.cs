@@ -97,99 +97,40 @@ internal sealed class BalanceDotCapsuleView : Grid
         Grid.SetColumn(_label, 3);
         Children.Add(_label);
 
-        // Overlay 层：跨 5 列覆盖在 ring+dot+label 上,hook 触发时显示。
-        BuildOverlayLayer();
+        // spinner overlay 已改为"替换模式"(改 _label.Text + _dot.Fill),
+        // 不再需要 _overlayLayer 覆盖层与 BuildOverlayLayer。
 
         ApplyTheme(context.Theme);
     }
 
     // ----- Overlay 渲染（hook 触发时临时覆盖胶囊） -----
-    private readonly Grid _overlayLayer = new();
-    private readonly Border _overlaySpinnerBadge = new();
-    private readonly TextBlock _overlaySpinnerText = new();
-    private readonly RotateTransform _overlaySpinnerRotate = new();
-    private readonly DoubleAnimation _overlaySpinnerAnim = new();
+    // spinner 蓝(#2196F3):冻结后跨帧复用,渲染期不再做线程检查;
+    // 提取为静态字段,允许多实例共用同一 frozen 实例。
+    private static readonly SolidColorBrush SpinnerBadgeBrush = CreateFrozenSpinnerBrush();
+    private static SolidColorBrush CreateFrozenSpinnerBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
+        brush.Freeze();
+        return brush;
+    }
     private DispatcherTimer? _overlayCountdown;
-    // Color overlay 缓存原始值,倒计时恢复时用
+    // Color / Spinner overlay 共用暂存字段:倒计时恢复或 HideHookOverlay 时用
     private string? _storedLabelText;
     private string? _storedDotFillHex;
-
-    private void BuildOverlayLayer()
-    {
-        _overlayLayer.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _overlayLayer.VerticalAlignment = VerticalAlignment.Stretch;
-        _overlayLayer.IsHitTestVisible = false;
-        _overlayLayer.Background = Brushes.Transparent;
-        _overlayLayer.Visibility = Visibility.Collapsed;
-        Grid.SetColumnSpan(_overlayLayer, 5);
-        Children.Add(_overlayLayer);
-
-        _overlaySpinnerRotate.Angle = 0;
-        _overlaySpinnerAnim.From = 0;
-        _overlaySpinnerAnim.To = 360;
-        _overlaySpinnerAnim.Duration = TimeSpan.FromSeconds(1.5);
-        _overlaySpinnerAnim.RepeatBehavior = RepeatBehavior.Forever;
-        _overlaySpinnerAnim.EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut };
-        _overlaySpinnerBadge.Width = 14;
-        _overlaySpinnerBadge.Height = 14;
-        _overlaySpinnerBadge.CornerRadius = new CornerRadius(2);
-        _overlaySpinnerBadge.Background = new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3));
-        _overlaySpinnerBadge.HorizontalAlignment = HorizontalAlignment.Left;
-        _overlaySpinnerBadge.VerticalAlignment = VerticalAlignment.Center;
-        _overlaySpinnerBadge.RenderTransform = _overlaySpinnerRotate;
-        _overlaySpinnerBadge.RenderTransformOrigin = new Point(0.5, 0.5);
-        _overlaySpinnerBadge.Child = BuildHourglassGlyph();
-        _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
-
-        _overlaySpinnerText.Margin = new Thickness(20, 0, 0, 0);
-        _overlaySpinnerText.VerticalAlignment = VerticalAlignment.Center;
-        _overlaySpinnerText.FontSize = 12.0;
-        _overlaySpinnerText.FontWeight = FontWeights.Medium;
-        _overlaySpinnerText.Foreground = ToBrush("#2196F3", "#707070");
-        _overlaySpinnerText.Visibility = Visibility.Collapsed;
-
-        var spinnerRow = new Grid();
-        spinnerRow.Children.Add(_overlaySpinnerBadge);
-        spinnerRow.Children.Add(_overlaySpinnerText);
-        _overlayLayer.Children.Add(spinnerRow);
-    }
-
-    /// <summary>蓝色沙漏图形：上三角 + 下三角。</summary>
-    private static FrameworkElement BuildHourglassGlyph()
-    {
-        var canvas = new Canvas { Width = 14, Height = 14, Background = Brushes.Transparent };
-        var top = new System.Windows.Shapes.Path
-        {
-            Data = Geometry.Parse("M 2,1 L 12,1 L 7,7 Z"),
-            Fill = Brushes.White
-        };
-        var bottom = new System.Windows.Shapes.Path
-        {
-            Data = Geometry.Parse("M 7,7 L 12,13 L 2,13 Z"),
-            Fill = Brushes.White
-        };
-        canvas.Children.Add(top);
-        canvas.Children.Add(bottom);
-        return canvas;
-    }
 
     /// <summary>
     /// 设置 hook overlay：用 WPF 原生 ring+text 实现 PNG 描述的效果。
     /// - Color overlay (Stop/Permission/Failure):改 _label.Text + _dot.Fill,带倒计时恢复
-    /// - Spinner overlay (PreTool/PostTool):蓝色沙漏 + 文本,持续到下次 Update
+    /// - Spinner overlay (PreTool/PostTool):改 _label.Text + _dot.Fill 为蓝色,持续到下次 Update
     /// </summary>
     public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir)
     {
         _overlayCountdown?.Stop();
         _overlayCountdown = null;
-        _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
-        _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
-        _overlaySpinnerText.Visibility = Visibility.Collapsed;
         RestoreColorOverlayIfAny();
 
         if (kind == HookOverlayKind.None)
         {
-            _overlayLayer.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -252,11 +193,17 @@ internal sealed class BalanceDotCapsuleView : Grid
 
     private void ShowSpinnerOverlay(string text)
     {
-        _overlaySpinnerText.Text = text;
-        _overlaySpinnerBadge.Visibility = Visibility.Visible;
-        _overlaySpinnerText.Visibility = Visibility.Visible;
-        _overlayLayer.Visibility = Visibility.Visible;
-        _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, _overlaySpinnerAnim);
+        // Spinner overlay（替换模式）：与 ShowColorOverlay 共用 RestoreColorOverlayIfAny 路径。
+        // - 暂存 _label.Text / _dot 当前填充色
+        // - 把 _label.Text 替换为 spinner 文本,_dot.Fill 替换为 spinner 蓝(#2196F3)
+        // - 圆环保持 Brushes.Transparent(Dot 视图圆环始终为轮廓底色,不显示 spinner 颜色弧)
+        // 不创建覆盖层、不旋转沙漏、不带倒计时。
+        _storedLabelText = _label.Text;
+        _storedDotFillHex = _dot.Fill is SolidColorBrush sb ? sb.Color.ToString() : null;
+
+        _label.Text = text;
+        _dot.Fill = SpinnerBadgeBrush;
+        // 圆环保持 Brushes.Transparent(与 Update 路径一致),不动 _ring.ForegroundBrush / _ring.Value。
     }
 
     /// <summary>外部在 Update() 时清掉 spinner overlay(spinner 是"持续型")。</summary>
@@ -264,11 +211,8 @@ internal sealed class BalanceDotCapsuleView : Grid
     {
         _overlayCountdown?.Stop();
         _overlayCountdown = null;
-        _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
-        _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
-        _overlaySpinnerText.Visibility = Visibility.Collapsed;
+        // spinner 期间改动的 _label.Text / _dot.Fill 由 RestoreColorOverlayIfAny 恢复。
         RestoreColorOverlayIfAny();
-        _overlayLayer.Visibility = Visibility.Collapsed;
     }
 
     private static DoubleAnimation CreateBreathAnimation()
@@ -328,13 +272,8 @@ internal sealed class BalanceDotCapsuleView : Grid
         }
 
         // 文字真正变化时触发淡入；polling tick 不变 text 则不闪。
-        // spinner overlay 持续到下一次 Update：检测后清掉,恢复余额快照文本。
-        if (_overlayLayer.Visibility == Visibility.Visible &&
-            (_overlaySpinnerBadge.Visibility == Visibility.Visible ||
-             _overlaySpinnerText.Visibility == Visibility.Visible))
-        {
-            HideHookOverlay();
-        }
+        // spinner overlay 改用替换模式后不再有 _overlayLayer / _overlaySpinner* 状态可检测,
+        // 清理由 BalanceSession.UpdateSnapshot spinner 分支显式触发(Ring + Dot 双视图)。
         if (textChanged)
         {
             _label.Opacity = 0;

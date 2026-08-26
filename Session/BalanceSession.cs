@@ -943,17 +943,28 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                     _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
                 }
             }
-            else if (!isQuotaProvider &&
-                     (_activeOverlayText == "准备调用工具" || _activeOverlayText == "文件编辑完成"))
+            else if (_activeOverlayText == "准备调用工具" || _activeOverlayText == "文件编辑完成")
             {
-                // Spinner overlay 持续到下次 Update:余额更新时清掉 overlay 状态
-                _regularDotCapsuleView?.HideHookOverlay();
-                _dockedDotCapsuleView?.HideHookOverlay();
+                // Spinner overlay 持续到下次 Update:清掉所有 view 的 overlay 状态。
+                // 修复 Ring 视图 spinner 仅依赖下次 SetHookOverlay 入口清理的漏洞
+                // (MiniMax 场景下若只触发一次 spinner,无后续 hook,overlay 永不消失)。
                 _activeOverlayTimer?.Stop();
                 _activeOverlayTimer = null;
                 _activeOverlayText = null;
-                _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
-                _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                _regularRingCapsuleView?.HideHookOverlay();
+                _dockedRingCapsuleView?.HideHookOverlay();
+                _regularDotCapsuleView?.HideHookOverlay();
+                _dockedDotCapsuleView?.HideHookOverlay();
+                if (isQuotaProvider)
+                {
+                    _regularRingCapsuleView?.Update(text, ringColor, ringArc);
+                    _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
+                }
+                else
+                {
+                    _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                    _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                }
             }
             // Color overlay 期间 view 状态保留,由倒计时到时统一恢复。
         }
