@@ -283,8 +283,14 @@ internal sealed class BalanceProgressRing : FrameworkElement
             BeginTime = TimeSpan.FromMilliseconds(strokeMs),
             EasingFunction = null // 线性匀速旋转
         };
-        Storyboard.SetTarget(rotateAnim, _hourglassRotateTransform);
-        Storyboard.SetTargetProperty(rotateAnim, new PropertyPath(RotateTransform.AngleProperty));
+        // 旋转动画 target 必须是 FrameworkElement(Path)+ PropertyPath。
+        // 直接 target RotateTransform(Freezable)在 WPF 中需要其已在 NameScope 注册;
+        // new 出来的 _hourglassRotateTransform 未注册,Storyboard.Begin 在 resolveTarget
+        // 阶段静默失败,Angle 始终是 0,沙漏不旋转。
+        // 改成 targeting _hourglassPath + PropertyPath "RenderTransform.Angle",WPF 通过
+        // RenderTransform 链自动解析到 RotateTransform.AngleProperty。
+        Storyboard.SetTarget(rotateAnim, _hourglassPath);
+        Storyboard.SetTargetProperty(rotateAnim, new PropertyPath("RenderTransform.Angle"));
         sb.Children.Add(rotateAnim);
 
         _hourglassStoryboard = sb;

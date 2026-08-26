@@ -87,6 +87,10 @@ internal sealed class BalanceRingCapsuleView : Grid
     private string? _storedLabelText;
     private string? _storedRingColorHex;
     private double _storedRingArc;
+    // spinner 期间把 _ring.TrackBrush 临时切为 Brushes.Transparent 隐藏底圈,
+    // HideHookOverlay / countdown tick 通过 RestoreColorOverlayIfAny 恢复。
+    // 直接存 Brush 引用,避免重新 ToBrush+Freeze 触发 Pen 缓存多一次 miss。
+    private Brush? _storedRingTrackBrush;
     // Update 节流字段:仅当颜色字符串/弧值真正变化时才覆盖/重绘
     private string? _lastRingColorHex;
     private double _lastAppliedArc = -1.0;
@@ -167,6 +171,8 @@ internal sealed class BalanceRingCapsuleView : Grid
     {
         _storedLabelText = _label.Text;
         _storedRingColorHex = _ring.ForegroundBrush is SolidColorBrush sb ? sb.Color.ToString() : null;
+        // 修复 A:先停 ValueProperty 活动动画再抓真实本地值(不是动画插值)
+        _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
         _storedRingArc = _ring.Value;
         _lastHookColorHex = ringColorHex;
 
@@ -221,23 +227,9 @@ internal sealed class BalanceRingCapsuleView : Grid
             // 复杂度高收益低。这里保瞬时。
             _ring.ForegroundBrush = ToBrush(_storedRingColorHex, "#9E9E9E");
 
-            // Value 用 400ms ease-out 过渡:1 → _storedRingArc,让用户看到圆环从满到当前的"收缩"。
-            // 如果 _storedRingArc 已经是 1.0(本来就是满的),不用动画,直接显式清除并赋值即可。
-            if (_storedRingArc < 1.0)
-            {
-                var restoreAnim = new DoubleAnimation
-                {
-                    To = _storedRingArc,
-                    Duration = TimeSpan.FromMilliseconds(400),
-                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-                };
-                _ring.BeginAnimation(BalanceProgressRing.ValueProperty, restoreAnim);
-            }
-            else
-            {
-                _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
-                _ring.Value = _storedRingArc;
-            }
+            // 修复 C:移除原先的 Value 0→_storedRingArc 启动动画(被 HideHookOverlay 末尾
+            // 的 BeginAnimation(null) 立即取消,无视觉意义)。Value 由 HideHookOverlay 末尾
+            // 或 view.Update 中的 BeginDrawAnimation 统一驱动。
 
             // 中断可能正在跑的 Opacity 动画,并把 ring 重置为不透明。
             // 若刚 SetHookOverlay 进来,这个 1 是为了让 ShowColorOverlay 的 fade-out 从可见开始。
@@ -247,6 +239,14 @@ internal sealed class BalanceRingCapsuleView : Grid
 
             _storedRingColorHex = null;
         }
+        // spinner 期间把 TrackBrush 临时改成 Brushes.Transparent 隐藏底圈,
+        // 这里恢复 ApplyTheme 设置的原始 brush。
+        // Color overlay 路径不写 _storedRingTrackBrush(null 判断天然隔离)。
+        if (_storedRingTrackBrush != null)
+        {
+            _ring.TrackBrush = _storedRingTrackBrush;
+            _storedRingTrackBrush = null;
+        }
         // 重置对勾动画:隐藏 + 停止正在跑的 StrokeDashOffset 动画
         _ring.ResetCheckmark();
     }
@@ -254,24 +254,35 @@ internal sealed class BalanceRingCapsuleView : Grid
     private void ShowSpinnerOverlay(string text)
     {
         // Spinner overlay（替换模式）：与 ShowColorOverlay 共用 RestoreColorOverlayIfAny 路径。
-        // - 暂存 _label.Text / _ring 当前颜色 / 圆环 Value
+        // - 暂存 _label.Text / _ring 当前颜色 / 圆环 Value / 圆环底圈 TrackBrush
         // - 把 _label.Text 替换为 spinner 文本
         // - _ring.ForegroundBrush 替换为 spinner 蓝(#2196F3)
-        // - 圆环 Opacity=0 完全消失(底圈也透明),让沙漏独占视觉
+        // - 圆环视觉清空:TrackBrush=Brushes.Transparent(底圈不画) + Value=0(OnRender 早 return,弧段不画)
         // - 沙漏描边→旋转循环动画(1秒描边 + 1秒旋转,RepeatBehavior=Forever)
-        //   —— 替代圆环填充动画,传达"工具调用进行中"语义(类似对勾描边的"画线"效果)。
+        //   —— 替代圆环填充动画,传达"工具调用进行中"语义。
         // 不创建覆盖层、不带倒计时 —— 与 StopImage 等 Color overlay 走同一恢复路径。
+        // 不动 _ring.Opacity —— FrameworkElement.Opacity 继承会让挂在 _ring 下的 _hourglassPath
+        // (Path visual child)也变透明,沙漏完全不显示(已踩坑)。
         _storedLabelText = _label.Text;
         _storedRingColorHex = _ring.ForegroundBrush is SolidColorBrush sb ? sb.Color.ToString() : null;
+        // 修复 A:捕获 _storedRingArc 之前先停掉 ValueProperty 活动动画。
+        // WPF DP 语义:活动动画 > 本地值;BeginAnimation(null) 把动画输出从基值栈剥离,
+        // 此时 Value 读到的是上一次 SetValue 的本地值(即 polling Update 设的 clampedArc),
+        // 是真实最新数据值,而不是动画插值。
+        _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
         _storedRingArc = _ring.Value;
-        // 必须暂存当前 _storedRingArc(spinner 之前的 Value):HideHookOverlay → RestoreColorOverlayIfAny
-        // 启动的"收缩动画" To=_storedRingArc 等于当前 Value(spinner 期间圆环 Value 不变),
-        // 视觉上 Value 不动;若不暂存,_storedRingArc 保持默认 0,RestoreColorOverlayIfAny 会启动
-        // Value 1→0 收缩动画(spinner 期间圆环是 0.5 的话会突然收缩到 0,视觉突兀)。
+        _storedRingTrackBrush = _ring.TrackBrush;
 
         _label.Text = text;
         _ring.ForegroundBrush = SpinnerBadgeBrush;
-        _ring.Opacity = 0; // 圆环完全隐藏(沙漏独占视觉);HideHookOverlay reset 到 1
+        _ring.TrackBrush = Brushes.Transparent; // 底圈临时透明(沙漏独占视觉);RestoreColorOverlayIfAny 恢复
+
+        // 修复:先停掉 ValueProperty 上可能残存的 BeginDrawAnimation(500ms 圆环绘制动画),
+        // 否则 SetValue(0) 被活动动画输出压住(DP 优先级:活动动画 > 本地值),
+        // 圆环仍按插值画蓝色弧段,视觉上变成"蓝沙漏盖在蓝圆环上"。
+        _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
+        _ring.Value = 0; // OnRender 早 return,弧段不画
+
         _ring.BeginHourglassAnimation();
         // Spinner 类型无倒计时:持续到下次 Update 由外部 HideHookOverlay 清掉。
     }
@@ -288,6 +299,13 @@ internal sealed class BalanceRingCapsuleView : Grid
         RestoreColorOverlayIfAny();
         // 沙漏是 spinner 期间的瞬时动画,结束必须隐藏并停止描边动画。
         _ring.StopHourglassAnimation();
+
+        // 修复 B:fallback 用 _lastAppliedArc 而不是 _storedRingArc。
+        // _lastAppliedArc 永远是 Update 时设的 clampedArc,是"真实最新数据值"。
+        // _storedRingArc 即使经过修复 A 仍可能因后续 activity 失准(动画 in-flight 时捕获)。
+        // 双重保险,避免普通 polling tick 因 signature diff=0 跳过 BeginDrawAnimation 导致 Value 永久卡在错值。
+        _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
+        _ring.Value = _lastAppliedArc < 0 ? 0 : _lastAppliedArc;
     }
 
     /// <summary>
