@@ -137,12 +137,12 @@ internal sealed class BalanceProgressRing : FrameworkElement
     /// <summary>
     /// 触发"圆环闭合 + 短暂停留 + 对勾描边"连续动画。
     /// 默认时序参考 https://css-tricks.com 的成功动画视觉节奏（圆环 ease-in-out 闭合 + 对勾 ease-out 描边），
-    /// 总时长 ~750ms（400ms 圆环闭合 + -50ms 提前让对勾在末端开始 + 350ms 对勾描边）。
-    /// 调用方也可自定义参数适应不同场景。
+    /// 总时长 ~950ms（600ms 圆环填充 + -50ms 提前让对勾在末端开始 + 400ms 对勾描边）。
+    /// 调用方也可自定义参数适应不同场景（如 fade-out→fade-in 流中圆环填充会拉到 1000ms+ 配合更长节奏）。
     /// </summary>
-    public void BeginCheckmarkAnimation(int fillDurationMs = 400,
+    public void BeginCheckmarkAnimation(int fillDurationMs = 600,
                                        int holdDurationMs = -50,
-                                       int strokeDurationMs = 350)
+                                       int strokeDurationMs = 400)
     {
         // 阶段 1: 圆环填充到 1（如果当前 < 1）
         // ease-in-out:圆环"充到满"的 S 形曲线,慢启动、中间加速、缓结束,与 HTML CSS 的 ease-in-out 同款。

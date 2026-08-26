@@ -320,6 +320,48 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                 _activeOverlayTimer?.Stop();
                 _activeOverlayTimer = null;
                 _activeOverlayText = null;
+
+                // 修复：打勾动画结束后用最新余额数据刷新视图。
+                // 之前：view 内部 RestoreColorOverlayIfAny 用 overlay 启动前暂存的 _storedRingArc / _storedDotFillHex（旧值），
+                // 这里直接调 view.HideHookOverlay 清掉内部状态，再用 _latestCapsuleSnapshot 的最新数据 Update，
+                // 圆环 / 圆点会被硬切到当前最新比例（HideHookOverlay 内 400ms 收缩动画会被 Update 的 _ring.Value=clampedArc 立即覆盖，WPF 依赖属性 SetValue 会终止正在跑的 BeginAnimation）。
+                if (_latestCapsuleSnapshot is not null)
+                {
+                    var dotColor = RiskClassifier.RingColorHex(ComputeRiskRatioForCurrent());
+                    if (IsQuotaProvider)
+                    {
+                        _regularRingCapsuleView?.HideHookOverlay();
+                        _dockedRingCapsuleView?.HideHookOverlay();
+                        _regularRingCapsuleView?.Update(
+                            _latestCapsuleSnapshot.Text,
+                            _latestCapsuleSnapshot.RingColorHex,
+                            _latestCapsuleSnapshot.RingArc);
+                        _dockedRingCapsuleView?.Update(
+                            _latestCapsuleSnapshot.Text,
+                            _latestCapsuleSnapshot.RingColorHex,
+                            _latestCapsuleSnapshot.RingArc);
+                    }
+                    else
+                    {
+                        // 补发路径（ApplyPendingOverlayToView）可能让 Dot 视图也接收了 Color overlay，
+                        // 这里同样刷新，避免 RestoreColorOverlayIfAny 用旧值恢复后没人刷新的问题。
+                        _regularDotCapsuleView?.HideHookOverlay();
+                        _dockedDotCapsuleView?.HideHookOverlay();
+                        _regularDotCapsuleView?.Update(
+                            _latestCapsuleSnapshot.Text,
+                            _latestCapsuleSnapshot.RingColorHex,
+                            _latestCapsuleSnapshot.RingArc,
+                            dotColor,
+                            _lastIsPeakHour);
+                        _dockedDotCapsuleView?.Update(
+                            _latestCapsuleSnapshot.Text,
+                            _latestCapsuleSnapshot.RingColorHex,
+                            _latestCapsuleSnapshot.RingArc,
+                            dotColor,
+                            _lastIsPeakHour);
+                    }
+                }
+
                 RepushCapsulePresentation();
             };
             _activeOverlayTimer.Start();

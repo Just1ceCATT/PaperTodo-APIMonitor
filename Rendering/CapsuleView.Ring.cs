@@ -98,6 +98,9 @@ internal sealed class BalanceRingCapsuleView : Grid
     // Tick handler 用实例方法代替 lambda,避免高频 hook 事件下的 GC 分配。
     private readonly DispatcherTimer _fadeInTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private string? _pendingFadeInText;
+    // 当前 hook 事件对应的圆环颜色,在 fade-out → fade-in 串联过程中跨 tick 持有,
+    // 由 SetHookOverlay 写入,OnFadeOutCompleteTick 读出用于 ForegroundBrush。
+    private string? _lastHookColorHex;
 
     private void BuildOverlayLayer()
     {
@@ -170,11 +173,15 @@ internal sealed class BalanceRingCapsuleView : Grid
         // 先清掉旧倒计时与动画
         StopOverlayCountdown();
         _fadeInTimer.Stop();
+        // 清掉可能正在跑的 ring Opacity 动画,但不显式设回 1——让 RestoreColorOverlayIfAny 接管状态重置
+        // (若该次 Restore 把 ring 重新置 1,后续 ShowColorOverlay 会从 1 重新 fade-out;若没 stored state 需要恢复,
+        // 则原状保留)。这样避免在快速重入时把刚启动的 fade-out 动画瞬间抢断。
+        _ring.BeginAnimation(UIElement.OpacityProperty, null);
         _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
         _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
         _overlaySpinnerText.Visibility = Visibility.Collapsed;
 
-        // 恢复上一次 color overlay 的暂存值(防止叠加)
+        // 恢复上一次 color overlay 的暂存值(动画过渡,不瞬时硬切)
         RestoreColorOverlayIfAny();
 
         if (kind == HookOverlayKind.None)
@@ -212,47 +219,64 @@ internal sealed class BalanceRingCapsuleView : Grid
     /// 临时修改 _label.Text + _ring 颜色,显示 hook 状态。
     /// 倒计时后由 RestoreColorOverlayIfAny 恢复。
     ///
-    /// 动画时序参考"圆环 ease-in-out 闭合 → 对勾 ease-out 描边 → 文本 ease-in-out 淡入"的 CSS 成功动画节奏:
-    ///   - 圆环闭合 fill: 400ms (BeginCheckmarkAnimation 内置,ease-in-out)
-    ///   - 对勾描边 stroke: BeginTime = 350ms, Duration = 350ms (ease-out)
-    ///   - 文本淡入 fade-in: BeginTime = 500ms, Duration = 350ms (ease-in-out)
-    ///   - 总时长 ~850ms
+    /// 四段串联动画(参考 https://css-tricks.com 成功动画 + CSS 圆环+对勾+文本模式):
+    ///   - Phase A (0~220ms):fade-out 当前内容(_label.Opacity &amp; _ring.Opacity 1→0 ease-out)
+    ///   - Phase B (220ms tick):重置 ring 状态(Value=0, ForegroundBrush=success-color, ResetCheckmark)
+    ///   - Phase C (220~820ms):圆环填充 Value 0→1 (600ms ease-in-out,绘制"圆环"+对勾 400ms ease-out BeginTime=350ms)
+    ///                          + ring Opacity 0→1 fade-in(200ms ease-in-out,与圆环填充并行)
+    ///   - Phase D (820ms tick 起的 350ms):文本 ease-in-out 淡入
+    ///   - 总时长 ~1.17s,符合用户选的"紧凑 ~1.5s"节奏。
+    ///
+    /// 为何强制 Value=0 起步而不是从当前 0.5 补弧:
+    /// 余额用得差不多时(如 Value=0.85),补弧只有 54° 视觉幅度,且圆角端点糊掉开始/结束锚点,
+    /// 人眼感知不到"画圆环"动画。从 0 起步 → 完整 360° 画圆 → 视觉锚点固定在 12 点钟方向,
+    /// 用户能明确感知到笔尖沿圆走一圈。
     /// </summary>
     private void ShowColorOverlay(string text, string ringColorHex, int durationSeconds)
     {
         _storedLabelText = _label.Text;
         _storedRingColorHex = _ring.ForegroundBrush is SolidColorBrush sb ? sb.Color.ToString() : null;
         _storedRingArc = _ring.Value;
-        // 字符淡出淡入:先把 _label 隐藏,然后延迟显示文本并触发 fade-in。
-        _label.Text = "";
-        _label.Opacity = 0;
-        // 设置圆环颜色 + 重置对勾状态;BeginCheckmarkAnimation 内部从当前 Value 插值到 1.0(ease-in-out),
-        // 圆环会"生长"到满,不再像之前那样先 Value=1.0 后跳过 fill 动画。
-        _ring.ForegroundBrush = ToBrush(ringColorHex, "#9E9E9E");
-        _ring.ResetCheckmark();
-        _label.InvalidateMeasure();
-        // 触发动画:圆环闭合 + 短暂停留 + 对勾描边
-        _ring.BeginCheckmarkAnimation();
-        // 延迟显示新文本(让圆环闭合动画先跑起来),500ms 后显示文字并触发 fade-in。
-        // 复用 _fadeInTimer 实例(handler 用实例方法,避免每次 new lambda 闭包)。
+        _lastHookColorHex = ringColorHex;
+
+        // Phase A:fade-out 当前内容(只对现有 _label + _ring 做 Opacity 动画,不动内容)
+        BeginLabelFadeOut(220);
+        var ringFadeOut = new DoubleAnimation
+        {
+            To = 0.0,
+            Duration = TimeSpan.FromMilliseconds(220),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        _ring.BeginAnimation(UIElement.OpacityProperty, ringFadeOut);
+
+        // 阶段串行调度:220ms 后 OnFadeOutCompleteTick 触发 Phase B+C,然后再 820ms 后调 OnFadeInTick 淡入 label
         _fadeInTimer.Stop();
         _fadeInTimer.Tick -= OnFadeInTick;
-        _fadeInTimer.Tick += OnFadeInTick;
+        _fadeInTimer.Tick -= OnFadeOutCompleteTick;
+        _fadeInTimer.Tick += OnFadeOutCompleteTick;
         _pendingFadeInText = text;
-        _fadeInTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _fadeInTimer.Interval = TimeSpan.FromMilliseconds(220);
         _fadeInTimer.Start();
-        // 倒计时恢复余额快照:复用 _overlayCountdown,停掉旧 tick handler 后再加新 handler。
+
+        // 倒计时恢复余额快照:复用 _overlayCountdown,到时清掉 _label.Opacity 与 _ring.Opacity 还原成 1
         _overlayCountdown ??= new DispatcherTimer();
         _overlayCountdown.Stop();
         _overlayCountdown.Tick -= OnCountdownTick;
         _overlayCountdown.Tick += OnCountdownTick;
         _overlayCountdown.Interval = TimeSpan.FromSeconds(durationSeconds);
         _overlayCountdown.Start();
+
         PaperTodo.Plugin.ApiBalanceMonitor.Services.HookTrace.Write(
-            $"ShowColorOverlay AFTER text='{text}' ring={ringColorHex}");
+            $"ShowColorOverlay AFTER text='{text}' ring={ringColorHex} (fade-out→fade-in flow)");
     }
 
-    /// <summary>恢复暂存的 _label.Text / _ring 颜色 / arc;若未暂存则不动。</summary>
+    /// <summary>
+    /// 恢复暂存的 _label.Text / _ring 颜色 / arc;若未暂存则不动。
+    ///
+    /// 关键改动（用户反馈「复原但带过渡动画」）：圆环 Value 用 400ms QuadraticEase EaseOut
+    /// 从 1 平滑插值回 _storedRingArc,而不是瞬时硬切。前景色 / 文字 / 对勾 仍瞬时切。
+    /// 这避免了用户观察到的"圆环突然不见"的顿挫感。
+    /// </summary>
     private void RestoreColorOverlayIfAny()
     {
         if (_storedLabelText != null)
@@ -262,8 +286,34 @@ internal sealed class BalanceRingCapsuleView : Grid
         }
         if (_storedRingColorHex != null)
         {
+            // 颜色瞬时切:Brush 是冻结的,且 ToBrush 会冻结;若要走颜色过渡需创建 mutable brush 临时挂上,
+            // 复杂度高收益低。这里保瞬时。
             _ring.ForegroundBrush = ToBrush(_storedRingColorHex, "#9E9E9E");
-            _ring.Value = _storedRingArc;
+
+            // Value 用 400ms ease-out 过渡:1 → _storedRingArc,让用户看到圆环从满到当前的"收缩"。
+            // 如果 _storedRingArc 已经是 1.0(本来就是满的),不用动画,直接显式清除并赋值即可。
+            if (_storedRingArc < 1.0)
+            {
+                var restoreAnim = new DoubleAnimation
+                {
+                    To = _storedRingArc,
+                    Duration = TimeSpan.FromMilliseconds(400),
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                };
+                _ring.BeginAnimation(BalanceProgressRing.ValueProperty, restoreAnim);
+            }
+            else
+            {
+                _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
+                _ring.Value = _storedRingArc;
+            }
+
+            // 中断可能正在跑的 Opacity 动画,并把 ring 重置为不透明。
+            // 若刚 SetHookOverlay 进来,这个 1 是为了让 ShowColorOverlay 的 fade-out 从可见开始。
+            // 若在 OnCountdownTick 进来,这个 1 是为了保证 ring 在恢复过程中仍可见。
+            _ring.BeginAnimation(UIElement.OpacityProperty, null);
+            _ring.Opacity = 1;
+
             _storedRingColorHex = null;
         }
         // 重置对勾动画:隐藏 + 停止正在跑的 StrokeDashOffset 动画
@@ -285,6 +335,9 @@ internal sealed class BalanceRingCapsuleView : Grid
     {
         StopOverlayCountdown();
         _fadeInTimer.Stop();
+        // 中断可能正在跑的 ring Opacity 动画,reset 到 1(避免叠 spinner 后 ring 卡在 0)
+        _ring.BeginAnimation(UIElement.OpacityProperty, null);
+        _ring.Opacity = 1;
         _overlaySpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
         _overlaySpinnerBadge.Visibility = Visibility.Collapsed;
         _overlaySpinnerText.Visibility = Visibility.Collapsed;
@@ -365,6 +418,22 @@ internal sealed class BalanceRingCapsuleView : Grid
         _label.BeginAnimation(UIElement.OpacityProperty, anim);
     }
 
+    /// <summary>
+    /// 文字淡出:CubicEase EaseOut,默认 220ms。
+    /// 不重设 _label.Opacity(动画从当前值插值到 0),避免重复触发时突变。
+    /// 与 BeginLabelFadeInSlow 对称,共同支撑 fade-out → fade-in 的 hook overlay 串联。
+    /// </summary>
+    private void BeginLabelFadeOut(int durationMs = 220)
+    {
+        var anim = new DoubleAnimation
+        {
+            To = 0.0,
+            Duration = TimeSpan.FromMilliseconds(durationMs),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        _label.BeginAnimation(UIElement.OpacityProperty, anim);
+    }
+
     /// <summary>_fadeInTimer Tick 实例方法:替换原 lambda,避免每次 ShowColorOverlay 都分配闭包。</summary>
     private void OnFadeInTick(object? sender, EventArgs e)
     {
@@ -376,6 +445,43 @@ internal sealed class BalanceRingCapsuleView : Grid
         }
         // 慢速淡入:ease-in-out,350ms,匹配 HTML CSS "Payment Success" 标题 0.6s ease-in-out 的节奏。
         BeginLabelFadeInSlow();
+    }
+
+    /// <summary>
+    /// _fadeInTimer Tick 实例方法:fade-out 完成回调,触发 Phase B + Phase C 起点。
+    /// 设置新 ring 状态、ring Opacity 由 0 开始 fade-in、启动 BeginCheckmarkAnimation、
+    /// 然后把 handler 切回 OnFadeInTick,并启动 820ms 后调用 → Phase D label 淡入。
+    /// </summary>
+    private void OnFadeOutCompleteTick(object? sender, EventArgs e)
+    {
+        _fadeInTimer.Stop();
+        _fadeInTimer.Tick -= OnFadeOutCompleteTick;
+        _fadeInTimer.Tick += OnFadeInTick;
+
+        // Phase B+C 起点:重置 ring 状态 + 启动 Value 0→1(圆环填充动画)+ ring Opacity 0→1 fade-in
+        _label.Text = "";
+        _label.Opacity = 0;
+        _ring.ForegroundBrush = ToBrush(_lastHookColorHex ?? "#68E534", "#9E9E9E");
+        _ring.ResetCheckmark();
+        _ring.Value = 0; // 强制从 0 开始填充,Value→0→1 即可见出"画圆环"动画
+
+        // ring Opacity 0→1 fade-in:200ms ease-in-out,与 Value 0→1 同时启动
+        var ringFadeIn = new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = TimeSpan.FromMilliseconds(200),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        };
+        _ring.BeginAnimation(UIElement.OpacityProperty, ringFadeIn);
+
+        // Phase C:Value 0→1(600ms ease-in-out 画圆环)+ Phase C 后对勾描边 400ms
+        // 默认 fillDurationMs=600,strokeDurationMs=400,holdDurationMs=-50(对勾在末端与圆环接近同时结束)
+        _ring.BeginCheckmarkAnimation();
+
+        // Phase D 调度:820ms 后(220ms fade-out + 600ms ring fill)调 OnFadeInTick 淡入 label
+        _fadeInTimer.Interval = TimeSpan.FromMilliseconds(820);
+        _fadeInTimer.Start();
     }
 
     /// <summary>_overlayCountdown Tick 实例方法:替换原 lambda。</summary>
