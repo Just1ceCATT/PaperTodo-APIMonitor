@@ -5,6 +5,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using PaperTodo.Plugin.ApiBalanceMonitor.Models;
 using PaperTodo.Plugin.ApiBalanceMonitor.Payload;
+using PaperTodo.Plugin.ApiBalanceMonitor.Services;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
@@ -127,9 +128,8 @@ internal sealed class BalanceRingCapsuleView : Grid
     private string? _lastRingColorHex;
     private double _lastAppliedArc = -1.0;
     // 当前正在 fade-in 的符号类型:决定 OnFadeOutCompleteTick 在 Phase C 末显示对勾还是问号。
-    // None/Check = 默认对勾(StopImage 走默认);Question = 黄色问号(PermissionImage 走这个)。
+    // HookGlyphKind 定义在 Services/HookOverlayPlan.cs(Ring / Dot 共用)。
     private HookGlyphKind _pendingHookGlyph = HookGlyphKind.None;
-    private enum HookGlyphKind { None, Check, Question }
     // 复用 DispatcherTimer 实例:fade-in / countdown timer 不再每次 new,
     // Tick handler 用实例方法代替 lambda,避免高频 hook 事件下的 GC 分配。
     private readonly DispatcherTimer _fadeInTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
@@ -139,11 +139,11 @@ internal sealed class BalanceRingCapsuleView : Grid
     private string? _lastHookColorHex;
 
     /// <summary>
-    /// 设置 hook overlay：用 WPF 原生控件实现 PNG 描述的效果,不是直接显示 PNG。
-    /// - Color overlay (Stop/Permission/Failure):改 _label.Text + _ring 颜色,带倒计时自动恢复
-    /// - Spinner overlay (PreTool/PostTool):改 _label.Text + _ring.ForegroundBrush 为蓝色,持续到下次 Update()
+    /// 数据驱动接口:接收 <see cref="HookOverlayPlan"/> 渲染 overlay,内部按 plan.Kind
+    /// 路由到 ShowColorOverlay / ShowSpinnerOverlay。plan == null 等价于 ClearOverlay。
+    /// 由 HookOverlayController 派发。
     /// </summary>
-    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir, string? spinnerText = null)
+    public void PushOverlay(HookOverlayPlan? plan)
     {
         // 完整清理:新来打断旧。任何在飞的 fade / countdown / 动画必须先清理,
         // 否则残留的 Tick handler 会把"绿色 ring fill + 对勾描边"叠加到当前 spinner 沙漏上。
@@ -153,10 +153,8 @@ internal sealed class BalanceRingCapsuleView : Grid
         _fadeInTimer.Tick -= OnFadeOutCompleteTick;
         _fadeInTimer.Tick -= OnFadeInTick;
         // 清掉可能正在跑的 ring Opacity 动画,但不显式设回 1——让 RestoreColorOverlayIfAny 接管状态重置
-        // (若该次 Restore 把 ring 重新置 1,后续 ShowColorOverlay 会从 1 重新 fade-out;若没 stored state 需要恢复,
-        // 则原状保留)。这样避免在快速重入时把刚启动的 fade-out 动画瞬间抢断。
         _ring.BeginAnimation(UIElement.OpacityProperty, null);
-        // 修复:打断 _label.OpacityProperty 的 fade-out 动画,避免 spinner text 被残留的
+        // 打断 _label.OpacityProperty 的 fade-out 动画,避免 spinner text 被残留的
         // 0→0 透明度动画拖到看不见。
         _label.BeginAnimation(UIElement.OpacityProperty, null);
         _label.Opacity = 1;
@@ -164,37 +162,26 @@ internal sealed class BalanceRingCapsuleView : Grid
         // 恢复上一次 color / spinner overlay 的暂存值(动画过渡,不瞬时硬切)
         RestoreColorOverlayIfAny();
 
-        if (kind == HookOverlayKind.None)
+        if (plan == null || plan.Kind == HookOverlayKind.None)
         {
             return;
         }
 
-        // 颜色方案:参考 HTML 示范用 #68E534(鲜艳绿)。Permission/Failure 仍按现有色系保留风险辨识度。
-        if (kind == HookOverlayKind.StopImage)
+        // 颜色方案:StopImage 绿、PermissionImage 黄、FailureImage 红。Spinner 不读 RingColorHex。
+        if (plan.Kind is HookOverlayKind.StopImage
+            or HookOverlayKind.PermissionImage
+            or HookOverlayKind.FailureImage)
         {
-            ShowColorOverlay("任务完成", "#68E534", durationSeconds, HookGlyphKind.Check);
+            ShowColorOverlay(plan.Text, plan.RingColorHex ?? "#68E534",
+                plan.DurationSeconds ?? 3, plan.Glyph);
         }
-        else if (kind == HookOverlayKind.PermissionImage)
+        else
         {
-            // PermissionRequest:黄色 #FFC107 + "等待用户回应" + 中心问号(替代对勾)。
-            ShowColorOverlay("等待用户回应", "#FFC107", durationSeconds, HookGlyphKind.Question);
-        }
-        else if (kind == HookOverlayKind.FailureImage)
-        {
-            ShowColorOverlay("执行异常", "#F44336", durationSeconds, HookGlyphKind.Check);
-        }
-        else if (kind == HookOverlayKind.PreToolSpinner)
-        {
-            // spinnerText 由 BalanceSession.ApplyHookOverlayToCapsules 按 tool_name 派生,
-            // ??兜底文案处理补发路径(无 toolName 上下文)或漏传调用。
-            ShowSpinnerOverlay(spinnerText ?? "正在使用工具");
-        }
-        else if (kind == HookOverlayKind.PostToolSpinner)
-        {
-            ShowSpinnerOverlay(spinnerText ?? "工具使用完成");
+            // spinner 路径:文本已由 Controller 派生(已含 tool-aware + 兜底)。
+            ShowSpinnerOverlay(plan.Text);
         }
         PaperTodo.Plugin.ApiBalanceMonitor.Services.HookTrace.Write(
-            $"SetHookOverlay kind={kind} dur={durationSeconds}s label='{_label.Text}'");
+            $"PushOverlay kind={plan.Kind} dur={(plan.DurationSeconds?.ToString() ?? "none")}s label='{_label.Text}'");
     }
 
     /// <summary>
@@ -349,7 +336,7 @@ internal sealed class BalanceRingCapsuleView : Grid
     }
 
     /// <summary>外部在 Update() 时清掉 spinner overlay(spinner 是"持续型")。</summary>
-    public void HideHookOverlay()
+    public void ClearOverlay()
     {
         StopOverlayCountdown();
         _fadeInTimer.Stop();

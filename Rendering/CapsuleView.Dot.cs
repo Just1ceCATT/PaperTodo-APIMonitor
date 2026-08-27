@@ -6,6 +6,7 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using PaperTodo.Plugin.ApiBalanceMonitor.Models;
 using PaperTodo.Plugin.ApiBalanceMonitor.Payload;
+using PaperTodo.Plugin.ApiBalanceMonitor.Services;
 
 namespace PaperTodo.Plugin.ApiBalanceMonitor.Rendering;
 
@@ -34,10 +35,8 @@ internal sealed class BalanceDotCapsuleView : Grid
     // Permission overlay 黄色问号覆盖层：叠在内圆点上,默认隐藏。
     // Permission 触发时显示并隐藏 _dot,RestoreColorOverlayIfAny 反向恢复。
     private readonly TextBlock _questionGlyph;
-    // 当前 Color overlay 的符号类型:None=无,Check=对勾(暂未在 Dot 视图绘制,保留对齐 Ring),
-    // Question=黄色问号。ShowColorOverlay 接受此参数决定是否显示 _questionGlyph。
-    private HookGlyphKind _pendingHookGlyph = HookGlyphKind.None;
-    private enum HookGlyphKind { None, Check, Question }
+    // HookGlyphKind enum 统一在 Services/HookOverlayPlan.cs 定义。Dot 视图用它判断是否
+    // 切换 _questionGlyph 显示(PermissionImage → Question,其它隐藏)。
 
     // 高峰期橙色常量：#FF9800 与 MiniMax 5h 进度条同源色。
     private const string PeakDotColorHex = "#FF9800";
@@ -158,11 +157,10 @@ internal sealed class BalanceDotCapsuleView : Grid
     private Visibility? _storedDotVisibility;
 
     /// <summary>
-    /// 设置 hook overlay：用 WPF 原生 ring+text 实现 PNG 描述的效果。
-    /// - Color overlay (Stop/Permission/Failure):改 _label.Text + _dot.Fill,带倒计时恢复
-    /// - Spinner overlay (PreTool/PostTool):改 _label.Text + _dot.Fill 为蓝色,持续到下次 Update
+    /// 数据驱动接口:接收 <see cref="HookOverlayPlan"/> 渲染 overlay。plan == null 等价于 ClearOverlay。
+    /// 由 HookOverlayController 派发。
     /// </summary>
-    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir, string? spinnerText = null)
+    public void PushOverlay(HookOverlayPlan? plan)
     {
         // 与 Ring 同步:完整清理在飞的 fade / countdown,避免 spinner 与 color overlay 动画并存。
         // WPF DispatcherTimer.Stop() 不取消已 Post 入队的 Tick,必须显式退订 handler。
@@ -174,31 +172,29 @@ internal sealed class BalanceDotCapsuleView : Grid
         _label.Opacity = 1;
         RestoreColorOverlayIfAny();
 
-        if (kind == HookOverlayKind.None)
+        if (plan == null || plan.Kind == HookOverlayKind.None)
         {
             return;
         }
 
-        if (kind == HookOverlayKind.StopImage)
+        if (plan.Kind is HookOverlayKind.StopImage
+            or HookOverlayKind.PermissionImage
+            or HookOverlayKind.FailureImage)
         {
-            ShowColorOverlay("任务完成", "#4CAF50", durationSeconds, HookGlyphKind.Check);
+            // Color overlay:Color 走 Dot 视图的固定色系(注:Dot 不画对勾/问号细节,glyph 字段此处不消费)。
+            var dotColor = plan.Kind switch
+            {
+                HookOverlayKind.StopImage => "#4CAF50",
+                HookOverlayKind.PermissionImage => "#FFC107",
+                HookOverlayKind.FailureImage => "#F44336",
+                _ => plan.RingColorHex ?? "#9E9E9E"
+            };
+            ShowColorOverlay(plan.Text, dotColor, plan.DurationSeconds ?? 3, HookGlyphKind.None);
         }
-        else if (kind == HookOverlayKind.PermissionImage)
+        else
         {
-            // PermissionRequest:黄色 #FFC107 + "等待用户回应" + 中心问号(替代内圆点)。
-            ShowColorOverlay("等待用户回应", "#FFC107", durationSeconds, HookGlyphKind.Question);
-        }
-        else if (kind == HookOverlayKind.FailureImage)
-        {
-            ShowColorOverlay("执行异常", "#F44336", durationSeconds, HookGlyphKind.Check);
-        }
-        else if (kind == HookOverlayKind.PreToolSpinner)
-        {
-            ShowSpinnerOverlay(spinnerText ?? "正在使用工具");
-        }
-        else if (kind == HookOverlayKind.PostToolSpinner)
-        {
-            ShowSpinnerOverlay(spinnerText ?? "工具使用完成");
+            // spinner 路径:文本已由 Controller 派生(已含 tool-aware + 兜底)。
+            ShowSpinnerOverlay(plan.Text);
         }
     }
 
@@ -217,7 +213,7 @@ internal sealed class BalanceDotCapsuleView : Grid
         _storedDotVisibility = _dot.Visibility;
         _label.Text = text;
         _dot.Fill = Format.ToFrozenBrush(dotColorHex, "#9E9E9E");
-        _pendingHookGlyph = glyph;
+        // glyph 直接用入参判断,不再保存到字段(Controller 是单一真相源)。
         if (glyph == HookGlyphKind.Question)
         {
             // 用问号 glyph 替换内圆点:字号 14 vs _dot 直径 6,视觉占主导。
@@ -262,7 +258,6 @@ internal sealed class BalanceDotCapsuleView : Grid
             _dot.Visibility = _storedDotVisibility.Value;
             _storedDotVisibility = null;
         }
-        _pendingHookGlyph = HookGlyphKind.None;
     }
 
     private void ShowSpinnerOverlay(string text)
@@ -281,7 +276,7 @@ internal sealed class BalanceDotCapsuleView : Grid
     }
 
     /// <summary>外部在 Update() 时清掉 spinner overlay(spinner 是"持续型")。</summary>
-    public void HideHookOverlay()
+    public void ClearOverlay()
     {
         _overlayCountdown?.Stop();
         _overlayCountdown = null;
