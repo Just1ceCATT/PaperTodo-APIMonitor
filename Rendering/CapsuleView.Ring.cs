@@ -143,15 +143,23 @@ internal sealed class BalanceRingCapsuleView : Grid
     /// - Color overlay (Stop/Permission/Failure):改 _label.Text + _ring 颜色,带倒计时自动恢复
     /// - Spinner overlay (PreTool/PostTool):改 _label.Text + _ring.ForegroundBrush 为蓝色,持续到下次 Update()
     /// </summary>
-    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir)
+    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir, string? spinnerText = null)
     {
-        // 先清掉旧倒计时与动画
+        // 完整清理:新来打断旧。任何在飞的 fade / countdown / 动画必须先清理,
+        // 否则残留的 Tick handler 会把"绿色 ring fill + 对勾描边"叠加到当前 spinner 沙漏上。
+        // WPF DispatcherTimer.Stop() 不取消已 Post 入队的 Tick,所以必须显式退订。
         StopOverlayCountdown();
         _fadeInTimer.Stop();
+        _fadeInTimer.Tick -= OnFadeOutCompleteTick;
+        _fadeInTimer.Tick -= OnFadeInTick;
         // 清掉可能正在跑的 ring Opacity 动画,但不显式设回 1——让 RestoreColorOverlayIfAny 接管状态重置
         // (若该次 Restore 把 ring 重新置 1,后续 ShowColorOverlay 会从 1 重新 fade-out;若没 stored state 需要恢复,
         // 则原状保留)。这样避免在快速重入时把刚启动的 fade-out 动画瞬间抢断。
         _ring.BeginAnimation(UIElement.OpacityProperty, null);
+        // 修复:打断 _label.OpacityProperty 的 fade-out 动画,避免 spinner text 被残留的
+        // 0→0 透明度动画拖到看不见。
+        _label.BeginAnimation(UIElement.OpacityProperty, null);
+        _label.Opacity = 1;
 
         // 恢复上一次 color / spinner overlay 的暂存值(动画过渡,不瞬时硬切)
         RestoreColorOverlayIfAny();
@@ -177,11 +185,13 @@ internal sealed class BalanceRingCapsuleView : Grid
         }
         else if (kind == HookOverlayKind.PreToolSpinner)
         {
-            ShowSpinnerOverlay("准备调用工具");
+            // spinnerText 由 BalanceSession.ApplyHookOverlayToCapsules 按 tool_name 派生,
+            // ??兜底文案处理补发路径(无 toolName 上下文)或漏传调用。
+            ShowSpinnerOverlay(spinnerText ?? "正在使用工具");
         }
         else if (kind == HookOverlayKind.PostToolSpinner)
         {
-            ShowSpinnerOverlay("文件编辑完成");
+            ShowSpinnerOverlay(spinnerText ?? "工具使用完成");
         }
         PaperTodo.Plugin.ApiBalanceMonitor.Services.HookTrace.Write(
             $"SetHookOverlay kind={kind} dur={durationSeconds}s label='{_label.Text}'");

@@ -162,10 +162,16 @@ internal sealed class BalanceDotCapsuleView : Grid
     /// - Color overlay (Stop/Permission/Failure):改 _label.Text + _dot.Fill,带倒计时恢复
     /// - Spinner overlay (PreTool/PostTool):改 _label.Text + _dot.Fill 为蓝色,持续到下次 Update
     /// </summary>
-    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir)
+    public void SetHookOverlay(HookOverlayKind kind, int durationSeconds, string pluginDir, string? spinnerText = null)
     {
+        // 与 Ring 同步:完整清理在飞的 fade / countdown,避免 spinner 与 color overlay 动画并存。
+        // WPF DispatcherTimer.Stop() 不取消已 Post 入队的 Tick,必须显式退订 handler。
         _overlayCountdown?.Stop();
+        _overlayCountdown?.Tick -= OnCountdownTick;
         _overlayCountdown = null;
+        // 打断 _label.OpacityProperty 的 fade 动画,避免 spinner text 被残留的透明度拖到看不见。
+        _label.BeginAnimation(UIElement.OpacityProperty, null);
+        _label.Opacity = 1;
         RestoreColorOverlayIfAny();
 
         if (kind == HookOverlayKind.None)
@@ -188,11 +194,11 @@ internal sealed class BalanceDotCapsuleView : Grid
         }
         else if (kind == HookOverlayKind.PreToolSpinner)
         {
-            ShowSpinnerOverlay("准备调用工具");
+            ShowSpinnerOverlay(spinnerText ?? "正在使用工具");
         }
         else if (kind == HookOverlayKind.PostToolSpinner)
         {
-            ShowSpinnerOverlay("文件编辑完成");
+            ShowSpinnerOverlay(spinnerText ?? "工具使用完成");
         }
     }
 
@@ -219,13 +225,18 @@ internal sealed class BalanceDotCapsuleView : Grid
             _questionGlyph.Visibility = Visibility.Visible;
         }
         _overlayCountdown = new DispatcherTimer { Interval = TimeSpan.FromSeconds(durationSeconds) };
-        _overlayCountdown.Tick += (_, _) =>
-        {
-            _overlayCountdown?.Stop();
-            _overlayCountdown = null;
-            RestoreColorOverlayIfAny();
-        };
+        _overlayCountdown.Tick += OnCountdownTick;
         _overlayCountdown.Start();
+    }
+
+    /// <summary>_overlayCountdown Tick 实例方法:替换原 lambda,方便 SetHookOverlay 入口显式退订。
+    /// 退订是必需的——DispatcherTimer.Stop() 不取消已 Post 入队的 Tick handler,
+    /// 否则残留 handler 会把刚切换的 spinner 状态又恢复成 Color overlay。</summary>
+    private void OnCountdownTick(object? sender, EventArgs e)
+    {
+        _overlayCountdown?.Stop();
+        _overlayCountdown = null;
+        RestoreColorOverlayIfAny();
     }
 
     /// <summary>恢复暂存的 _label.Text / _dot.Fill；未暂存则不动。</summary>

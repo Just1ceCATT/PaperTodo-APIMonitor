@@ -130,6 +130,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private HookOverlayKind _pendingOverlayKind = HookOverlayKind.None;
     private DateTime _pendingOverlayAt;
     private int _pendingOverlayDuration;
+    // 补发 spinner overlay 需要的 toolName：跟 _pendingOverlayKind 同生命周期,
+    // 让 ApplyPendingOverlayToView 能在 view 刚创建时拿到 toolName 派生正确文案。
+    private string? _pendingOverlayToolName;
     // 当前激活的 overlay text：用于 SetCapsulePresentation 重推让 host 用 overlay 文本算宽度（避免省略）。
     private string? _activeOverlayText;
     // Color overlay 倒计时：到时清掉 _activeOverlayText 并 RepushCapsulePresentation 恢复余额显示。
@@ -249,8 +252,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 推 host,避免胶囊按余额文本宽度省略。
         try
         {
-            ApplyHookOverlayToCapsules(payload.Overlay);
-            Services.HookTrace.Write($"overlay-applied activeText={_activeOverlayText ?? "null"} pendingKind={_pendingOverlayKind}");
+            // 把 payload.ToolName 透传到 ApplyHookOverlayToCapsules,让 spinner overlay
+            // 按 tool_name 派生文案(如 Bash→"正在执行命令")而非写死"准备调用工具"。
+            ApplyHookOverlayToCapsules(payload.Overlay, payload.ToolName);
+            Services.HookTrace.Write($"overlay-applied activeText={_activeOverlayText ?? "null"} pendingKind={_pendingOverlayKind} toolName={payload.ToolName ?? "null"}");
         }
         catch (Exception ex)
         {
@@ -262,8 +267,11 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// 把 overlay 推给当前两个缓存的胶囊视图（Regular + Docked）。
     /// Ring view (MiniMax/ZhiPu/Kimi) + Dot view (DeepSeek/OpenCode/MiMo/CodeX) 都接收。
     /// 必须 marshal 到 view 所在 dispatcher,否则 WPF 跨线程访问会抛 InvalidOperationException。
+    ///
+    /// toolName 用于 spinner overlay 文案派生(走 HookTextResolver.ResolvePre/Post),
+    /// Color overlay 不依赖 toolName(StopImage/PermissionImage/FailureImage 文案固定)。
     /// </summary>
-    private void ApplyHookOverlayToCapsules(HookOverlayKind kind)
+    private void ApplyHookOverlayToCapsules(HookOverlayKind kind, string? toolName = null)
     {
         // view 所在 dispatcher（view 由 host 在自己的 dispatcher 上创建）
         var targetDispatcher = _regularRingCapsuleView?.Dispatcher
@@ -273,13 +281,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         if (targetDispatcher != null && !targetDispatcher.CheckAccess())
         {
             // 后台线程 → view 线程
-            targetDispatcher.BeginInvoke(() => ApplyHookOverlayToCapsules(kind));
+            targetDispatcher.BeginInvoke(() => ApplyHookOverlayToCapsules(kind, toolName));
             return;
         }
 
         if (kind == HookOverlayKind.None)
         {
             _pendingOverlayKind = HookOverlayKind.None;
+            _pendingOverlayToolName = null;
+            // 顺手清掉时间戳,避免 ApplyPendingOverlayToView 用陈旧时间计算 remaining seconds。
+            _pendingOverlayAt = default;
+            _pendingOverlayDuration = 0;
             _activeOverlayText = null;
             return;
         }
@@ -297,13 +309,20 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         bool isColorOverlay = kind is HookOverlayKind.StopImage
                                    or HookOverlayKind.PermissionImage
                                    or HookOverlayKind.FailureImage;
-        _regularRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
-        _dockedRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+        // spinnerText 仅对 PreTool/PostTool 有意义;Color overlay 走 ShowColorOverlay 不读此参数。
+        var spinnerText = kind switch
+        {
+            HookOverlayKind.PreToolSpinner => HookTextResolver.ResolvePre(toolName),
+            HookOverlayKind.PostToolSpinner => HookTextResolver.ResolvePost(toolName),
+            _ => null
+        };
+        _regularRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir, spinnerText);
+        _dockedRingCapsuleView?.SetHookOverlay(kind, seconds, pluginDir, spinnerText);
         if (!isColorOverlay)
         {
             // spinner 类型:DeepSeek 胶囊也显示。
-            _regularDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
-            _dockedDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir);
+            _regularDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir, spinnerText);
+            _dockedDotCapsuleView?.SetHookOverlay(kind, seconds, pluginDir, spinnerText);
         }
         // 缓存 overlay 文本,让 PushCapsulePresentation 用它算宽度避免省略
         _activeOverlayText = kind switch
@@ -311,8 +330,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             HookOverlayKind.StopImage => "✓ 任务完成",
             HookOverlayKind.PermissionImage => "等待用户回应",
             HookOverlayKind.FailureImage => "✗ 执行异常",
-            HookOverlayKind.PreToolSpinner => "准备调用工具",
-            HookOverlayKind.PostToolSpinner => "文件编辑完成",
+            HookOverlayKind.PreToolSpinner => HookTextResolver.ResolvePre(toolName),
+            HookOverlayKind.PostToolSpinner => HookTextResolver.ResolvePost(toolName),
             _ => null
         };
         if (!any)
@@ -320,10 +339,13 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _pendingOverlayKind = kind;
             _pendingOverlayAt = DateTime.UtcNow;
             _pendingOverlayDuration = seconds;
+            // 同步暂存 toolName,让 ApplyPendingOverlayToView 能在 view 创建时派生正确 spinner 文案。
+            _pendingOverlayToolName = toolName;
         }
         else
         {
             _pendingOverlayKind = HookOverlayKind.None;
+            _pendingOverlayToolName = null;
             // 重推 SetCapsulePresentation,让 host 用 overlay 文本算宽度
             RepushCapsulePresentation();
         }
@@ -461,13 +483,20 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             var pluginDir = System.IO.Path.GetDirectoryName(
                 System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+            // 用 _pendingOverlayToolName 派生 spinner 文本,与正常路径用 HookTextResolver 一致。
+            var spinnerText = _pendingOverlayKind switch
+            {
+                HookOverlayKind.PreToolSpinner => HookTextResolver.ResolvePre(_pendingOverlayToolName),
+                HookOverlayKind.PostToolSpinner => HookTextResolver.ResolvePost(_pendingOverlayToolName),
+                _ => null
+            };
             switch (view)
             {
                 case BalanceRingCapsuleView r:
-                    r.SetHookOverlay(_pendingOverlayKind, 0, pluginDir);
+                    r.SetHookOverlay(_pendingOverlayKind, 0, pluginDir, spinnerText);
                     break;
                 case BalanceDotCapsuleView d:
-                    d.SetHookOverlay(_pendingOverlayKind, 0, pluginDir);
+                    d.SetHookOverlay(_pendingOverlayKind, 0, pluginDir, spinnerText);
                     break;
             }
             return;
@@ -490,6 +519,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
         // 仅补发一次,避免重复触发倒计时
         _pendingOverlayKind = HookOverlayKind.None;
+        _pendingOverlayToolName = null;
     }
 
     /// <summary>
@@ -947,7 +977,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
                     _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
                 }
             }
-            else if (_activeOverlayText == "准备调用工具" || _activeOverlayText == "文件编辑完成")
+            // Spinner 持续型 overlay 期间：_activeOverlayText 非 null(Color overlay 也有,
+// 但 Color overlay 跑着 _activeOverlayTimer,这里用 timer=null 反向排除)。
+// 改用状态判断而非文本字面量(spinnerText 现在按 tool_name 派生,不再是固定字符串)。
+else if (_activeOverlayText is not null && _activeOverlayTimer is null)
             {
                 // Spinner overlay 持续到下次 Update:清掉所有 view 的 overlay 状态。
                 // 修复 Ring 视图 spinner 仅依赖下次 SetHookOverlay 入口清理的漏洞

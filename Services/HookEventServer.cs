@@ -186,16 +186,18 @@ internal sealed class HookEventServer : IDisposable
 
     /// <summary>未提供 summary 时按 event/tool 拼一句简短中文描述，供胶囊 ToolTip 使用。</summary>
     private static string BuildDefaultSummary(string eventName, string? toolName) =>
-        (eventName, toolName) switch
+        eventName switch
         {
-            ("PostToolUse", var t) => $"Claude: {t ?? "Tool"} 调用完成",
-            ("PreToolUse", var t) => $"Claude: 即将调用 {t ?? "Tool"}",
-            ("UserPromptSubmit", _) => "Claude: 收到用户提示",
-            ("Stop", _) => "Claude: 已停止响应",
-            ("StopFailure", _) => "Claude: 响应异常中止",
-            ("Notification", _) => "Claude: 需要注意",
-            ("SessionStart", _) => "Claude: 会话启动",
-            ("SessionEnd", _) => "Claude: 会话结束",
+            // PreToolUse / PostToolUse 走 HookTextResolver,按 tool_name 分流文案,
+            // 让 ToolTip 第二行也跟着 tool-aware。null/未知工具自动降级为通用兜底。
+            "PreToolUse" => "Claude: " + HookTextResolver.ResolvePre(toolName),
+            "PostToolUse" => "Claude: " + HookTextResolver.ResolvePost(toolName),
+            "UserPromptSubmit" => "Claude: 收到用户提示",
+            "Stop" => "Claude: 已停止响应",
+            "StopFailure" => "Claude: 响应异常中止",
+            "Notification" => "Claude: 需要注意",
+            "SessionStart" => "Claude: 会话启动",
+            "SessionEnd" => "Claude: 会话结束",
             _ => $"Claude: {eventName}"
         };
 
