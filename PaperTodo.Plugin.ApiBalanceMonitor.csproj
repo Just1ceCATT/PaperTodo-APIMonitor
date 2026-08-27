@@ -14,6 +14,11 @@
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+  <!-- 让 LoadTests 项目访问 internal 类型(HookEvent / HookEventServer / BalanceSession 等),
+       用于并发压测。注意:仅暴露给测试工程,生产代码不受影响。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="PaperTodo.Plugin.ApiBalanceMonitor.LoadTests" />
+  </ItemGroup>
   <ItemGroup>
     <!-- 宿主协议：独立仓库编译时引用宿主仓库中的 PaperTodo.Plugin.Abstractions。 -->
     <ProjectReference Include="..\PaperTodo\PaperTodo.Plugin.Abstractions\PaperTodo.Plugin.Abstractions.csproj" />
@@ -21,11 +26,14 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
   </ItemGroup>
 
-  <!-- 测试工程是独立的 net10.0 工程，不要并入主工程的默认 Compile glob，
-       否则会引入 System.IO（导致 Path 歧义）、xUnit 引用缺失等错误。 -->
+  <!-- 测试工程是独立的 net10.0-windows 工程（WPF 依赖 STA），不要并入主工程的默认 Compile glob，
+       否则会引入 System.IO（导致 Path 歧义）、xUnit 引用缺失、特性重复等错误。 -->
   <ItemGroup>
     <Compile Remove="Tests\**" />
     <None Remove="Tests\**" />
     <EmbeddedResource Remove="Tests\**" />
+    <Compile Remove="LoadTests\**" />
+    <None Remove="LoadTests\**" />
+    <EmbeddedResource Remove="LoadTests\**" />
   </ItemGroup>
 </Project>

@@ -309,7 +309,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _activeOverlayText = kind switch
         {
             HookOverlayKind.StopImage => "✓ 任务完成",
-            HookOverlayKind.PermissionImage => "等待回复",
+            HookOverlayKind.PermissionImage => "等待用户回应",
             HookOverlayKind.FailureImage => "✗ 执行异常",
             HookOverlayKind.PreToolSpinner => "准备调用工具",
             HookOverlayKind.PostToolSpinner => "文件编辑完成",

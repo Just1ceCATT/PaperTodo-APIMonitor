@@ -59,3 +59,10 @@ logs/
 Test-*.txt
 image/
 .tmp_start.ps1
+.restart_host.cmd
+hook.md
+.restart_host.ps1
+.start_host.ps1
+供应商余额查询方法汇总.md
+# 手动触发 hook 的本地测试脚本(不入库,与 .start_host.ps1 同性质)
+scripts/trigger-hook.ps1

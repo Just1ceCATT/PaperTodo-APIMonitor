@@ -24,6 +24,18 @@ internal sealed class BalanceRingCapsuleView : Grid
     private readonly BalanceProgressRing _ring;
     // 圆环列可见性缓存:防止外部反复调用 SetRingVisible 时重写 Column 宽度。
     private bool _ringColumnVisible = true;
+    // Permission overlay 黄色问号覆盖层：放在 _ring 上层(同一 Column 1,Panel.ZIndex=1),
+    // 默认隐藏。PermissionRequest hook 触发时与 Color overlay 同步淡入显示,
+    // 由 HideHookOverlay / RestoreColorOverlayIfAny 隐藏。
+    private readonly TextBlock _questionGlyph;
+    // Permission 黄色(#FFC107 Material Amber 500):与 Ring / Glyph 共用,保证视觉一致。
+    private static readonly SolidColorBrush PermissionGlyphBrush = CreateFrozenPermissionBrush();
+    private static SolidColorBrush CreateFrozenPermissionBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07));
+        brush.Freeze();
+        return brush;
+    }
 
     // FontFamily 缓存：theme.FontFamily 是字符串，按字符串相等判断避免重复构造。
     // 避免每次 ApplyTheme 都触发 WPF 字体回退链解析（首次解析可达 100ms 级）。
@@ -66,6 +78,25 @@ internal sealed class BalanceRingCapsuleView : Grid
         Grid.SetColumn(_label, 3);
         Children.Add(_label);
 
+        // Permission 黄色问号覆盖层：与 _ring 同列(Column 1,Panel.ZIndex=1,叠在 ring 上方),
+        // 默认隐藏。字符 "?"、字号 14、Foreground 黄色 #FFC107、半粗,视觉等价 PNG 等待图标。
+        // 不参与 ring measure/arrange(IsHitTestVisible=false),纯视觉装饰。
+        _questionGlyph = new TextBlock
+        {
+            Text = "?",
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = PermissionGlyphBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            IsHitTestVisible = false,
+            Focusable = false,
+            Visibility = Visibility.Collapsed
+        };
+        Grid.SetColumn(_questionGlyph, 1);
+        Panel.SetZIndex(_questionGlyph, 1);
+        Children.Add(_questionGlyph);
+
         // spinner overlay 已改为"替换模式"(改 _label.Text + _ring.ForegroundBrush),
         // 不再需要 _overlayLayer 覆盖层与 BuildOverlayLayer。
 
@@ -95,6 +126,10 @@ internal sealed class BalanceRingCapsuleView : Grid
     // Update 节流字段:仅当颜色字符串/弧值真正变化时才覆盖/重绘
     private string? _lastRingColorHex;
     private double _lastAppliedArc = -1.0;
+    // 当前正在 fade-in 的符号类型:决定 OnFadeOutCompleteTick 在 Phase C 末显示对勾还是问号。
+    // None/Check = 默认对勾(StopImage 走默认);Question = 黄色问号(PermissionImage 走这个)。
+    private HookGlyphKind _pendingHookGlyph = HookGlyphKind.None;
+    private enum HookGlyphKind { None, Check, Question }
     // 复用 DispatcherTimer 实例:fade-in / countdown timer 不再每次 new,
     // Tick handler 用实例方法代替 lambda,避免高频 hook 事件下的 GC 分配。
     private readonly DispatcherTimer _fadeInTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
@@ -129,15 +164,16 @@ internal sealed class BalanceRingCapsuleView : Grid
         // 颜色方案:参考 HTML 示范用 #68E534(鲜艳绿)。Permission/Failure 仍按现有色系保留风险辨识度。
         if (kind == HookOverlayKind.StopImage)
         {
-            ShowColorOverlay("任务完成", "#68E534", durationSeconds);
+            ShowColorOverlay("任务完成", "#68E534", durationSeconds, HookGlyphKind.Check);
         }
         else if (kind == HookOverlayKind.PermissionImage)
         {
-            ShowColorOverlay("等待回复", "#FF9800", durationSeconds);
+            // PermissionRequest:黄色 #FFC107 + "等待用户回应" + 中心问号(替代对勾)。
+            ShowColorOverlay("等待用户回应", "#FFC107", durationSeconds, HookGlyphKind.Question);
         }
         else if (kind == HookOverlayKind.FailureImage)
         {
-            ShowColorOverlay("执行异常", "#F44336", durationSeconds);
+            ShowColorOverlay("执行异常", "#F44336", durationSeconds, HookGlyphKind.Check);
         }
         else if (kind == HookOverlayKind.PreToolSpinner)
         {
@@ -158,17 +194,19 @@ internal sealed class BalanceRingCapsuleView : Grid
     /// 四段串联动画(参考 https://css-tricks.com 成功动画 + CSS 圆环+对勾+文本模式):
     ///   - Phase A (0~220ms):fade-out 当前内容(_label.Opacity &amp; _ring.Opacity 1→0 ease-out)
     ///   - Phase B (220ms tick):重置 ring 状态(Value=0, ForegroundBrush=success-color, ResetCheckmark)
-    ///   - Phase C (220~820ms):圆环填充 Value 0→1 (600ms ease-in-out,绘制"圆环"+对勾 400ms ease-out BeginTime=350ms)
+    ///   - Phase C (220~820ms):圆环填充 Value 0→1 (600ms ease-in-out,绘制"圆环"+对勾/问号 BeginTime=350ms)
     ///                          + ring Opacity 0→1 fade-in(200ms ease-in-out,与圆环填充并行)
     ///   - Phase D (820ms tick 起的 350ms):文本 ease-in-out 淡入
     ///   - 总时长 ~1.17s,符合用户选的"紧凑 ~1.5s"节奏。
+    ///
+    /// glyph 决定 Phase C 末显示的视觉符号:Check=绿色对勾(任务完成语义),Question=黄色问号(等待用户回应语义)。
     ///
     /// 为何强制 Value=0 起步而不是从当前 0.5 补弧:
     /// 余额用得差不多时(如 Value=0.85),补弧只有 54° 视觉幅度,且圆角端点糊掉开始/结束锚点,
     /// 人眼感知不到"画圆环"动画。从 0 起步 → 完整 360° 画圆 → 视觉锚点固定在 12 点钟方向,
     /// 用户能明确感知到笔尖沿圆走一圈。
     /// </summary>
-    private void ShowColorOverlay(string text, string ringColorHex, int durationSeconds)
+    private void ShowColorOverlay(string text, string ringColorHex, int durationSeconds, HookGlyphKind glyph)
     {
         _storedLabelText = _label.Text;
         _storedRingColorHex = _ring.ForegroundBrush is SolidColorBrush sb ? sb.Color.ToString() : null;
@@ -176,6 +214,9 @@ internal sealed class BalanceRingCapsuleView : Grid
         _ring.BeginAnimation(BalanceProgressRing.ValueProperty, null);
         _storedRingArc = _ring.Value;
         _lastHookColorHex = ringColorHex;
+        // 把符号选择写到字段上,OnFadeOutCompleteTick 在 Phase C 末读取,
+        // 决定显示对勾还是问号。
+        _pendingHookGlyph = glyph;
 
         // Phase A:fade-out 当前内容(只对现有 _label + _ring 做 Opacity 动画,不动内容)
         BeginLabelFadeOut(220);
@@ -250,6 +291,15 @@ internal sealed class BalanceRingCapsuleView : Grid
         }
         // 重置对勾动画:隐藏 + 停止正在跑的 StrokeDashOffset 动画
         _ring.ResetCheckmark();
+        // 重置问号 glyph:隐藏 + 停止 fade-in 动画,避免下次 Permission 触发时残留半透明。
+        if (_questionGlyph.Visibility == Visibility.Visible)
+        {
+            _questionGlyph.BeginAnimation(UIElement.OpacityProperty, null);
+            _questionGlyph.Opacity = 0;
+            _questionGlyph.Visibility = Visibility.Collapsed;
+        }
+        // 同步清空符号选择,避免下次 SetHookOverlay 进入 Phase C 时用错符号。
+        _pendingHookGlyph = HookGlyphKind.None;
     }
 
     private void ShowSpinnerOverlay(string text)
@@ -434,9 +484,28 @@ internal sealed class BalanceRingCapsuleView : Grid
         };
         _ring.BeginAnimation(UIElement.OpacityProperty, ringFadeIn);
 
-        // Phase C:Value 0→1(600ms ease-in-out 画圆环)+ Phase C 后对勾描边 400ms
-        // 默认 fillDurationMs=600,strokeDurationMs=400,holdDurationMs=-50(对勾在末端与圆环接近同时结束)
-        _ring.BeginCheckmarkAnimation();
+        // Phase C:Value 0→1(600ms ease-in-out 画圆环)+ Phase C 后符号动画
+        // Check 走对勾描边 400ms;Question 走静态问号(无动画,等待语义不需要动态笔尖)。
+        if (_pendingHookGlyph == HookGlyphKind.Question)
+        {
+            // 问号静态显示:不画描边动画,直接 fade-in(由 ring Opacity 0→1 带动)。
+            _questionGlyph.Visibility = Visibility.Visible;
+            _questionGlyph.Opacity = 0;
+            var glyphFadeIn = new DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = TimeSpan.FromMilliseconds(220),
+                BeginTime = TimeSpan.FromMilliseconds(550),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            _questionGlyph.BeginAnimation(UIElement.OpacityProperty, glyphFadeIn);
+        }
+        else
+        {
+            // 默认对勾(StopImage / FailureImage 走这里)。
+            _ring.BeginCheckmarkAnimation();
+        }
 
         // Phase D 调度:820ms 后(220ms fade-out + 600ms ring fill)调 OnFadeInTick 淡入 label
         _fadeInTimer.Interval = TimeSpan.FromMilliseconds(820);

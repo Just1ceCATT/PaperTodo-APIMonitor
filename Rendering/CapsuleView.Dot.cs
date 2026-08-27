@@ -31,6 +31,13 @@ internal sealed class BalanceDotCapsuleView : Grid
     private readonly BalanceProgressRing _ring;
     // 内圆点：6×6 DIP，居中叠在圆环上。
     private readonly Ellipse _dot;
+    // Permission overlay 黄色问号覆盖层：叠在内圆点上,默认隐藏。
+    // Permission 触发时显示并隐藏 _dot,RestoreColorOverlayIfAny 反向恢复。
+    private readonly TextBlock _questionGlyph;
+    // 当前 Color overlay 的符号类型:None=无,Check=对勾(暂未在 Dot 视图绘制,保留对齐 Ring),
+    // Question=黄色问号。ShowColorOverlay 接受此参数决定是否显示 _questionGlyph。
+    private HookGlyphKind _pendingHookGlyph = HookGlyphKind.None;
+    private enum HookGlyphKind { None, Check, Question }
 
     // 高峰期橙色常量：#FF9800 与 MiniMax 5h 进度条同源色。
     private const string PeakDotColorHex = "#FF9800";
@@ -88,6 +95,25 @@ internal sealed class BalanceDotCapsuleView : Grid
         Grid.SetColumn(_dot, 1);
         Children.Add(_dot);
 
+        // Permission 黄色问号覆盖层：放在 Column 1 居中位置,与 _dot 重叠。
+        // 字号 14 比 _dot 直径(6)大,视觉替换圆点(隐藏 _dot)。Panel.ZIndex=1 叠在圆点上方。
+        // 默认隐藏,由 ShowColorOverlay(glyph=Question) 触发显示。
+        _questionGlyph = new TextBlock
+        {
+            Text = "?",
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = PermissionGlyphBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            IsHitTestVisible = false,
+            Focusable = false,
+            Visibility = Visibility.Collapsed
+        };
+        Grid.SetColumn(_questionGlyph, 1);
+        Panel.SetZIndex(_questionGlyph, 1);
+        Children.Add(_questionGlyph);
+
         _label = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
@@ -114,10 +140,22 @@ internal sealed class BalanceDotCapsuleView : Grid
         brush.Freeze();
         return brush;
     }
+    // Permission 黄色(#FFC107 Material Amber 500):与 Ring 视图 PermissionGlyphBrush 同色,
+    // 保证两个胶囊在等待用户回应时视觉一致。各文件独立声明是因为 Ring / Dot 类不继承。
+    private static readonly SolidColorBrush PermissionGlyphBrush = CreateFrozenPermissionBrush();
+    private static SolidColorBrush CreateFrozenPermissionBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07));
+        brush.Freeze();
+        return brush;
+    }
     private DispatcherTimer? _overlayCountdown;
     // Color / Spinner overlay 共用暂存字段:倒计时恢复或 HideHookOverlay 时用
     private string? _storedLabelText;
     private string? _storedDotFillHex;
+    // 内圆点 Visibility 暂存:Permission overlay 把 _dot 隐藏换成 _questionGlyph,
+    // RestoreColorOverlayIfAny 据此恢复 _dot 显示状态(Visible / Hidden)。
+    private Visibility? _storedDotVisibility;
 
     /// <summary>
     /// 设置 hook overlay：用 WPF 原生 ring+text 实现 PNG 描述的效果。
@@ -137,15 +175,16 @@ internal sealed class BalanceDotCapsuleView : Grid
 
         if (kind == HookOverlayKind.StopImage)
         {
-            ShowColorOverlay("任务完成", "#4CAF50", durationSeconds);
+            ShowColorOverlay("任务完成", "#4CAF50", durationSeconds, HookGlyphKind.Check);
         }
         else if (kind == HookOverlayKind.PermissionImage)
         {
-            ShowColorOverlay("等待回复", "#FF9800", durationSeconds);
+            // PermissionRequest:黄色 #FFC107 + "等待用户回应" + 中心问号(替代内圆点)。
+            ShowColorOverlay("等待用户回应", "#FFC107", durationSeconds, HookGlyphKind.Question);
         }
         else if (kind == HookOverlayKind.FailureImage)
         {
-            ShowColorOverlay("执行异常", "#F44336", durationSeconds);
+            ShowColorOverlay("执行异常", "#F44336", durationSeconds, HookGlyphKind.Check);
         }
         else if (kind == HookOverlayKind.PreToolSpinner)
         {
@@ -160,13 +199,25 @@ internal sealed class BalanceDotCapsuleView : Grid
     /// <summary>
     /// Color overlay（PNG 描述的固定状态）：改 _label.Text + _dot.Fill。
     /// 倒计时后由 RestoreColorOverlayIfAny 恢复。
+    ///
+    /// glyph 决定是否叠加问号 glyph:Question 时同时隐藏 _dot、显示 _questionGlyph,
+    /// 视觉上用问号替代内圆点;Check 时只改 _dot.Fill(无 glyph 改动)。
     /// </summary>
-    private void ShowColorOverlay(string text, string dotColorHex, int durationSeconds)
+    private void ShowColorOverlay(string text, string dotColorHex, int durationSeconds, HookGlyphKind glyph)
     {
         _storedLabelText = _label.Text;
         _storedDotFillHex = _dot.Fill is SolidColorBrush sb ? sb.Color.ToString() : null;
+        // 暂存 _dot.Visibility,RestoreColorOverlayIfAny 据此恢复显示/隐藏。
+        _storedDotVisibility = _dot.Visibility;
         _label.Text = text;
         _dot.Fill = Format.ToFrozenBrush(dotColorHex, "#9E9E9E");
+        _pendingHookGlyph = glyph;
+        if (glyph == HookGlyphKind.Question)
+        {
+            // 用问号 glyph 替换内圆点:字号 14 vs _dot 直径 6,视觉占主导。
+            _dot.Visibility = Visibility.Collapsed;
+            _questionGlyph.Visibility = Visibility.Visible;
+        }
         _overlayCountdown = new DispatcherTimer { Interval = TimeSpan.FromSeconds(durationSeconds) };
         _overlayCountdown.Tick += (_, _) =>
         {
@@ -190,6 +241,17 @@ internal sealed class BalanceDotCapsuleView : Grid
             _dot.Fill = Format.ToFrozenBrush(_storedDotFillHex, "#9E9E9E");
             _storedDotFillHex = null;
         }
+        // 恢复内圆点 + 隐藏问号 glyph(若上次是 Permission 触发)
+        if (_questionGlyph.Visibility == Visibility.Visible)
+        {
+            _questionGlyph.Visibility = Visibility.Collapsed;
+        }
+        if (_storedDotVisibility.HasValue)
+        {
+            _dot.Visibility = _storedDotVisibility.Value;
+            _storedDotVisibility = null;
+        }
+        _pendingHookGlyph = HookGlyphKind.None;
     }
 
     private void ShowSpinnerOverlay(string text)
