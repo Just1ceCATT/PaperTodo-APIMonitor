@@ -13,21 +13,12 @@ namespace PaperTodo.Plugin.ApiBalanceMonitor;
 ///
 /// 所有业务逻辑在 Session/BalanceSession.cs;其余按职责拆到 Models / Services /
 /// Payload / Rendering / WebPanel 子命名空间。
+///
+/// 元数据(版本号 / 协议号 / capabilities / requires 等)从 plugin.json 读取,
+/// 不再以 C# 属性形式定义(适配 plugin protocol 2.1)。
 /// </summary>
 public sealed class ApiBalanceMonitorPlugin : IPaperBodyPlugin
 {
-    public string Id => "api.balance.monitor";
-    public string DisplayName => "API 余额监测";
-    public string Description =>
-        "通过 DeepSeek /user/balance 接口拉取余额，按余额提醒阈值显示不同颜色的圆环。" +
-        "模型供应商在每张纸的监视面板顶部切换；各供应商 Key 独立存储于全局设置。";
-    public Version Version => new(1, 2, 0);
-    public string ApiVersion => "2.0";
-    public int StateVersion => 2;
-    public PaperBodyCapabilities Capabilities => PaperBodyCapabilities.None;
-    public PaperBodyRuntimeRequirements RuntimeRequirements =>
-        PaperBodyRuntimeRequirements.BackgroundUpdates;
-
     public IPaperBodySession Create(PaperBodyContext context) =>
         new BalanceSession(context);
 

@@ -4,6 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>API 余额监测</title>
+<script>
+/* ── Accordion 折叠:首次 paint 前同步读取 localStorage,避免闪烁 ── */
+(function () {
+  try {
+    var raw = localStorage.getItem("paperTodo.balanceMonitor.collapse");
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    var root = document.documentElement;
+    if (s.metrics === true) root.setAttribute("data-init-open", "metrics");
+    if (s.chart === true)   root.setAttribute("data-init-open", "chart");
+  } catch (e) {}
+})();
+</script>
 <style>
 :root{
   --bg:#11110f;--s:#181815;--line:#30302a;
@@ -16,40 +29,40 @@
 html{height:100%}
 body{margin:0;width:100%;height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;overflow-y:auto}
 .panel{width:100%;min-height:100vh;background:var(--s);border:0;border-radius:0 0 18px 18px;overflow:hidden}
-main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px)}
-.top{display:flex;align-items:center;gap:clamp(14px,2.6vw,22px);margin-bottom:clamp(20px,4vw,30px)}
+main{padding:12px 14px 10px}
+.top{display:flex;align-items:center;gap:14px;margin-bottom:10px}
 .balance-block{flex:1;min-width:0;display:flex;justify-content:space-between;align-items:flex-start;gap:clamp(10px,2vw,16px)}
-.label{color:var(--muted);font:clamp(11px,1.9vw,12px) var(--serif);margin-bottom:8px}
+.label{color:var(--muted);font:11px var(--serif);margin-bottom:5px}
 .balance{display:flex;align-items:baseline;gap:5px}
-.symbol{font:clamp(19px,3.1vw,24px) var(--serif);color:#c8c6bd}
-.number{font:500 clamp(42px,7vw,54px)/1 var(--serif);letter-spacing:-2px}
-.currency{color:var(--muted);font:clamp(11px,1.9vw,12px) var(--serif);margin-left:3px}
-.updated{margin-top:9px;color:var(--dim);font-size:10px}
+.symbol{font:18px var(--serif);color:#c8c6bd}
+.number{font:500 30px/1 var(--serif);letter-spacing:-1px}
+.currency{color:var(--muted);font:11px var(--serif);margin-left:2px}
+.updated{margin-top:5px;color:var(--dim);font-size:9px}
 .status{text-align:right;padding-top:4px}
-.status-main{display:flex;align-items:center;justify-content:flex-end;gap:7px;color:var(--green);font:600 13px var(--serif)}
+.status-main{display:flex;align-items:center;justify-content:flex-end;gap:6px;color:var(--green);font:600 12px var(--serif)}
 .status-main.err{color:var(--danger)}
 .status-main.warn{color:var(--warn)}
 .status-dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
 .status-dot.err{background:var(--danger)}
 .status-dot.warn{background:var(--warn)}
-.status-sub{margin-top:6px;color:var(--dim);font-size:10px}
-.metrics{display:grid;grid-template-columns:repeat(3,1fr);margin-bottom:27px}
-.metric{padding:0 clamp(12px,2.6vw,18px);border-left:1px solid var(--line)}
+.status-sub{margin-top:4px;color:var(--dim);font-size:9px}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);margin-bottom:10px}
+.metric{padding:0 8px;border-left:1px solid var(--line)}
 .metric:first-child{border-left:0;padding-left:0}
 .metric:last-child{padding-right:0}
-.metric-label{color:var(--muted);font:clamp(14px,2.4vw,15.6px) var(--serif);margin-bottom:clamp(6px,1.2vw,8px)}
-.metric-value{font:500 clamp(24px,4.5vw,28.6px) var(--serif);white-space:nowrap}
-.tokens-suffix{font:500 clamp(11px,1.8vw,13px) var(--serif);color:var(--muted);margin-left:3px}
-.metric-foot{margin-top:clamp(5px,0.9vw,6px);color:var(--dim);font-family:var(--serif);font-size:clamp(12px,2vw,13px)}
-.metric-foot + .metric-foot{margin-top:clamp(2px,0.5vw,3px)}
-.metric-models{margin-top:clamp(4px,0.8vw,6px);display:flex;flex-direction:column;gap:clamp(2px,0.4vw,3px);font-family:var(--serif);font-size:clamp(10px,1.6vw,11px);color:var(--muted)}
+.metric-label{color:var(--muted);font:12px var(--serif);margin-bottom:5px}
+.metric-value{font:500 18px var(--serif);white-space:nowrap}
+.tokens-suffix{font:500 10px var(--serif);color:var(--muted);margin-left:2px}
+.metric-foot{margin-top:3px;color:var(--dim);font-family:var(--serif);font-size:10px;line-height:1.35}
+.metric-foot + .metric-foot{margin-top:1px}
+.metric-models{margin-top:2px;display:flex;flex-direction:column;gap:1px;font-family:var(--serif);font-size:9px;color:var(--muted)}
 .metric-model-row{display:flex;justify-content:space-between;gap:8px}
 .metric-model-row .m-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .metric-model-row .m-val{color:var(--text);font-variant-numeric:tabular-nums}
-.chart-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:13px}
-.chart-title{font:600 15px var(--serif)}
-.chart-caption{color:var(--dim);font:10px var(--serif);margin-top:3px}
-.select{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:#1c1c19 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1 2.5 L4 5.5 L7 2.5' stroke='%23918f86' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 8px center;color:var(--muted);padding:6px 24px 6px 12px;border-radius:8px;font:11px var(--serif);outline:none;cursor:pointer;color-scheme:dark;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
+.chart-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:6px}
+.chart-title{font:600 13px var(--serif)}
+.chart-caption{color:var(--dim);font:9px var(--serif);margin-top:2px}
+.select{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:#1c1c19 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1 2.5 L4 5.5 L7 2.5' stroke='%23918f86' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 7px center;color:var(--muted);padding:4px 22px 4px 10px;border-radius:7px;font:10px var(--serif);outline:none;cursor:pointer;color-scheme:dark;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
 .select:hover{color:var(--text);border-color:#4e4e45;background-color:#232320}
 .select:focus{color:var(--text);border-color:var(--green)}
 /* 右上角供应商切换 ⚙ 按钮 + 下拉菜单 */
@@ -63,27 +76,27 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
 .gear-item.active{color:var(--text)}
 .gear-dot{width:6px;height:6px;border-radius:50%;border:1px solid var(--muted);flex-shrink:0}
 .gear-item.active .gear-dot{background:var(--green);border-color:var(--green)}
-.custom-range{display:flex;align-items:center;gap:8px;margin-bottom:10px;font:11px var(--serif);color:var(--dim)}
-.custom-range input{background:#11110f;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:11px var(--serif);color-scheme:dark}
-.chart{height:clamp(180px,38vh,230px);position:relative;border-bottom:1px solid var(--line);padding:clamp(18px,3vw,24px) 8px clamp(26px,4.4vw,32px) clamp(40px,7vw,50px);background:
+.custom-range{display:flex;align-items:center;gap:6px;margin-bottom:6px;font:10px var(--serif);color:var(--dim)}
+.custom-range input{background:#11110f;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:10px var(--serif);color-scheme:dark}
+.chart{height:105px;position:relative;border-bottom:1px solid var(--line);padding:12px 6px 18px 30px;background:
   linear-gradient(to bottom, transparent 48.15%, rgba(255,255,255,.04) 48.35%, transparent 48.55%),
   transparent}
-.chart::before{content:"";position:absolute;left:clamp(40px,7vw,50px);top:clamp(18px,3vw,24px);bottom:clamp(26px,4.4vw,32px);width:1px;background:var(--line);opacity:.55}
-.y-axis{position:absolute;left:0;top:clamp(16px,2.8vw,20px);bottom:clamp(28px,4.6vw,34px);display:flex;flex-direction:column;justify-content:space-between;color:var(--dim);font:clamp(11px,1.9vw,12px) var(--serif);width:clamp(36px,6.2vw,46px)}
-.y-axis span{display:block;text-align:right;padding-right:8px}
-.bars{height:100%;display:grid;grid-template-columns:repeat(7,1fr);gap:12px;align-items:end}
+.chart::before{content:"";position:absolute;left:30px;top:12px;bottom:18px;width:1px;background:var(--line);opacity:.55}
+.y-axis{position:absolute;left:0;top:10px;bottom:20px;display:flex;flex-direction:column;justify-content:space-between;color:var(--dim);font:9px var(--serif);width:26px}
+.y-axis span{display:block;text-align:right;padding-right:6px}
+.bars{height:100%;display:grid;grid-template-columns:repeat(7,1fr);gap:6px;align-items:end}
 .bar-wrap{height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative}
-.bar-value{margin-bottom:6px;color:#aaa89f;font:clamp(11px,1.9vw,12px) var(--serif)}
-.bar{width:clamp(26px,5vw,34px);max-width:75%;min-height:2px;border-radius:3px 3px 0 0;background:#4e824f}
+.bar-value{margin-bottom:3px;color:#aaa89f;font:9px var(--serif)}
+.bar{width:18px;max-width:75%;min-height:2px;border-radius:2px 2px 0 0;background:#4e824f}
 .bar.current{background:var(--green)}
-.bar-label{position:absolute;bottom:-26px;color:var(--dim);font:clamp(10px,1.8vw,11px) var(--serif);background:var(--s);padding:1px 5px;border-radius:3px;white-space:nowrap;line-height:1.2;z-index:2}
+.bar-label{position:absolute;bottom:-18px;color:var(--dim);font:8px var(--serif);background:var(--s);padding:1px 4px;border-radius:2px;white-space:nowrap;line-height:1.2;z-index:2}
 .bar-label.current{color:var(--text)}
-.bottom{display:flex;justify-content:space-between;margin-top:13px;color:var(--dim);font:9px var(--serif)}
-.hooks{margin-top:18px;padding:14px 18px 18px;border:1px solid var(--line);border-radius:10px;background:var(--s)}
-.hooks-title{font:600 12px/1 var(--serif);color:var(--text);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.bottom{display:flex;justify-content:space-between;margin-top:8px;color:var(--dim);font:8px var(--serif)}
+.hooks{margin-top:12px;padding:10px 14px 12px;border:1px solid var(--line);border-radius:8px;background:var(--s)}
+.hooks-title{font:600 11px/1 var(--serif);color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:5px}
 .hooks-title::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);animation:hook-pulse 2s ease-in-out infinite}
 @keyframes hook-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.hooks-list{list-style:none;padding:0;margin:0;font:11px/1.6 var(--serif);color:var(--dim)}
+.hooks-list{list-style:none;padding:0;margin:0;font:10px/1.5 var(--serif);color:var(--dim)}
 .hooks-list li{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--line)}
 .hooks-list li:last-child{border-bottom:0}
 .hooks-list .h-time{color:var(--dim);font-variant-numeric:tabular-nums;flex-shrink:0}
@@ -98,6 +111,37 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
   .metric{border-left:0!important;padding:0!important}
   .metric-foot{display:none}
 }
+/* ── 可折叠面板 ── */
+.collapsible{margin-bottom:10px}
+.collapsible:last-child{margin-bottom:0}
+.coll-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;background:transparent;border:0;color:var(--muted);
+  padding:5px 4px;cursor:pointer;border-radius:6px;
+  font:600 11px/1 var(--serif);text-align:left;
+  transition:color .15s,background-color .15s;
+}
+.coll-head:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.coll-head:focus-visible{outline:1px solid var(--green);outline-offset:2px}
+.coll-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.coll-head-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+/* CSS chevron:复用 .select 下拉箭头风格,旋转表达开合 */
+.coll-icon{
+  width:10px;height:10px;flex-shrink:0;
+  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(-45deg);transition:transform .18s ease;color:var(--muted)
+}
+.collapsible.is-open .coll-icon{transform:rotate(45deg)}
+.collapsible.is-open .coll-head{color:var(--text)}
+/* 默认折叠;.is-open 覆盖 */
+.collapsible>.coll-body{display:none}
+.collapsible.is-open>.coll-body{display:block}
+.collapsible:not(.is-open) .coll-icon{color:var(--dim)}
+/* head 脚本同步覆盖(首次 paint 应用持久化状态,避免闪烁) */
+html[data-init-open="metrics"] .collapsible[data-collapsible="metrics"]>.coll-body{display:block}
+html[data-init-open="metrics"] .collapsible[data-collapsible="metrics"] .coll-icon{transform:rotate(45deg)}
+html[data-init-open="chart"] .collapsible[data-collapsible="chart"]>.coll-body{display:block}
+html[data-init-open="chart"] .collapsible[data-collapsible="chart"] .coll-icon{transform:rotate(45deg)}
 </style>
 </head>
 <body>
@@ -134,59 +178,74 @@ main{padding:clamp(18px,3.4vw,26px) clamp(16px,3.4vw,26px) clamp(14px,2.6vw,20px
   </section>
 
 
-  <!-- 三指标卡 -->
-  <section class="metrics">
-    <div class="metric">
-      <div class="metric-label">今日消费金额</div>
-      <div class="metric-value" id="costToday" style="color:#fff">—</div>
-      <div class="metric-foot" id="costTodayFoot" style="color:var(--dim)"></div>
-      <div class="metric-models" id="costTodayModels"></div>
+  <!-- 三指标卡(可折叠,默认收起) -->
+  <div class="collapsible" id="collMetrics" data-collapsible="metrics">
+    <button type="button" class="coll-head" aria-expanded="false" aria-controls="collMetricsBody">
+      <span class="coll-title">今日消费 / 近 7 日 / 今日消耗</span>
+      <span class="coll-icon" aria-hidden="true"></span>
+    </button>
+    <div class="coll-body" id="collMetricsBody">
+      <section class="metrics">
+        <div class="metric">
+          <div class="metric-label">今日消费金额</div>
+          <div class="metric-value" id="costToday" style="color:#fff">—</div>
+          <div class="metric-foot" id="costTodayFoot" style="color:var(--dim)"></div>
+          <div class="metric-models" id="costTodayModels"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">近 7 日</div>
+          <div class="metric-value" id="cost7d">—</div>
+          <div class="metric-foot" id="cost7dFoot">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">今日消耗</div>
+          <div class="metric-value"><span id="todayTokens">—</span><span class="tokens-suffix"> Tokens</span></div>
+          <div class="metric-foot" id="todayTokensFoot"></div>
+          <div class="metric-foot" id="todayHitFoot"></div>
+          <div class="metric-foot" id="todayRateFoot"></div>
+        </div>
+      </section>
     </div>
-    <div class="metric">
-      <div class="metric-label">近 7 日</div>
-      <div class="metric-value" id="cost7d">—</div>
-      <div class="metric-foot" id="cost7dFoot">—</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">今日消耗</div>
-      <div class="metric-value"><span id="todayTokens">—</span><span class="tokens-suffix"> Tokens</span></div>
-      <div class="metric-foot" id="todayTokensFoot"></div>
-      <div class="metric-foot" id="todayHitFoot"></div>
-      <div class="metric-foot" id="todayRateFoot"></div>
-    </div>
-  </section>
+  </div>
 
-  <!-- 用量趋势：7 根柱 + 纵轴 -->
-  <section>
-    <div class="chart-head">
-      <div>
-        <div class="chart-title">用量趋势</div>
-        <div class="chart-caption" id="chartCaption">过去 7 日 API Token 使用量</div>
+  <!-- 用量趋势：7 根柱 + 纵轴(可折叠,默认收起;header 保留 select 切换时段) -->
+  <div class="collapsible" id="collChart" data-collapsible="chart">
+    <div class="coll-head" role="button" tabindex="0" aria-expanded="false" aria-controls="collChartBody">
+      <div class="chart-head">
+        <div>
+          <div class="chart-title">用量趋势</div>
+          <div class="chart-caption" id="chartCaption">过去 7 日 API Token 使用量</div>
+        </div>
+        <div class="coll-head-right">
+          <select class="select" id="rangeSelect">
+            <option value="today">今天</option>
+            <option value="yesterday">昨天</option>
+            <option value="7d" selected>近 7 天</option>
+            <option value="30d">近 30 天</option>
+            <option value="month">本月</option>
+            <option value="lastMonth">上月</option>
+            <option value="custom">自定义</option>
+          </select>
+          <span class="coll-icon" aria-hidden="true"></span>
+        </div>
       </div>
-      <select class="select" id="rangeSelect">
-        <option value="today">今天</option>
-        <option value="yesterday">昨天</option>
-        <option value="7d" selected>近 7 天</option>
-        <option value="30d">近 30 天</option>
-        <option value="month">本月</option>
-        <option value="lastMonth">上月</option>
-        <option value="custom">自定义</option>
-      </select>
     </div>
-    <div class="custom-range" id="customRange" style="display:none">
-      <input type="date" id="fromDate">
-      <span>至</span>
-      <input type="date" id="toDate">
+    <div class="coll-body" id="collChartBody">
+      <div class="custom-range" id="customRange" style="display:none">
+        <input type="date" id="fromDate">
+        <span>至</span>
+        <input type="date" id="toDate">
+      </div>
+      <div class="chart">
+        <div class="y-axis" id="yAxis"><span>—</span><span>—</span><span>0</span></div>
+        <div class="bars" id="bars"></div>
+      </div>
+      <footer class="bottom">
+        <span>API Usage Monitor</span>
+        <span id="updateTime">—</span>
+      </footer>
     </div>
-    <div class="chart">
-      <div class="y-axis" id="yAxis"><span>—</span><span>—</span><span>0</span></div>
-      <div class="bars" id="bars"></div>
-    </div>
-    <footer class="bottom">
-      <span>API Usage Monitor</span>
-      <span id="updateTime">—</span>
-    </footer>
-  </section>
+  </div>
 
   <!-- Claude Code Hook 活动流：最近 5 条 hook 事件 -->
   <section class="hooks" id="hooksSection" hidden>
@@ -385,6 +444,58 @@ function bindRange() {
 // script 位于 body 末尾，DOM 已就绪，只绑定一次。
 bindRange();
 
+/* ── Accordion 折叠:localStorage 持久化 + 无闪烁恢复 ── */
+var COLLAPSE_KEY = "paperTodo.balanceMonitor.collapse";
+var DEFAULT_COLLAPSE = { metrics: true,  chart: true  }; // true=默认展开(笔记纸默认尺寸适配)
+
+function loadCollapseState() {
+  try {
+    var raw = localStorage.getItem(COLLAPSE_KEY);
+    if (!raw) return Object.assign({}, DEFAULT_COLLAPSE);
+    return Object.assign({}, DEFAULT_COLLAPSE, JSON.parse(raw));
+  } catch (e) {
+    return Object.assign({}, DEFAULT_COLLAPSE);
+  }
+}
+function saveCollapseState(state) {
+  try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+function initCollapsibles() {
+  var state = loadCollapseState();
+  // 一次性迁移:zoom 1.0× 适配后默认改为展开,清掉旧的折叠状态
+  try {
+    if (!localStorage.getItem("paperTodo.balanceMonitor.collapse.v2")) {
+      localStorage.removeItem("paperTodo.balanceMonitor.collapse");
+      localStorage.setItem("paperTodo.balanceMonitor.collapse.v2", "1");
+      state = Object.assign({}, DEFAULT_COLLAPSE);
+      saveCollapseState(state);
+    }
+  } catch (e) {}
+  var nodes = document.querySelectorAll(".collapsible[data-collapsible]");
+  // 清除 head 脚本注入的临时属性,避免重复控制
+  document.documentElement.removeAttribute("data-init-open");
+  nodes.forEach(function (el) {
+    var key = el.getAttribute("data-collapsible");
+    var head = el.querySelector(".coll-head");
+    if (!head || !DEFAULT_COLLAPSE.hasOwnProperty(key)) return;
+    // 同步 class 与 aria-expanded(首次 paint 已被 head 脚本 + CSS 控制,这里只补 class)
+    var open = state[key] === true;
+    el.classList.toggle("is-open", open);
+    head.setAttribute("aria-expanded", open ? "true" : "false");
+    head.addEventListener("click", function (ev) {
+      // header 内若有交互控件(<select>、<input>),点击控件时不触发折叠
+      if (ev.target.closest("select, input")) return;
+      var nowOpen = el.classList.toggle("is-open");
+      head.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+      state[key] = nowOpen;
+      saveCollapseState(state);
+    });
+  });
+}
+
+initCollapsibles();
+
 function parseDate(s) {
   var p = s.split("-");
   return new Date(+p[0], +p[1] - 1, +p[2]);
@@ -515,10 +626,31 @@ window.__renderBalance = function (msg) {
   try { render(msg); } catch (e) {}
 };
 
-// 全部内容放大预览（固定 1.35，不做超高适配，便于查看放大效果）
-window.addEventListener("load", function () {
-  document.body.style.zoom = "1.35";
-});
+// 页面等比缩放：跟随宿主 WebView 容器尺寸变化
+// 宿主笔记纸默认宽度 304 DIP(320 - 16 chrome 边距),
+// baseVisualZoom = 304 DIP 下视觉缩放,等价于旧版的固定 1.35。
+// Todo 纸 264 DIP / 大尺寸 paper 等场景下,按 innerWidth / 304 等比缩放。
+(function () {
+  var BASE_DIP = 304;
+  var BASE_VISUAL_ZOOM = 1.0;   // 笔记纸 304 DIP 下视觉缩放 1.0×(适配后)
+  var ZOOM_MIN = 0.85;
+  var ZOOM_MAX = 1.5;
+  function syncZoom() {
+    var ratio = Math.max(0.01, window.innerWidth) / BASE_DIP;
+    var zoom = ratio * BASE_VISUAL_ZOOM;
+    document.body.style.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)).toFixed(3);
+  }
+  window.addEventListener("resize", syncZoom);
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncZoom).observe(document.documentElement);
+  }
+  // DOMContentLoaded 阶段立即应用,避免首次 paint 是未缩放状态
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncZoom, { once: true });
+  } else {
+    syncZoom();
+  }
+})();
 
 // 监听 postMessage
 if (bridge) {

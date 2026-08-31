@@ -4,6 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Token Plan — Monitor</title>
+<script>
+/* ── Accordion 折叠:首次 paint 前同步读取 localStorage,避免闪烁 ── */
+(function () {
+  try {
+    var raw = localStorage.getItem("paperTodo.balanceMonitor.collapse");
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    var root = document.documentElement;
+    if (s.hero === true) root.setAttribute("data-init-open", "hero");
+  } catch (e) {}
+})();
+</script>
 <style>
 :root{
   --paper:#f3efe7; --paper-deep:#e9e3d7;
@@ -22,8 +34,8 @@
 *{box-sizing:border-box}
 html{height:100%}
 body{margin:0;min-height:100%;background:transparent;color:var(--ink);font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
-.page{width:100%;min-height:100vh;background:transparent;padding:clamp(22px,4vw,42px) clamp(18px,4vw,40px)}
-.header{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;padding-bottom:clamp(18px,3vw,28px);border-bottom:1px solid var(--ink)}
+.page{width:100%;min-height:100vh;background:transparent;padding:16px 18px 14px}
+.header{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;padding-bottom:12px;border-bottom:1px solid var(--ink)}
 /* 右上角供应商切换 ⚙ 按钮 + 下拉菜单 */
 .settings-gear{position:relative;align-self:flex-start;flex-shrink:0}
 .gear-btn{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);width:26px;height:26px;border-radius:7px;font-size:14px;line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background-color .15s;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
@@ -35,26 +47,26 @@ body{margin:0;min-height:100%;background:transparent;color:var(--ink);font-famil
 .gear-item.active{color:var(--ink)}
 .gear-dot{width:6px;height:6px;border-radius:50%;border:1px solid var(--muted);flex-shrink:0}
 .gear-item.active .gear-dot{background:var(--accent);border-color:var(--accent)}
-h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;letter-spacing:-1px}
-.header-meta{text-align:right;color:var(--muted);font-size:12px;line-height:1.9}
+h1{margin:0;font-size:22px;line-height:1.15;font-weight:600;letter-spacing:-.5px}
+.header-meta{text-align:right;color:var(--muted);font-size:10px;line-height:1.6}
 .header-meta .status strong{color:var(--ok);font-weight:600}
 .header-meta .status.err strong{color:var(--accent)}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:5px;vertical-align:1px}
 .status-dot.err{background:var(--accent)}
-.hero{display:flex;flex-direction:column;justify-content:center;min-height:clamp(200px,28vh,260px);border-bottom:1px solid var(--line)}
-.hero-main{padding:clamp(28px,5vw,45px) 0 clamp(26px,4vw,42px);display:flex;flex-direction:column;justify-content:center;gap:clamp(30px,5vw,48px)}
-.gauge-name{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:clamp(10px,1.8vw,14px)}
-.gauge-name span{font-size:clamp(14px,2vw,17px);font-weight:600}
-.gauge-name em{font-style:normal;font-size:clamp(20px,3vw,28px);font-weight:500;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
-.gauge-track{height:clamp(10px,1.6vw,14px);background:var(--soft-line);border-radius:999px;overflow:hidden}
+.hero{display:flex;flex-direction:column;justify-content:center;border-bottom:1px solid var(--line);padding:4px 0}
+.hero-main{padding:6px 0;display:flex;flex-direction:column;justify-content:center;gap:14px}
+.gauge-name{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
+.gauge-name span{font-size:12px;font-weight:600}
+.gauge-name em{font-style:normal;font-size:17px;font-weight:500;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.gauge-track{height:8px;background:var(--soft-line);border-radius:999px;overflow:hidden}
 .gauge-track i{display:block;height:100%;background:var(--ink);border-radius:999px;transition:width .5s ease}
 .gauge-track i.warning{background:var(--accent)}
-.gauge-foot{margin-top:9px;color:var(--muted);font-size:clamp(11px,1.6vw,12px)}
-.hooks{margin-top:clamp(14px,2vw,20px);padding:clamp(14px,2.4vw,18px) clamp(14px,2.4vw,18px) clamp(18px,2.6vw,24px);border:1px solid var(--line);border-radius:10px;background:var(--paper-deep)}
-.hooks-title{font:600 clamp(12px,1.8vw,14px) var(--serif);color:var(--ink);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.gauge-foot{margin-top:5px;color:var(--muted);font-size:10px}
+.hooks{margin-top:10px;padding:10px 12px 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper-deep)}
+.hooks-title{font:600 11px var(--serif);color:var(--ink);margin-bottom:6px;display:flex;align-items:center;gap:5px}
 .hooks-title::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:hook-pulse 2s ease-in-out infinite}
 @keyframes hook-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.hooks-list{list-style:none;padding:0;margin:0;font:12px/1.6 var(--serif);color:var(--muted)}
+.hooks-list{list-style:none;padding:0;margin:0;font:10px/1.5 var(--serif);color:var(--muted)}
 .hooks-list li{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--soft-line)}
 .hooks-list li:last-child{border-bottom:0}
 .hooks-list .h-time{color:var(--muted);font-variant-numeric:tabular-nums;flex-shrink:0}
@@ -65,6 +77,31 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
   .header-meta{text-align:left;margin-top:15px}
   .hero-main{padding-bottom:24px}
 }
+/* ── 可折叠面板 ── */
+.collapsible{margin-top:6px}
+.coll-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;background:transparent;border:1px solid transparent;border-radius:6px;
+  padding:5px 4px;cursor:pointer;color:var(--muted);
+  font:600 11px/1 var(--serif);text-align:left;
+  transition:color .15s,background-color .15s,border-color .15s;
+}
+.coll-head:hover{color:var(--ink);background:var(--accent-soft)}
+.coll-head:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.coll-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.coll-icon{
+  width:10px;height:10px;flex-shrink:0;
+  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(-45deg);transition:transform .18s ease;color:var(--muted)
+}
+.collapsible.is-open .coll-icon{transform:rotate(45deg)}
+.collapsible.is-open .coll-head{color:var(--ink)}
+.collapsible>.coll-body{display:none}
+.collapsible.is-open>.coll-body{display:block}
+.collapsible:not(.is-open) .coll-icon{color:var(--soft-line)}
+/* head 脚本同步覆盖(首次 paint 应用持久化状态,避免闪烁) */
+html[data-init-open="hero"] .collapsible[data-collapsible="hero"]>.coll-body{display:block}
+html[data-init-open="hero"] .collapsible[data-collapsible="hero"] .coll-icon{transform:rotate(45deg)}
 </style>
 </head>
 <body>
@@ -92,28 +129,36 @@ h1{margin:0;font-size:clamp(26px,4vw,44px);line-height:1.1;font-weight:600;lette
     </div>
   </header>
 
-  <section class="hero">
-    <div class="hero-main">
-      <!-- 上方：每五小时余额（当前周期 interval） -->
-      <div class="gauge">
-        <div class="gauge-name">
-          <span>每五小时余额</span>
-          <em id="intervalPct">--%</em>
+  <div class="collapsible" id="collHero" data-collapsible="hero">
+    <button type="button" class="coll-head" aria-expanded="false" aria-controls="collHeroBody">
+      <span class="coll-title">配额进度</span>
+      <span class="coll-icon" aria-hidden="true"></span>
+    </button>
+    <div class="coll-body" id="collHeroBody">
+      <section class="hero">
+        <div class="hero-main">
+          <!-- 上方：每五小时余额（当前周期 interval） -->
+          <div class="gauge">
+            <div class="gauge-name">
+              <span>每五小时余额</span>
+              <em id="intervalPct">--%</em>
+            </div>
+            <div class="gauge-track"><i id="intervalBar"></i></div>
+            <div class="gauge-foot" id="intervalFoot">—</div>
+          </div>
+          <!-- 下方：每周余额 -->
+          <div class="gauge">
+            <div class="gauge-name">
+              <span>每周余额</span>
+              <em id="weeklyPct">--%</em>
+            </div>
+            <div class="gauge-track"><i id="weeklyBar"></i></div>
+            <div class="gauge-foot" id="weeklyFoot">—</div>
+          </div>
         </div>
-        <div class="gauge-track"><i id="intervalBar"></i></div>
-        <div class="gauge-foot" id="intervalFoot">—</div>
-      </div>
-      <!-- 下方：每周余额 -->
-      <div class="gauge">
-        <div class="gauge-name">
-          <span>每周余额</span>
-          <em id="weeklyPct">--%</em>
-        </div>
-        <div class="gauge-track"><i id="weeklyBar"></i></div>
-        <div class="gauge-foot" id="weeklyFoot">—</div>
-      </div>
+      </section>
     </div>
-  </section>
+  </div>
 
   <!-- Claude Code Hook 活动流：最近 5 条 hook 事件 -->
   <section class="hooks" id="hooksSection" hidden>
@@ -257,6 +302,80 @@ if (bridge) {
   bridge.addEventListener("message", function (e) { try { render(JSON.parse(e.data)); } catch (e) {} });
   bridge.postMessage({ type: "ready" });
 }
+
+/* ── Accordion 折叠:localStorage 持久化 + 无闪烁恢复 ── */
+var COLLAPSE_KEY = "paperTodo.balanceMonitor.collapse";
+var DEFAULT_COLLAPSE = { hero: true }; // true=默认展开(笔记纸默认尺寸适配)
+
+function loadCollapseState() {
+  try {
+    var raw = localStorage.getItem(COLLAPSE_KEY);
+    if (!raw) return Object.assign({}, DEFAULT_COLLAPSE);
+    return Object.assign({}, DEFAULT_COLLAPSE, JSON.parse(raw));
+  } catch (e) {
+    return Object.assign({}, DEFAULT_COLLAPSE);
+  }
+}
+function saveCollapseState(state) {
+  try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+function initCollapsibles() {
+  var state = loadCollapseState();
+  // 一次性迁移:zoom 1.0× 适配后默认改为展开,清掉旧的折叠状态
+  try {
+    if (!localStorage.getItem("paperTodo.balanceMonitor.collapse.v2")) {
+      localStorage.removeItem("paperTodo.balanceMonitor.collapse");
+      localStorage.setItem("paperTodo.balanceMonitor.collapse.v2", "1");
+      state = Object.assign({}, DEFAULT_COLLAPSE);
+      saveCollapseState(state);
+    }
+  } catch (e) {}
+  var nodes = document.querySelectorAll(".collapsible[data-collapsible]");
+  document.documentElement.removeAttribute("data-init-open");
+  nodes.forEach(function (el) {
+    var key = el.getAttribute("data-collapsible");
+    var head = el.querySelector(".coll-head");
+    if (!head || !DEFAULT_COLLAPSE.hasOwnProperty(key)) return;
+    var open = state[key] === true;
+    el.classList.toggle("is-open", open);
+    head.setAttribute("aria-expanded", open ? "true" : "false");
+    head.addEventListener("click", function (ev) {
+      if (ev.target.closest("select, input")) return;
+      var nowOpen = el.classList.toggle("is-open");
+      head.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+      state[key] = nowOpen;
+      saveCollapseState(state);
+    });
+  });
+}
+
+initCollapsibles();
+
+// 页面等比缩放：跟随宿主 WebView 容器尺寸变化
+// 宿主笔记纸默认宽度 304 DIP(320 - 16 chrome 边距),
+// baseVisualZoom = 304 DIP 下视觉缩放,等价于 monitor.html 的固定 1.35。
+// Todo 纸 264 DIP / 大尺寸 paper 等场景下,按 innerWidth / 304 等比缩放。
+(function () {
+  var BASE_DIP = 304;
+  var BASE_VISUAL_ZOOM = 1.0;   // 笔记纸 304 DIP 下视觉缩放 1.0×(适配后)
+  var ZOOM_MIN = 0.85;
+  var ZOOM_MAX = 1.5;
+  function syncZoom() {
+    var ratio = Math.max(0.01, window.innerWidth) / BASE_DIP;
+    var zoom = ratio * BASE_VISUAL_ZOOM;
+    document.body.style.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)).toFixed(3);
+  }
+  window.addEventListener("resize", syncZoom);
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncZoom).observe(document.documentElement);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncZoom, { once: true });
+  } else {
+    syncZoom();
+  }
+})();
 
 // 右上角 ⚙ 供应商切换：点按钮展开/收起列表；点列表项切换；点外部收起
 (function () {
