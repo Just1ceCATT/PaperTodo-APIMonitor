@@ -25,6 +25,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 {
     private readonly PaperBodyContext _context;
     private readonly HttpClient _http;
+    // 与 _http 配对的 HttpClientHandler：开启系统代理解析（UseProxy=true），
+    // HttpClient 在 dispose 时会按 disposeHandler:true 一并释放。
+    private readonly HttpClientHandler _httpHandler;
     private readonly DispatcherTimer _timer;
     // 高峰时段哨兵：每 30 秒检查一次 UTC+8 是否进入/离开 9-12 / 14-18 高峰窗口，
     // 让胶囊在 9:00 / 12:00 / 14:00 / 18:00 边界附近 30 秒内自动显隐太阳图标，
@@ -149,7 +152,19 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _state = ReadState(context.StateJson);
         _settings = ReadSettings(context.SettingsJson, _state.Provider);
 
-        _http = new HttpClient
+        // 修复：.NET 6+/10 上裸 HttpClient 默认不走系统代理，开启 Clash / V2RayN /
+        // SagerNet 或 PAC 脚本后浏览器能通但插件拉不到数据。这里显式 UseProxy=true
+        // 让 HttpClientHandler 走 .NET 的代理探测链（Win 注册表 / 环境变量 HTTP_PROXY /
+        // HTTPS_PROXY / 自动检测脚本），与宿主 / 浏览器行为对齐。
+        // 注意 HttpClientHandler 必须随 HttpClient 一起 Dispose，因此 HttpClient 自身
+        // 不能再次包裹另一个 handler；这里直接把 handler 持有为字段以便 Dispose 释放。
+        _httpHandler = new HttpClientHandler
+        {
+            UseProxy = true,
+            // UseDefaultCredentials 让 NTLM / Negotiate 代理（如公司内网）能直接认证，
+            // 对匿名 / basic 代理无副作用。Socks5 proxy 必须显式注入，UseProxy 不会触发。
+        };
+        _http = new HttpClient(_httpHandler, disposeHandler: true)
         {
             Timeout = TimeSpan.FromSeconds(15)
         };

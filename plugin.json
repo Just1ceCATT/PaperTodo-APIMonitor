@@ -6,6 +6,7 @@
   "version": "1.3.0",
   "apiVersion": "2.1",
   "stateVersion": 2,
+  "maxPaperInstances": 0,
   "entry": "PaperTodo.Plugin.ApiBalanceMonitor.dll",
   "capabilities": [],
   "requires": [
