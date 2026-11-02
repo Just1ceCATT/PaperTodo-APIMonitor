@@ -161,7 +161,14 @@ internal sealed class HookOverlayController
 
     public void Dispose()
     {
-        ClearAll();
+        try
+        {
+            ClearAll();
+        }
+        catch
+        {
+            // 释放阶段不抛异常干扰宿主卸载。
+        }
         _regularRing = null;
         _dockedRing = null;
         _regularDot = null;

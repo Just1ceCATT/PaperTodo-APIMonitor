@@ -417,6 +417,18 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _hookServer.Dispose();
             _hookServer = null;
         }
+        // Hook overlay 状态机：先 Dispose 再清 view 字段 ——
+        // Controller.Dispose 内部会 ClearAll，让 view 恢复余额显示；
+        // 顺序反了 view 就拿不到恢复机会，胶囊会停在 overlay 文案上。
+        try
+        {
+            _overlayController.Dispose();
+        }
+        catch
+        {
+            // 释放阶段不抛异常干扰宿主卸载。
+        }
+
         // 清空 1.7 视图缓存：宿主在下次 body session 重建时会请求新的 view，
         // 旧引用指向的元素已经被宿主丢弃，保留只会徒增引用计数。
         _regularRingCapsuleView = null;
@@ -488,6 +500,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _dockedRingCapsuleView = null;
         _regularDotCapsuleView = null;
         _dockedDotCapsuleView = null;
+        // Controller 必须同步清空 view 引用，否则会继续把 overlay 派发到
+        // 宿主已经丢弃的旧 view 上（孤儿引用），新胶囊收不到 overlay。
+        _overlayController.AttachViews(null, null, null, null);
         // 趋势窗口是按 provider 的余额口径积累的，跨 provider 复用会得到无意义的斜率。
         _trend.Reset();
         _ = PollAsync();
