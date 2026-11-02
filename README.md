@@ -20,7 +20,7 @@
   - DeepSeek:风险圆环 + 余额数字(`¥15.96` 或 `21% · ¥15.96`,百分比可在设置里关)
   - MiniMax / Kimi / ZhiPu:剩余百分比 + 当前周期重置倒计时(`7% · 3时45分`)
 - **风险色**:余额越低颜色越红,跟着阈值走;阈值未设置时显示灰色。设置里可一键关闭圆环(`disableRing`),仅保留文字。
-- **hook overlay**:Claude Code 触发 `PreToolUse` / `PostToolUse` 时,胶囊临时覆盖一个旋转沙漏或工具名;`Stop` / `PermissionRequest` / `PostToolUseFailure` 时覆盖一个对勾 / 问号 / 红叉,默认 8 秒后恢复余额。
+- **hook overlay**:Claude Code 触发 `PreToolUse` / `PostToolUse` 时,胶囊临时覆盖一个旋转沙漏或工具名;`Stop` / `PermissionRequest` / `PostToolUseFailure` 时覆盖一个对勾 / 问号 / 红叉,默认 3 秒后恢复余额(可在插件设置里调成 1-30 秒)。
 
 ![1787153056075](image/README/1787153056075.png)
 
@@ -30,8 +30,8 @@ paper 悬停在屏幕边缘时,在 pill 形状里露出比胶囊更完整的快�
 
 | 供应商 | 默认尺寸 |
 |--------|---------|
-| DeepSeek | 322 × 257(今日消费 / 近 7 日 / 今日消耗 3 行 + footer) |
-| MiniMax / Kimi / ZhiPu / OpenCode / MiMo / CodeX | 280 × 180(每五小时 / 每周 双进度条) |
+| DeepSeek | 322 × 232(今日消费 / 近 7 日 / 今日消耗 3 行 + footer) |
+| MiniMax / Kimi / ZhiPu / OpenCode / MiMo / CodeX | 280 × 190(每五小时 / 每周 双进度条) |
 
 字体可被 `MiniView 字体` 设置覆盖(留空跟随主题)。
 
@@ -67,17 +67,17 @@ WebView2 渲染 `web/monitor.html` 或 `web/minimax.html`,与 paper body 容器�
 
 ### Claude Code hook 集成
 
-插件在本地 `127.0.0.1:17890`(端口冲突时自动 +1 ~ +4 重试)启动一个 HTTP 服务器,接收 Claude Code 的生命周期事件转推。可在 plugin.json 设置里独立开关以下 7 个事件:
+插件在本地 `127.0.0.1:17890`(端口冲突时自动 +1 ~ +4 重试)启动一个 HTTP 服务器,接收 Claude Code 的生命周期事件转推。可在 plugin.json 设置里独立开关以下 5 个事件(`Stop` / `PreToolUse` / `PostToolUse` / `PermissionRequest` / `PostToolUseFailure`);其余事件(`UserPromptSubmit` / `SessionStart` / `SessionEnd` / `Notification` 等)只进活动流,没有独立开关。
 
 | 事件 | 行为 |
 |------|------|
-| `UserPromptSubmit` | hook overlay 转沙漏(收到用户提示) |
+| `UserPromptSubmit` | 只进活动流,不渲染 overlay(无独立开关,始终接收) |
 | `PreToolUse` | hook overlay 转沙漏 + 显示工具名(如 `Edit` / `Bash` / `WebFetch`) |
 | `PostToolUse` | hook overlay 转沙漏 + 显示工具名 |
-| `PostToolUseFailure` | 覆盖红叉 + "✗ 执行异常",8 秒倒计时 |
-| `PermissionRequest` | 覆盖黄色问号 + "等待用户回应",8 秒倒计时 |
-| `Stop` | 覆盖绿色对勾 + "✓ 任务完成",8 秒倒计时 |
-| `StopFailure` / `SessionNot` / `Notification` | 不渲染 overlay,只进入活动流 |
+| `PostToolUseFailure` | 覆盖红叉 + "✗ 执行异常",3 秒倒计时(默认,可在设置里调整) |
+| `PermissionRequest` | 覆盖黄色问号 + "等待用户回应",3 秒倒计时(默认,可在设置里调整) |
+| `Stop` | 覆盖绿色对勾 + "✓ 任务完成",3 秒倒计时(默认,可在设置里调整) |
+| `SessionStart` / `SessionEnd` / `Notification` / 其他事件 | 不渲染 overlay,只进入活动流 |
 
 胶囊临时 overlay 用 `HookOverlayController` 状态机管理,避免动画并存与后台线程并发崩溃。
 
@@ -133,12 +133,13 @@ WebView2 渲染 `web/monitor.html` 或 `web/minimax.html`,与 paper body 容器�
 | 设置项 | 默认 | 说明 |
 | --- | --- | --- |
 | hook 端口 | 17890 | 端口冲突时自动 +1 ~ +4 重试 |
-| overlay 持续秒数 | 8 | Color overlay(`Stop` / `PermissionRequest` / `PostToolUseFailure`)的展示秒数,倒计时到时自动恢复余额 |
-| 收到用户提示时通知 | 开 | `UserPromptSubmit` 是否进活动流 |
+| overlay 持续秒数 | 3 | Color overlay(`Stop` / `PermissionRequest` / `PostToolUseFailure`)的展示秒数,范围 1-30,倒计时到时自动恢复余额 |
 | 工具调用前通知 | 开 | `PreToolUse` 是否进活动流 + overlay |
 | 工具调用后通知 | 开 | `PostToolUse` 是否进活动流 + overlay |
 | 工具权限请求通知 | 开 | `PermissionRequest` 是否进活动流 + overlay |
 | 工具调用失败通知 | 开 | `PostToolUseFailure` 是否进活动流 + overlay |
+
+> `UserPromptSubmit` / `SessionStart` / `SessionEnd` / `Notification` 等事件没有独立开关,始终只进活动流,不渲染 overlay。
 
 ---
 
