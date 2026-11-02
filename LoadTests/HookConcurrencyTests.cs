@@ -74,74 +74,109 @@ public sealed class HookConcurrencyTests : IDisposable
 
         // 用 Barrier 让所有 N 个 invoke 几乎同时挂到 ThreadPool 上,
         // 最大化 Queue 操作与 STA ToArray 的并发窗口。
-        using var barrier = new Barrier(N + 1);
-
-        var triggerTasks = new Task[N];
-        for (var i = 0; i < N; i++)
+        //
+        // Barrier 需要 N+1 个参与者同时到达才能放行,而这 N 个 Task.Run 依赖线程池
+        // 提供 N 个线程 —— .NET 线程池默认按 ~1-2 线程/秒缓慢注入,凑齐 2000 个要
+        // 十几分钟。原实现无超时的 SignalAndWait() 会让 STA 线程永久阻塞在屏障上,
+        // 测试宿主被判定为崩溃(与被测代码无关)。
+        //
+        // 两处修复:
+        // 1) 抬高线程池最小线程数,让 N 个参与者能真正同时就位,保住测试的并发强度;
+        // 2) SignalAndWait 带超时 + 容忍屏障被打破,线程池供给不足时优雅降级
+        //    (仍然并发执行 hook,只是不再同步起跑),杜绝死锁。
+        ThreadPool.GetMinThreads(out var previousMinThreads, out var previousMinIo);
+        ThreadPool.SetMinThreads(N + 32, Math.Max(previousMinIo, 32));
+        try
         {
-            var p = payloads[i];
-            triggerTasks[i] = Task.Run(() =>
-            {
-                barrier.SignalAndWait();
-                _hook.InvokeOnHookReceived(p);
-            });
-        }
+            using var barrier = new Barrier(N + 1);
+            var barrierTimeout = TimeSpan.FromSeconds(30);
 
-        // STA 线程循环 ToArray,直接触发 Queue 内部状态读取,
-        // 不依赖 Build() / PostSnapshot 等额外序列化逻辑。
-        Exception? buildException = null;
-        var buildTask = _sta.RunAsync(async () =>
-        {
-            barrier.SignalAndWait();
+            var triggerTasks = new Task[N];
             for (var i = 0; i < N; i++)
+            {
+                var p = payloads[i];
+                triggerTasks[i] = Task.Run(() =>
+                {
+                    try
+                    {
+                        barrier.SignalAndWait(barrierTimeout);
+                    }
+                    catch (BarrierPostPhaseException)
+                    {
+                        // 屏障因超时被打断:仍继续执行 hook,保留并发压力。
+                    }
+                    _hook.InvokeOnHookReceived(p);
+                });
+            }
+
+            // STA 线程循环 ToArray,直接触发 Queue 内部状态读取,
+            // 不依赖 Build() / PostSnapshot 等额外序列化逻辑。
+            Exception? buildException = null;
+            var buildTask = _sta.RunAsync(async () =>
             {
                 try
                 {
-                    _ = _hook.GetHookEventWindow();
+                    barrier.SignalAndWait(barrierTimeout);
                 }
-                catch (ArgumentException ex)
+                catch (BarrierPostPhaseException)
                 {
-                    buildException = ex;
-                    _output.WriteLine($"[FAIL] ArgumentException at iter {i}: {ex.Message}");
-                    return;
+                    // 同上:超时打断后直接进入读取循环。
                 }
-                catch (NullReferenceException ex)
+                for (var i = 0; i < N; i++)
                 {
-                    buildException = ex;
-                    _output.WriteLine($"[FAIL] NRE at iter {i}: {ex.Message}");
-                    return;
+                    try
+                    {
+                        _ = _hook.GetHookEventWindow();
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        buildException = ex;
+                        _output.WriteLine($"[FAIL] ArgumentException at iter {i}: {ex.Message}");
+                        return;
+                    }
+                    catch (NullReferenceException ex)
+                    {
+                        buildException = ex;
+                        _output.WriteLine($"[FAIL] NRE at iter {i}: {ex.Message}");
+                        return;
+                    }
                 }
+                await Task.CompletedTask;
+            });
+
+            // 30 秒熔断,避免 bug 版本下无限挂死
+            var timeout = TimeSpan.FromSeconds(30);
+            try
+            {
+                Task.WaitAll(triggerTasks, timeout);
+                // 给 STA 线程排空 BeginInvoke 队列的时间。
+                _sta.Invoke(() => Thread.Sleep(500)).GetAwaiter().GetResult();
+                Task.WaitAll(new[] { buildTask }, timeout);
             }
-            await Task.CompletedTask;
-        });
+            catch (AggregateException) { /* swallowed, see buildException */ }
 
-        // 30 秒熔断,避免 bug 版本下无限挂死
-        var timeout = TimeSpan.FromSeconds(30);
-        try
-        {
-            Task.WaitAll(triggerTasks, timeout);
-            // 给 STA 线程排空 BeginInvoke 队列的时间。
-            _sta.Invoke(() => Thread.Sleep(500)).GetAwaiter().GetResult();
-            Task.WaitAll(new[] { buildTask }, timeout);
+            if (buildException is not null)
+            {
+                throw buildException;
+            }
+
+            // 最终状态断言。
+            var window = _hook.GetHookEventWindow();
+            Assert.Equal(5, window.Count);
+            Assert.All(window, h =>
+            {
+                Assert.NotNull(h);
+                Assert.Equal("PostToolUse", h.EventName);
+                Assert.NotNull(h.ToolName);
+                Assert.StartsWith("Tool", h.ToolName);
+            });
+            _output.WriteLine($"[OK] window final count={window.Count}, latest={_hook.GetLatestHookEvent().EventName}");
         }
-        catch (AggregateException) { /* swallowed, see buildException */ }
-
-        if (buildException is not null)
+        finally
         {
-            throw buildException;
+            // 还原线程池最小线程数,避免影响同进程内的其他测试。
+            ThreadPool.SetMinThreads(previousMinThreads, previousMinIo);
         }
-
-        // 最终状态断言。
-        var window = _hook.GetHookEventWindow();
-        Assert.Equal(5, window.Count);
-        Assert.All(window, h =>
-        {
-            Assert.NotNull(h);
-            Assert.Equal("PostToolUse", h.EventName);
-            Assert.NotNull(h.ToolName);
-            Assert.StartsWith("Tool", h.ToolName);
-        });
-        _output.WriteLine($"[OK] window final count={window.Count}, latest={_hook.GetLatestHookEvent().EventName}");
     }
 
     /// <summary>
