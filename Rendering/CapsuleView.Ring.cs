@@ -162,6 +162,11 @@ internal sealed class BalanceRingCapsuleView : Grid
         // 恢复上一次 color / spinner overlay 的暂存值(动画过渡,不瞬时硬切)
         RestoreColorOverlayIfAny();
 
+        // 停掉可能残留的沙漏动画(RepeatBehavior=Forever,不会自行结束):
+        // 沙漏是 visual child index 1,在对勾(index 0)之上层,
+        // 不关掉会一直盖住 Phase C 画出的对勾/红叉。
+        _ring.StopHourglassAnimation();
+
         if (plan == null || plan.Kind == HookOverlayKind.None)
         {
             return;
