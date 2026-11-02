@@ -43,9 +43,24 @@ internal sealed class HookOverlayController
     /// <summary>当前激活的 plan,供 BalanceSession 读 host PlainText 用。</summary>
     public HookOverlayPlan? ActivePlan => _activePlan;
 
+    /// <summary>
+    /// overlay 结束(倒计时到时 / spinner 被 polling 清理)时触发,由 BalanceSession
+    /// 把胶囊文本与 view 恢复到最新余额快照。
+    /// </summary>
+    public event Action? OverlayEnded;
+
     /// <summary>是否有 spinner 持续型 overlay(用于 polling Update 清理路径判断)。</summary>
     public bool HasSpinnerOverlay =>
         _activePlan is { Kind: HookOverlayKind.PreToolSpinner or HookOverlayKind.PostToolSpinner };
+
+    /// <summary>
+    /// 是否有 Color overlay(Stop / PermissionRequest / PostToolUseFailure)。
+    /// Color overlay 期间 polling 不得覆盖 view 的文本与颜色,等倒计时到时统一恢复。
+    /// </summary>
+    public bool HasColorOverlay =>
+        _activePlan is { Kind: HookOverlayKind.StopImage
+            or HookOverlayKind.PermissionImage
+            or HookOverlayKind.FailureImage };
 
     public HookOverlayController(Dispatcher uiDispatcher)
     {
@@ -126,6 +141,8 @@ internal sealed class HookOverlayController
         HookTrace.Write($"[overlay-controller] polling-update clear spinner active='{_activePlan?.Text}'");
         _activePlan = null;
         DispatchToViewsClear();
+        // spinner 期间 host PlainText 被推成了 spinner 文案,这里通知外部换回余额文案。
+        OverlayEnded?.Invoke();
     }
 
     /// <summary>外部强制清除(用于 BalanceSession 重置 hook 状态、Dispose)。</summary>
@@ -289,5 +306,7 @@ internal sealed class HookOverlayController
         _activePlan = null;
         HookTrace.Write("[overlay-controller] color-countdown fired, clearing");
         DispatchToViewsClear();
+        // Color overlay 期间 polling 跳过了 view.Update,这里通知外部用最新快照恢复。
+        OverlayEnded?.Invoke();
     }
 }

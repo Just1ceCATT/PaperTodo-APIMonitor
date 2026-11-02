@@ -147,6 +147,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _uiDispatcher = Dispatcher.CurrentDispatcher;
         // OverlayController 用 UI dispatcher 构造,后续所有 hook overlay 派发都走它。
         _overlayController = new HookOverlayController(_uiDispatcher);
+        // overlay 结束后把胶囊恢复到最新余额快照(view 文本 + host PlainText)。
+        _overlayController.OverlayEnded += RestoreCapsuleAfterOverlay;
         _context = context;
         _theme = context.Body.Theme;
         _state = ReadState(context.StateJson);
@@ -310,6 +312,33 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             PushCapsulePresentation(text, toolTip);
         }
+    }
+
+    /// <summary>
+    /// overlay 结束(spinner 被 polling 清理 / Color 倒计时到时)后恢复胶囊:
+    /// 1) view 重新贴最新余额快照 —— Color overlay 期间 view.Update 被跳过,
+    ///    此时 view 里还是 overlay 前的旧文本/旧颜色;
+    /// 2) host PlainText 从 overlay 文案换回余额文案,并按新文本重算 PreferredWidth。
+    ///
+    /// 为什么必须有这一步:view 的 ClearOverlay() 恢复的是 _storedRingArc / _storedLabelText
+    /// (overlay 启动那一刻的旧值),不是最新余额。Color overlay 期间 polling 被跳过 →
+    /// 最新余额从未进过 view → 倒计时结束时若只靠 ClearOverlay,胶囊会退回几秒前的旧数据。
+    /// </summary>
+    private void RestoreCapsuleAfterOverlay()
+    {
+        var snap = _latestCapsuleSnapshot;
+        if (snap is null) return;
+        if (IsQuotaProvider)
+        {
+            _regularRingCapsuleView?.Update(snap.Text, snap.RingColorHex, snap.RingArc);
+            _dockedRingCapsuleView?.Update(snap.Text, snap.RingColorHex, snap.RingArc);
+        }
+        else
+        {
+            _regularDotCapsuleView?.Update(snap.Text, snap.RingColorHex, snap.RingArc, snap.RingColorHex, _lastIsPeakHour);
+            _dockedDotCapsuleView?.Update(snap.Text, snap.RingColorHex, snap.RingArc, snap.RingColorHex, _lastIsPeakHour);
+        }
+        RepushCapsulePresentation();
     }
 
     // 缓存原余额快照的 PreferredWidth,hook overlay 期间冻结,避免 host 重建 view。
@@ -747,6 +776,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 胶囊 signature：文本/风险比/颜色/状态文本 之外追加趋势等级，避免趋势变化时漏刷新胶囊。
         var signature = text + "|" + riskRatio.ToString("F3", CultureInfo.InvariantCulture) + "|" + ringColor + "|" + snapshot.StatusText + "|" + TrendAnalyzer.LevelKey(trend.Level) + "|" + trend.SampleCount.ToString(CultureInfo.InvariantCulture);
         var capsule = new CapsuleSnapshot(text, ringColor, ringArc);
+
+        // 1) 每轮 polling 都执行 spinner 清理(不再受 signature 去重约束):
+        //    spinner 是"持续型"overlay,只有下一次余额刷新才会被清掉。
+        //    旧实现把它塞在 signature 变化分支里,而配额型 provider 的
+        //    RecordTrendSample 只对 DeepSeek 生效、SampleCount 恒为 0,
+        //    余额没变时 signature 不变 → 沙漏会永久挂着。
+        //    内部已有 `if (!HasSpinnerOverlay) return;` 守卫,每轮调用的代价可忽略。
+        //    必须在 view.Update() 之前 —— 它触发 ClearOverlay,而 ClearOverlay 会把 view
+        //    恢复到"沙漏开始前"的旧文本,顺序颠倒会让恢复把新余额文案覆盖回旧文案。
+        _overlayController.OnPollingUpdate();
+
         if (!string.Equals(signature, _lastCapsuleSignature, StringComparison.Ordinal))
         {
             // 胶囊只在内容真正变化时更新，避免无谓的宿主布局抖动。
@@ -755,43 +795,43 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             // 隐式时序契约,CreateCapsuleView 直接从这里读取。
             _latestCapsuleSnapshot = capsule;
 
-            // 修复 C：先推 host 宽度（让下一帧 layout 拿到正确 PreferredWidth）,
-            // 再原地刷新 view 文本。颠倒顺序会导致一帧内"新宽文本 + 旧 PreferredWidth"
-            // 触发 CharacterEllipsis 闪烁。
-            // 2) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
-            //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
-            //    PreferredWidth = 固定列宽 + textWidth + 3 DIP 余量（修复 B）。
-            //    Grid 列布局 [6 pad][18 ring][5 gap][* text][4 right pad]；
-            //    关闭圆环后 ring/gap 两列折叠为 0，固定列只剩 [6 pad][* text][4 right pad]。
-            //    textWidth 用 MeasureTextWidth(主题字体 TextBlock.Measure + DesiredSize.Width)
-            //    与 customView 渲染完全同源，避免亚像素舍入差异导致省略。
-            //    Components 保留 1 项最小 Text 占位（Length > 0 让 Normalize 不返回 null，
-            //    customView != null 时宿主跳过 1.6 模板不渲染它们）。
-            //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
-            //    PlainText 用于跨队列拖动的纯文字回退。
-            PushCapsulePresentation(text, toolTip);
+            // Color overlay 期间(Stop / PermissionRequest / PostToolUseFailure):
+            // view 的文本与圆环颜色属于 overlay 状态,绝不能被 polling 的余额数据冲掉;
+            // host PlainText 同理,否则胶囊会先闪回余额文案再跳回 overlay 文案。
+            // 倒计时到时由 HookOverlayController.OnColorCountdown → OverlayEnded 统一恢复。
+            if (!_overlayController.HasColorOverlay)
+            {
+                // 修复 C：先推 host 宽度（让下一帧 layout 拿到正确 PreferredWidth）,
+                // 再原地刷新 view 文本。颠倒顺序会导致一帧内"新宽文本 + 旧 PreferredWidth"
+                // 触发 CharacterEllipsis 闪烁。
+                // 2) 协议层通道：SetCapsulePresentation 必须调用，否则宿主判定
+                //    `_pluginCapsulePresentation == null` 会清空胶囊槽、不请求 customView。
+                //    PreferredWidth = 固定列宽 + textWidth + 3 DIP 余量（修复 B）。
+                //    Grid 列布局 [6 pad][18 ring][5 gap][* text][4 right pad]；
+                //    关闭圆环后 ring/gap 两列折叠为 0，固定列只剩 [6 pad][* text][4 right pad]。
+                //    textWidth 用 MeasureTextWidth(主题字体 TextBlock.Measure + DesiredSize.Width)
+                //    与 customView 渲染完全同源，避免亚像素舍入差异导致省略。
+                //    Components 保留 1 项最小 Text 占位（Length > 0 让 Normalize 不返回 null，
+                //    customView != null 时宿主跳过 1.6 模板不渲染它们）。
+                //    ToolTip 由宿主写到外壳 Border（1.7 视图 IsHitTestVisible=false 无法自己挂 ToolTip）；
+                //    PlainText 用于跨队列拖动的纯文字回退。
+                PushCapsulePresentation(text, toolTip);
 
-            // 1) 原地更新两个已缓存的 1.7 自定义视图（Regular + Docked）。
-            //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
-            //    按 provider 分发到不同的胶囊类 —— 配额型 (MiniMax/ZhiPu/Kimi) 共用 Ring，
-            //    其他 (DeepSeek/OpenCode/MiMo/CodeX) 共用 Dot。两种胶囊互不继承。
-            //    hook overlay 期间跳过 view.Update,避免覆盖 SetHookOverlay 设的临时状态;
-            //    RepushCapsulePresentation 已用 overlay 文本推 host,胶囊宽度正确。
-            //    Spinner 类型由 Update 触发 HideHookOverlay 恢复余额显示。
-            // spinner 持续型 overlay:让 controller 清掉 view,再走 Update 路径拉新数据。
-            // Color overlay 期间 controller.HasSpinnerOverlay=false,不动 view,等倒计时。
-            _overlayController.OnPollingUpdate();
-            if (isQuotaProvider)
-            {
-                _regularRingCapsuleView?.Update(text, ringColor, ringArc);
-                _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
+                // 1) 原地更新两个已缓存的 1.7 自定义视图（Regular + Docked）。
+                //    宿主会优先使用 customView 渲染胶囊，这里保证视图跟随状态刷新。
+                //    按 provider 分发到不同的胶囊类 —— 配额型 (MiniMax/ZhiPu/Kimi) 共用 Ring，
+                //    其他 (DeepSeek/OpenCode/MiMo/CodeX) 共用 Dot。两种胶囊互不继承。
+                if (isQuotaProvider)
+                {
+                    _regularRingCapsuleView?.Update(text, ringColor, ringArc);
+                    _dockedRingCapsuleView?.Update(text, ringColor, ringArc);
+                }
+                else
+                {
+                    _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                    _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
+                }
             }
-            else
-            {
-                _regularDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
-                _dockedDotCapsuleView?.Update(text, ringColor, ringArc, ringColor, _lastIsPeakHour);
-            }
-            // Color overlay 期间 view 状态保留,由倒计时到时统一恢复。
         }
 
         // 1.8 边缘预览视图刷新：依赖 _minimaxModelRemains / _minimaxRemainingPercent，
