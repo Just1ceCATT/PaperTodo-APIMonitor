@@ -181,7 +181,9 @@ internal sealed class BalanceDotCapsuleView : Grid
             or HookOverlayKind.PermissionImage
             or HookOverlayKind.FailureImage)
         {
-            // Color overlay:Color 走 Dot 视图的固定色系(注:Dot 不画对勾/问号细节,glyph 字段此处不消费)。
+            // Color overlay:Color 走 Dot 视图自己的固定色系(Dot 胶囊不共享 Ring 的色值表)。
+            // Check / Cross 不画图形 —— Dot 用"彩色圆点 + 文案"表达完成/失败;
+            // Question 复用已有的 "?" 文字字形遮住圆点(等待用户回应)。
             var dotColor = plan.Kind switch
             {
                 HookOverlayKind.StopImage => "#4CAF50",
@@ -189,7 +191,7 @@ internal sealed class BalanceDotCapsuleView : Grid
                 HookOverlayKind.FailureImage => "#F44336",
                 _ => plan.RingColorHex ?? "#9E9E9E"
             };
-            ShowColorOverlay(plan.Text, dotColor, plan.DurationSeconds ?? 3, HookGlyphKind.None);
+            ShowColorOverlay(plan.Text, dotColor, plan.DurationSeconds ?? 3, plan.Glyph);
         }
         else
         {

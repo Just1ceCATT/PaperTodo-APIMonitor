@@ -184,7 +184,8 @@ internal sealed class HookOverlayController
         {
             HookOverlayKind.StopImage => HookGlyphKind.Check,
             HookOverlayKind.PermissionImage => HookGlyphKind.Question,
-            HookOverlayKind.FailureImage => HookGlyphKind.Check,
+            // 失败语义必须是红叉,复用绿对勾会让"执行异常"看起来像"任务完成"。
+            HookOverlayKind.FailureImage => HookGlyphKind.Cross,
             _ => HookGlyphKind.None,
         };
         var durationSeconds = kind switch

@@ -58,6 +58,15 @@ internal sealed class BalanceProgressRing : FrameworkElement
     private Path? _checkmarkPath;
     private double _checkmarkTotalLength = 34.9;
 
+    // 叉形动画:Path 元素作为视觉子节点,StrokeDashOffset 动画实现描边绘制。
+    // 几何用像素绝对坐标(对 18×18 圆环设计),与对勾同坐标系。
+    //   左上 (5,5) → 右下 (13,13);右上 (13,5) → 左下 (5,13)
+    // 两段各 √(8²+8²) ≈ 11.31 px,总长 ≈ 22.63 px;
+    // 四个端点距圆心 (9,9) 均为 √(4²+4²) ≈ 5.66 px ≤ 6.5(圆环内边安全区)。
+    // 失败事件(PostToolUseFailure)专用:红叉比绿对勾更符合"执行异常"语义。
+    private Path? _crossPath;
+    private double _crossTotalLength = 22.63;
+
     // 沙漏动画:Path 元素作为视觉子节点,StrokeDashOffset 动画实现描边绘制。
     // 几何用像素绝对坐标(对 18×18 圆环设计),不用 Stretch=Fill。
     //   左上 (4,2) → 右上 (14,2) → 颈 (9,9) → 右下 (14,16) → 左下 (4,16) → 颈 (9,9) → Z(回左上)
@@ -133,15 +142,45 @@ internal sealed class BalanceProgressRing : FrameworkElement
         };
         AddVisualChild(_hourglassPath);
         AddLogicalChild(_hourglassPath);
+
+        // 叉形 Path(失败语义):红色 #F44336(Material Red 500),与 FailureImage 圆环同色。
+        // 描边色构造期一次性冻结,走 WPF 渲染快路径。
+        // 注意:必须放在 AddVisualChild 顺序的最后,与 GetVisualChild 的索引一一对应
+        // (WPF 用 GetVisualChild(i) 构建 VisualCollection,两者必须一致)。
+        var crossStroke = new SolidColorBrush(Color.FromRgb(0xF4, 0x43, 0x36));
+        crossStroke.Freeze();
+        _crossPath = new Path
+        {
+            Stroke = crossStroke,
+            StrokeThickness = 2,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            // 实线 + 100 间隙;动画时 dashOffset 从 22.63 → 0,沿路径"画叉"。
+            StrokeDashArray = new DoubleCollection { 0, 100 },
+            StrokeDashOffset = 22.63,
+            Data = Geometry.Parse("M 5,5 L 13,13 M 13,5 L 5,13"),
+            Stretch = Stretch.None,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
+        AddVisualChild(_crossPath);
+        AddLogicalChild(_crossPath);
     }
 
-    protected override int VisualChildrenCount => 2;
+    // 视觉子节点顺序 = 绘制层级(后加入者在上),必须与构造函数里的
+    // AddVisualChild 调用顺序严格一致(WPF 用 GetVisualChild(i) 构建 VisualCollection):
+    //   0 对勾 / 1 沙漏 / 2 叉。
+    // 叉在最上层,但它与沙漏不会同时可见(Color overlay 前必定已停掉沙漏动画),
+    // 对勾与叉则互斥(由 ResetGlyphs 一起复位)。
+    protected override int VisualChildrenCount => 3;
     protected override Visual? GetVisualChild(int index)
     {
         return index switch
         {
             0 => _checkmarkPath,
             1 => _hourglassPath,
+            2 => _crossPath,
             _ => throw new System.ArgumentOutOfRangeException(nameof(index))
         };
     }
@@ -151,6 +190,14 @@ internal sealed class BalanceProgressRing : FrameworkElement
         if (_checkmarkPath != null)
         {
             _checkmarkPath.Measure(availableSize);
+        }
+        if (_hourglassPath != null)
+        {
+            _hourglassPath.Measure(availableSize);
+        }
+        if (_crossPath != null)
+        {
+            _crossPath.Measure(availableSize);
         }
         return base.MeasureOverride(availableSize);
     }
@@ -173,6 +220,13 @@ internal sealed class BalanceProgressRing : FrameworkElement
             // 旋转中心:控件中心,让旋转动画视觉对称(18×18 控件 → 中心 (9, 9))。
             _hourglassRotateTransform.CenterX = finalSize.Width / 2.0;
             _hourglassRotateTransform.CenterY = finalSize.Height / 2.0;
+        }
+        if (_crossPath != null)
+        {
+            _crossPath.Arrange(new Rect(finalSize));
+            // 叉形路径:两段对角线,各 √(8²+8²)=√128≈11.31 px,总长 ≈ 22.63 px
+            // (用于 StrokeDashArray/StrokeDashOffset 的描边动画)。
+            _crossTotalLength = 22.63;
         }
         return base.ArrangeOverride(finalSize);
     }
@@ -255,6 +309,9 @@ internal sealed class BalanceProgressRing : FrameworkElement
         sb.Begin();
     }
 
+    /// <summary>沙漏动画是否正在运行(供回归测试断言"残留沙漏"缺陷)。</summary>
+    internal bool IsHourglassAnimating => _hourglassStoryboard != null;
+
     /// <summary>立即停止沙漏动画(描边+旋转)并隐藏(用于 spinner 结束)。</summary>
     public void StopHourglassAnimation()
     {
@@ -318,14 +375,64 @@ internal sealed class BalanceProgressRing : FrameworkElement
         }
     }
 
-    /// <summary>立即清除对勾显示(隐藏 + 停动画),用于动画前的状态重置。</summary>
-    public void ResetCheckmark()
+    /// <summary>
+    /// 触发"圆环闭合 + 短暂停留 + 红叉描边"连续动画,语义 = 工具调用失败。
+    /// 时序与 <see cref="BeginCheckmarkAnimation"/> 完全一致(600ms 圆环填充 + 400ms 描边),
+    /// 只是描边对象换成叉形 Path、颜色为红 #F44336。
+    /// 单条 dasharray 覆盖两段折线,dashOffset 递减时"先画第一笔、再画第二笔"。
+    /// </summary>
+    public void BeginCrossAnimation(int fillDurationMs = 600,
+                                    int holdDurationMs = -50,
+                                    int strokeDurationMs = 400)
+    {
+        // 阶段 1:圆环填充到 1(与对勾一致,形成"圆环闭合"的统一视觉节奏)。
+        if (Value < 0.999)
+        {
+            var fillAnim = new DoubleAnimation(Value, 1.0,
+                TimeSpan.FromMilliseconds(fillDurationMs))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+            };
+            BeginAnimation(ValueProperty, fillAnim);
+        }
+
+        // 阶段 2 + 3:叉形描边动画。
+        if (_crossPath != null)
+        {
+            _crossPath.BeginAnimation(Path.StrokeDashOffsetProperty, null);
+            _crossPath.Visibility = Visibility.Visible;
+            var totalLength = _crossTotalLength;
+            _crossPath.StrokeDashArray = new DoubleCollection { totalLength, totalLength };
+            var beginTime = TimeSpan.FromMilliseconds(fillDurationMs + holdDurationMs);
+            var strokeAnim = new DoubleAnimation
+            {
+                From = totalLength,
+                To = 0,
+                Duration = TimeSpan.FromMilliseconds(strokeDurationMs),
+                BeginTime = beginTime,
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            _crossPath.BeginAnimation(Path.StrokeDashOffsetProperty, strokeAnim);
+        }
+    }
+
+    /// <summary>
+    /// 复位全部符号图元(对勾 + 红叉):隐藏 + 停掉正在跑的 StrokeDashOffset 动画。
+    /// 对勾与叉互斥显示,必须一起复位,否则上一次失败留下的红叉会压在下一次的对勾上。
+    /// </summary>
+    public void ResetGlyphs()
     {
         if (_checkmarkPath != null)
         {
             _checkmarkPath.BeginAnimation(Path.StrokeDashOffsetProperty, null);
             _checkmarkPath.Visibility = Visibility.Collapsed;
             _checkmarkPath.StrokeDashOffset = _checkmarkTotalLength;
+        }
+        if (_crossPath != null)
+        {
+            _crossPath.BeginAnimation(Path.StrokeDashOffsetProperty, null);
+            _crossPath.Visibility = Visibility.Collapsed;
+            _crossPath.StrokeDashOffset = _crossTotalLength;
         }
     }
 

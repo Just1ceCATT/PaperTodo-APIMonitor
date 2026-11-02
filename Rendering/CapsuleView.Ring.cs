@@ -195,13 +195,13 @@ internal sealed class BalanceRingCapsuleView : Grid
     ///
     /// 四段串联动画(参考 https://css-tricks.com 成功动画 + CSS 圆环+对勾+文本模式):
     ///   - Phase A (0~220ms):fade-out 当前内容(_label.Opacity &amp; _ring.Opacity 1→0 ease-out)
-    ///   - Phase B (220ms tick):重置 ring 状态(Value=0, ForegroundBrush=success-color, ResetCheckmark)
+    ///   - Phase B (220ms tick):重置 ring 状态(Value=0, ForegroundBrush=success-color, ResetGlyphs)
     ///   - Phase C (220~820ms):圆环填充 Value 0→1 (600ms ease-in-out,绘制"圆环"+对勾/问号 BeginTime=350ms)
     ///                          + ring Opacity 0→1 fade-in(200ms ease-in-out,与圆环填充并行)
     ///   - Phase D (820ms tick 起的 350ms):文本 ease-in-out 淡入
     ///   - 总时长 ~1.17s,符合用户选的"紧凑 ~1.5s"节奏。
     ///
-    /// glyph 决定 Phase C 末显示的视觉符号:Check=绿色对勾(任务完成语义),Question=黄色问号(等待用户回应语义)。
+    /// glyph 决定 Phase C 末显示的视觉符号:Check=绿色对勾(任务完成语义),Cross=红色叉(执行失败语义),Question=黄色问号(等待用户回应语义)。
     ///
     /// 为何强制 Value=0 起步而不是从当前 0.5 补弧:
     /// 余额用得差不多时(如 Value=0.85),补弧只有 54° 视觉幅度,且圆角端点糊掉开始/结束锚点,
@@ -292,7 +292,7 @@ internal sealed class BalanceRingCapsuleView : Grid
             _storedRingTrackBrush = null;
         }
         // 重置对勾动画:隐藏 + 停止正在跑的 StrokeDashOffset 动画
-        _ring.ResetCheckmark();
+        _ring.ResetGlyphs();
         // 重置问号 glyph:隐藏 + 停止 fade-in 动画,避免下次 Permission 触发时残留半透明。
         if (_questionGlyph.Visibility == Visibility.Visible)
         {
@@ -473,7 +473,7 @@ internal sealed class BalanceRingCapsuleView : Grid
         _label.Text = "";
         _label.Opacity = 0;
         _ring.ForegroundBrush = Format.ToFrozenBrush(_lastHookColorHex ?? "#68E534", "#9E9E9E");
-        _ring.ResetCheckmark();
+        _ring.ResetGlyphs();
         _ring.Value = 0; // 强制从 0 开始填充,Value→0→1 即可见出"画圆环"动画
 
         // ring Opacity 0→1 fade-in:200ms ease-in-out,与 Value 0→1 同时启动
@@ -487,7 +487,8 @@ internal sealed class BalanceRingCapsuleView : Grid
         _ring.BeginAnimation(UIElement.OpacityProperty, ringFadeIn);
 
         // Phase C:Value 0→1(600ms ease-in-out 画圆环)+ Phase C 后符号动画
-        // Check 走对勾描边 400ms;Question 走静态问号(无动画,等待语义不需要动态笔尖)。
+        // Check 走对勾描边 400ms;Cross 走红叉描边 400ms;
+        // Question 走静态问号(无动画,等待语义不需要动态笔尖)。
         if (_pendingHookGlyph == HookGlyphKind.Question)
         {
             // 问号静态显示:不画描边动画,直接 fade-in(由 ring Opacity 0→1 带动)。
@@ -503,9 +504,14 @@ internal sealed class BalanceRingCapsuleView : Grid
             };
             _questionGlyph.BeginAnimation(UIElement.OpacityProperty, glyphFadeIn);
         }
+        else if (_pendingHookGlyph == HookGlyphKind.Cross)
+        {
+            // 失败语义:红叉描边动画(与对勾同节奏,只是图形与颜色不同)。
+            _ring.BeginCrossAnimation();
+        }
         else
         {
-            // 默认对勾(StopImage / FailureImage 走这里)。
+            // 默认对勾(StopImage 走这里)。
             _ring.BeginCheckmarkAnimation();
         }
 

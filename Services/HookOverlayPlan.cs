@@ -13,7 +13,7 @@ internal sealed record HookOverlayPlan(
     string Text,                      // 胶囊 PlainText(已含 tool-aware 文案或 Color overlay 固定文案)
     string ToolTip,                   // ToolTip(已含余额 + status + hook summary)
     string? RingColorHex,             // Color overlay 圆环前景色;null = spinner(用 SpinnerBadgeBrush)
-    HookGlyphKind Glyph,              // Phase C 末显示的对勾 / 问号
+    HookGlyphKind Glyph,              // Phase C 末显示的对勾 / 叉 / 问号
     int? DurationSeconds,             // Color overlay 倒计时;null = spinner 持续型
     double PreferredWidth);           // host PlainText 冻结宽度,避免 overlay 切换时胶囊宽度抖动
 
@@ -24,6 +24,7 @@ internal sealed record HookOverlayPlan(
 internal enum HookGlyphKind
 {
     None,
-    Check,        // 绿对勾(StopImage / FailureImage)
+    Check,        // 绿对勾(StopImage)
     Question,     // 黄色问号(PermissionImage)
+    Cross,        // 红叉(FailureImage)
 }
