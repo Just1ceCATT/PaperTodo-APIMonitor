@@ -225,18 +225,15 @@ internal sealed class HookOverlayController
 
     private void DispatchToViews(HookOverlayPlan plan)
     {
-        // 4 个 view 派发:Color overlay 走 Ring 双视图(避免对勾动画干扰 Dot 圆点);
-        // Spinner 走 4 个全部。全部 marshal 到 view dispatcher。
+        // 4 个 view 全部派发:Color overlay 也要给 Dot 胶囊 —— 否则 DeepSeek 等
+        // Dot 供应商的用户永远看不到完成/等待/失败的反馈。
+        // Dot 侧不用对勾/叉 Path,用"彩色圆点 + 文案"表达,视觉语义一致且
+        // 保持 Ring / Dot 两个胶囊类完全独立(不共享图元、不共享动画常量)。
+        // 全部 marshal 到 view dispatcher。
         DispatchToView(_regularRing, plan);
         DispatchToView(_dockedRing, plan);
-        var isColorOverlay = plan.Kind is HookOverlayKind.StopImage
-            or HookOverlayKind.PermissionImage
-            or HookOverlayKind.FailureImage;
-        if (!isColorOverlay)
-        {
-            DispatchToView(_regularDot, plan);
-            DispatchToView(_dockedDot, plan);
-        }
+        DispatchToView(_regularDot, plan);
+        DispatchToView(_dockedDot, plan);
     }
 
     private void DispatchToView<T>(T? view, HookOverlayPlan plan) where T : FrameworkElement
