@@ -293,7 +293,12 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private void RepushCapsulePresentation()
     {
         if (_latestCapsuleSnapshot is null) return;
+        // 空串等同于"无 overlay":空文案推给 host 会让胶囊变成空白。
         var activeText = _overlayController.ActivePlan?.Text;
+        if (string.IsNullOrEmpty(activeText))
+        {
+            activeText = null;
+        }
         var text = activeText ?? _latestCapsuleSnapshot.Text;
         var status = string.IsNullOrEmpty(_snapshot?.StatusText) ? null : _snapshot.StatusText;
         var toolTip = string.IsNullOrEmpty(status) ? text : $"{text}\n{status}";

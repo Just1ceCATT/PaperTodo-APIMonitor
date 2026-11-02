@@ -40,8 +40,13 @@ internal sealed class HookOverlayController
     private BalanceDotCapsuleView? _regularDot;
     private BalanceDotCapsuleView? _dockedDot;
 
-    /// <summary>当前激活的 plan,供 BalanceSession 读 host PlainText 用。</summary>
-    public HookOverlayPlan? ActivePlan => _activePlan;
+    /// <summary>
+    /// 当前激活的 plan,供 BalanceSession 读 host PlainText 用。
+    /// None 视为"无 overlay",返回 null —— None plan 的 Text 是空串,
+    /// 若返回给调用方会被误当成"overlay 文本"推给宿主,胶囊会变成空白。
+    /// </summary>
+    public HookOverlayPlan? ActivePlan =>
+        _activePlan is { Kind: HookOverlayKind.None } ? null : _activePlan;
 
     /// <summary>
     /// overlay 结束(倒计时到时 / spinner 被 polling 清理)时触发,由 BalanceSession
@@ -93,6 +98,17 @@ internal sealed class HookOverlayController
     public void OnHookEvent(HookEventPayload payload, int defaultDurationSeconds)
     {
         var plan = BuildPlan(payload, defaultDurationSeconds);
+
+        // None 事件(UserPromptSubmit / SessionStart / Notification 等)不产生 overlay。
+        // 绝不能把 None plan 设成 _activePlan:它的 Text 是空串,
+        // 会让 RepushCapsulePresentation 把 host PlainText 推成空串,
+        // 且 None plan 不会自行过期,会一直粘在 ActivePlan 上。
+        // 放在"停旧倒计时"之前 —— None 事件不应打断正在计时的 Color overlay。
+        if (plan.Kind == HookOverlayKind.None)
+        {
+            HookTrace.Write($"[overlay-controller] ignore none-overlay event={payload.EventName}");
+            return;
+        }
 
         // 停旧 Color overlay timer + 退订 Tick(handler 残留 race 防御)
         if (_colorCountdown != null)
@@ -185,7 +201,7 @@ internal sealed class HookOverlayController
     /// 派生 plan:HookEventPayload 字段映射到 RingColorHex / Glyph / DurationSeconds,
     /// spinner text 走 HookTextResolver(已包含 MCP 命名解析、兜底、大小写不敏感)。
     /// </summary>
-    private static HookOverlayPlan BuildPlan(HookEventPayload payload, int defaultDurationSeconds)
+    internal static HookOverlayPlan BuildPlan(HookEventPayload payload, int defaultDurationSeconds)
     {
         var kind = payload.Overlay; // HookEventServer 已映射
         var text = kind switch
