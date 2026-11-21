@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http;
 using System.Text;
@@ -162,6 +163,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _theme = context.Body.Theme;
         _state = ReadState(context.StateJson);
         _settings = ReadSettings(context.SettingsJson, _state.Provider);
+        // 诊断：记录 session 构造耗时，用于区分“点击时才构建 shell”与“展开动画本身卡顿”。
+        var ctorStarted = Stopwatch.GetTimestamp();
+        HookTrace.Write($"session.ctor begin provider={_state.Provider}");
 
         // 修复：.NET 6+/10 上裸 HttpClient 默认不走系统代理，开启 Clash / V2RayN /
         // SagerNet 或 PAC 脚本后浏览器能通但插件拉不到数据。这里显式 UseProxy=true
@@ -211,11 +215,17 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _peakCheckTimer.Start();
         }
 
-        // WebView2 延迟到首次布局后初始化，避免阻塞宿主启动。
+        // WebView2 采用混合初始化：展开后延迟初始化（原生骨架），
+        // 或启动宽限期后由 WebViewPanelHost 后台预热，避免阻塞宿主启动与展开动画。
 
-        // 启动 Claude Code hook HTTP 服务器：监听 127.0.0.1，loopback 不暴露外部网络。
-        // 端口冲突自动 +1 ~ +4 重试；全失败则禁用 hook 集成（不影响余额主功能）。
-        StartHookServer();
+        // HookEventServer 涉及 HttpListener 绑定，挪到宿主空闲期执行：
+        // 如果 shell 是点击时才构建的，这一步不会落在展开动画的点击路径上。
+        _ = _uiDispatcher.BeginInvoke(
+            DispatcherPriority.ApplicationIdle,
+            new Action(StartHookServer));
+        HookTrace.Write(
+            $"session.ctor end provider={_state.Provider} " +
+            $"ms={Stopwatch.GetElapsedTime(ctorStarted).TotalMilliseconds:F1}");
     }
 
     /// <summary>
@@ -224,6 +234,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// </summary>
     private void StartHookServer()
     {
+        if (_disposed || _hookServer != null)
+        {
+            return;
+        }
         _hookServer = new HookEventServer();
         _hookServer.HookReceived += OnHookReceived;
         if (!_hookServer.Start(_settings.HooksPort))
@@ -528,7 +542,59 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     public void OnActivated() { }
     public void OnDeactivated() { }
     public void OnVisibilityChanged(bool visible) { }
-    public void OnPresentationChanged(bool expanded) { }
+
+    /// <summary>
+    /// 正文呈现状态变化。宿主在展开动画开始时就会回调 visible=true，
+    /// 这里启动一次 1.2 秒的帧间隔探针，用来定位展开动画的真实卡顿点。
+    /// </summary>
+    public void OnPresentationChanged(bool expanded)
+    {
+        if (expanded)
+        {
+            BeginExpansionFrameProbe();
+        }
+    }
+
+    // 展开动画帧探针：只在首次展开时运行一次，日志写入 %TEMP%\api-balance-hook.log。
+    private bool _expansionFrameProbeDone;
+
+    private void BeginExpansionFrameProbe()
+    {
+        if (_expansionFrameProbeDone)
+        {
+            return;
+        }
+        _expansionFrameProbeDone = true;
+        var start = Stopwatch.GetTimestamp();
+        var last = start;
+        var frames = 0;
+        var maxGap = 0.0;
+        HookTrace.Write("expand.frame probe start");
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            var now = Stopwatch.GetTimestamp();
+            var gap = Stopwatch.GetElapsedTime(last, now).TotalMilliseconds;
+            last = now;
+            frames++;
+            if (gap > maxGap)
+            {
+                maxGap = gap;
+            }
+            if (gap > 25)
+            {
+                var at = Stopwatch.GetElapsedTime(start, now).TotalMilliseconds;
+                HookTrace.Write($"expand.frame gap={gap:F1}ms at=+{at:F1}ms n={frames}");
+            }
+            if (Stopwatch.GetElapsedTime(start, now).TotalMilliseconds >= 1200)
+            {
+                CompositionTarget.Rendering -= handler;
+                HookTrace.Write(
+                    $"expand.frame summary frames={frames} maxGap={maxGap:F1}ms");
+            }
+        };
+        CompositionTarget.Rendering += handler;
+    }
     public void OnThemeChanged(PaperBodyTheme theme)
     {
         // 字体/字号变化时,_label 已用新字体渲染,但 host 的 PreferredWidth 还是旧字体测的;
@@ -622,8 +688,21 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         {
             _timer.Start();
         }
-        // 启动 / 配置变更后立即拉一次。
-        _ = PollAsync();
+        // 启动 / 配置变更后拉一次，但放到宿主空闲期：
+        // 首次 SendAsync 可能触发代理探测，不能落在胶囊展开的点击/动画帧上。
+        QueuePollAfterIdle();
+    }
+
+    /// <summary>把一次轮询排到宿主空闲期；dispose 后不再启动。</summary>
+    private void QueuePollAfterIdle()
+    {
+        _ = _uiDispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            if (!_disposed)
+            {
+                _ = PollAsync();
+            }
+        }));
     }
 
     // ---------------- HTTP 拉取 ----------------
@@ -1026,7 +1105,8 @@ public PaperMiniViewSize PreferredMiniViewSize
     }
 
     /// <summary>
-    /// 1.8 边缘预览显隐通知：本插件业务状态由胶囊/监视面板可见性统一驱动，无需响应。
+    /// 1.8 边缘预览显隐通知：不需要预热 WebView2。
+    /// 面板初始化故意延迟到展开动画结束后进行，悬停阶段保持零额外资源占用。
     /// </summary>
     public void OnMiniViewVisibilityChanged(bool visible) { }
 
