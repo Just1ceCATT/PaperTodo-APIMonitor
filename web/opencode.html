@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCode Go — Monitor</title>
+<script>
+/* ── Accordion 折叠:首次 paint 前同步读取 localStorage,避免闪烁 ── */
+(function () {
+  try {
+    var raw = localStorage.getItem("paperTodo.balanceMonitor.collapse");
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    var root = document.documentElement;
+    if (s.hero === true) root.setAttribute("data-init-open", "hero");
+  } catch (e) {}
+})();
+</script>
+<style>
+:root{
+  --paper:#f3efe7; --paper-deep:#e9e3d7;
+  --ink:#24211d; --muted:#81796e;
+  --line:#cfc7ba; --soft-line:#ddd6ca;
+  --accent:#9b493d; --accent-soft:#ead8d3;
+  --ok:#526b58; --bg:#d9d3c8;
+}
+[data-dark]{
+  --paper:#181815; --paper-deep:#1f1f1b;
+  --ink:#ebe9e1; --muted:#918f86;
+  --line:#30302a; --soft-line:#3a3a33;
+  --accent:#e28787; --accent-soft:#3a2626;
+  --ok:#78d47d; --bg:#11110f;
+}
+*{box-sizing:border-box}
+html{height:100%}
+body{margin:0;min-height:100%;background:transparent;color:var(--ink);font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
+.page{width:100%;min-height:100vh;background:transparent;padding:16px 18px 14px}
+.header{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;padding-bottom:12px;border-bottom:1px solid var(--ink)}
+/* 右上角供应商切换 ⚙ 按钮 + 下拉菜单 */
+.settings-gear{position:relative;align-self:flex-start;flex-shrink:0}
+.gear-btn{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);width:26px;height:26px;border-radius:7px;font-size:14px;line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background-color .15s;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif}
+.gear-btn:hover{color:var(--ink);border-color:var(--muted)}
+.gear-btn.open{border-color:var(--accent);color:var(--ink)}
+.gear-menu{position:absolute;top:calc(100% + 6px);right:0;min-width:156px;background:var(--paper);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(35,29,20,.18);padding:5px;z-index:60}
+.gear-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;color:var(--muted);padding:7px 10px;border-radius:6px;font:600 12px/1 var(--serif);cursor:pointer;transition:background-color .12s,color .12s}
+.gear-item:hover{background:var(--accent-soft);color:var(--ink)}
+.gear-item.active{color:var(--ink)}
+.gear-dot{width:6px;height:6px;border-radius:50%;border:1px solid var(--muted);flex-shrink:0}
+.gear-item.active .gear-dot{background:var(--accent);border-color:var(--accent)}
+h1{margin:0;font-size:22px;line-height:1.15;font-weight:600;letter-spacing:-.5px}
+.header-meta{text-align:right;color:var(--muted);font-size:10px;line-height:1.6}
+.header-meta .status strong{color:var(--ok);font-weight:600}
+.header-meta .status.err strong{color:var(--accent)}
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:5px;vertical-align:1px}
+.status-dot.err{background:var(--accent)}
+.hero{display:flex;flex-direction:column;justify-content:center;border-bottom:1px solid var(--line);padding:4px 0}
+.hero-main{padding:6px 0;display:flex;flex-direction:column;justify-content:center;gap:12px}
+.gauge-name{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
+.gauge-name span{font-size:12px;font-weight:600}
+.gauge-name em{font-style:normal;font-size:17px;font-weight:500;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.gauge-track{height:8px;background:var(--soft-line);border-radius:999px;overflow:hidden}
+.gauge-track i{display:block;height:100%;background:var(--ink);border-radius:999px;transition:width .5s ease}
+.gauge-track i.warning{background:var(--accent)}
+.gauge-foot{margin-top:5px;color:var(--muted);font-size:10px}
+.hooks{margin-top:10px;padding:10px 12px 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper-deep)}
+.hooks-title{font:600 11px var(--serif);color:var(--ink);margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.hooks-title::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:hook-pulse 2s ease-in-out infinite}
+@keyframes hook-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hooks-list{list-style:none;padding:0;margin:0;font:10px/1.5 var(--serif);color:var(--muted)}
+.hooks-list li{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--soft-line)}
+.hooks-list li:last-child{border-bottom:0}
+.hooks-list .h-time{color:var(--muted);font-variant-numeric:tabular-nums;flex-shrink:0}
+.hooks-list .h-text{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+@media(max-width:760px){
+  .page{padding:26px 22px}
+  .header{display:block}
+  .header-meta{text-align:left;margin-top:15px}
+  .hero-main{padding-bottom:24px}
+}
+/* ── 可折叠面板 ── */
+.collapsible{margin-top:6px}
+.coll-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;background:transparent;border:1px solid transparent;border-radius:6px;
+  padding:5px 4px;cursor:pointer;color:var(--muted);
+  font:600 11px/1 var(--serif);text-align:left;
+  transition:color .15s,background-color .15s,border-color .15s;
+}
+.coll-head:hover{color:var(--ink);background:var(--accent-soft)}
+.coll-head:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.coll-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.coll-icon{
+  width:10px;height:10px;flex-shrink:0;
+  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(-45deg);transition:transform .18s ease;color:var(--muted)
+}
+.collapsible.is-open .coll-icon{transform:rotate(45deg)}
+.collapsible.is-open .coll-head{color:var(--ink)}
+.collapsible>.coll-body{display:none}
+.collapsible.is-open>.coll-body{display:block}
+.collapsible:not(.is-open) .coll-icon{color:var(--soft-line)}
+/* head 脚本同步覆盖(首次 paint 应用持久化状态,避免闪烁) */
+html[data-init-open="hero"] .collapsible[data-collapsible="hero"]>.coll-body{display:block}
+html[data-init-open="hero"] .collapsible[data-collapsible="hero"] .coll-icon{transform:rotate(45deg)}
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header class="header">
+    <div>
+      <h1 id="headerTitle">OpenCode Go</h1>
+    </div>
+    <div class="header-meta">
+      <div class="status" id="statusMain"><i class="status-dot" id="statusDot"></i><strong id="statusText">API 正常</strong></div>
+      <div id="credentialLevelRow" hidden>等级 · <span id="credentialLevelText">--</span></div>
+      <div>最后更新 · <span id="updated">—</span></div>
+    </div>
+    <!-- 右上角供应商切换：点击 ⚙ 展开列表 -->
+    <div class="settings-gear" id="settingsGear">
+      <button type="button" class="gear-btn" id="gearBtn" title="切换供应商">⚙</button>
+      <div class="gear-menu" id="gearMenu" hidden>
+        <button type="button" class="gear-item" data-provider="deepseek"><span class="gear-dot"></span>DeepSeek</button>
+        <button type="button" class="gear-item" data-provider="minimax"><span class="gear-dot"></span>MiniMax</button>
+        <button type="button" class="gear-item" data-provider="zhipu"><span class="gear-dot"></span>ZhiPu GLM</button>
+        <button type="button" class="gear-item" data-provider="kimi"><span class="gear-dot"></span>Kimi For Coding</button>
+        <button type="button" class="gear-item" data-provider="opencode"><span class="gear-dot"></span>OpenCode Go</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="collapsible" id="collHero" data-collapsible="hero">
+    <button type="button" class="coll-head" aria-expanded="false" aria-controls="collHeroBody">
+      <span class="coll-title">订阅配额进度（5 小时 / 周 / 月）</span>
+      <span class="coll-icon" aria-hidden="true"></span>
+    </button>
+    <div class="coll-body" id="collHeroBody">
+      <section class="hero">
+        <div class="hero-main">
+          <!-- 5 小时滚动窗口（rolling） -->
+          <div class="gauge">
+            <div class="gauge-name">
+              <span>每五小时余额</span>
+              <em id="intervalPct">--%</em>
+            </div>
+            <div class="gauge-track"><i id="intervalBar"></i></div>
+            <div class="gauge-foot" id="intervalFoot">—</div>
+          </div>
+          <!-- 周窗口（weekly） -->
+          <div class="gauge">
+            <div class="gauge-name">
+              <span>每周余额</span>
+              <em id="weeklyPct">--%</em>
+            </div>
+            <div class="gauge-track"><i id="weeklyBar"></i></div>
+            <div class="gauge-foot" id="weeklyFoot">—</div>
+          </div>
+          <!-- 月窗口（monthly） -->
+          <div class="gauge">
+            <div class="gauge-name">
+              <span>每月余额</span>
+              <em id="monthlyPct">--%</em>
+            </div>
+            <div class="gauge-track"><i id="monthlyBar"></i></div>
+            <div class="gauge-foot" id="monthlyFoot">—</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Claude Code Hook 活动流：最近 5 条 hook 事件 -->
+  <section class="hooks" id="hooksSection" hidden>
+    <div class="hooks-title">Claude 活动</div>
+    <ul class="hooks-list" id="hooksList"></ul>
+  </section>
+
+</main>
+<script>
+"use strict";
+var bridge = window.chrome && window.chrome.webview;
+function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
+
+// 小时 → "3天5小时47分钟"；不足一天的省略"天"
+function fmtHMDaysZh(hours) {
+  if (hours == null || isNaN(hours) || hours <= 0) return "—";
+  var totalMin = Math.round(hours * 60);
+  var d = Math.floor(totalMin / 1440);
+  var h = Math.floor((totalMin % 1440) / 60);
+  var m = totalMin % 60;
+  var s = "";
+  if (d > 0) s += d + "天";
+  if (h > 0) s += h + "小时";
+  if (m > 0) s += m + "分钟";
+  if (s === "") s = "0分钟";
+  return s;
+}
+// 倒计时文案：percent == 0 时上游不返回真实 resetsAt，显示"重置时间未知"而不是 0 分钟。
+function resetFoot(hours) {
+  if (hours == null || isNaN(hours) || hours <= 0) return "重置时间未知";
+  return "距离下次重置还有 " + fmtHMDaysZh(hours);
+}
+function warning(pct) { return pct < 30; }
+
+function applyTheme(t) {
+  if (!t) return;
+  if (t.dark) document.body.setAttribute("data-dark", "");
+  else document.body.removeAttribute("data-dark");
+  var r = document.documentElement.style;
+  r.setProperty("--ink", t.text || (t.dark ? "#ebe9e1" : "#24211d"));
+  r.setProperty("--muted", t.weak || "#918f86");
+  r.setProperty("--accent", t.accent || "#9b493d");
+  r.setProperty("--paper", t.paper || (t.dark ? "#181815" : "#f3efe7"));
+}
+
+// provider → 面板标题的映射。OpenCode 使用独立的三窗口面板。
+var HEADER_TITLES = {
+  opencode: "OpenCode Go",
+  minimax:  "MiniMax Coding Plan",
+  zhipu:    "智谱 GLM Coding Plan",
+  kimi:     "Kimi For Coding"
+};
+
+// 渲染单条进度条；percent 为 null 时显示 "--%" 并清空进度。
+function renderGauge(prefix, percent, hours) {
+  var pctEl = document.getElementById(prefix + "Pct");
+  var barEl = document.getElementById(prefix + "Bar");
+  var footEl = document.getElementById(prefix + "Foot");
+  if (percent == null || isNaN(percent)) {
+    setText(prefix + "Pct", "--%");
+    if (barEl) { barEl.style.width = "0%"; barEl.className = ""; }
+    if (footEl) setText(prefix + "Foot", "—");
+    return;
+  }
+  var p = Math.max(0, Math.min(100, percent));
+  setText(prefix + "Pct", Math.round(p) + "%");
+  if (barEl) { barEl.style.width = p + "%"; barEl.className = warning(p) ? "warning" : ""; }
+  if (footEl) setText(prefix + "Foot", resetFoot(hours));
+}
+
+function render(msg) {
+  if (!msg) return;
+  applyTheme(msg.theme);
+  var d = msg.data || {};
+  // 供应商高亮：当前 provider 在下拉列表里打勾
+  var provider = d.provider || "opencode";
+  var menu = document.getElementById("gearMenu");
+  if (menu) {
+    var items = menu.querySelectorAll(".gear-item");
+    items.forEach(function (b) {
+      var isActive = b.getAttribute("data-provider") === provider;
+      if (isActive) b.classList.add("active");
+      else b.classList.remove("active");
+    });
+  }
+  // 标题：按 provider 查表；OpenCode 为默认。
+  setText("headerTitle", HEADER_TITLES[provider] || "OpenCode Go");
+
+  // 套餐等级（OpenCode 暂无），空时整行隐藏。
+  var credRow = document.getElementById("credentialLevelRow");
+  if (credRow) {
+    if (d.credentialLevel) {
+      credRow.hidden = false;
+      setText("credentialLevelText", d.credentialLevel);
+    } else {
+      credRow.hidden = true;
+    }
+  }
+
+  // 状态
+  var main = document.getElementById("statusMain");
+  var dot = document.getElementById("statusDot");
+  main.classList.remove("err"); dot.classList.remove("err");
+  if (d.statusKind === "ok") { setText("statusText", "API 正常"); }
+  else { main.classList.add("err"); dot.classList.add("err"); setText("statusText", d.status || "异常"); }
+  setText("updated", d.updateTime || "—");
+
+  // Claude Code hook 活动流
+  renderHooks(d.hooks || []);
+
+  // 5h / 周窗口来自 modelRemains[0]（OpenCode 只放一条 default 记录）。
+  var models = d.modelRemains || [];
+  var primary = models.length ? models[0] : null;
+  renderGauge("interval",
+    primary ? primary.percent : null,
+    primary ? primary.hours : null);
+  renderGauge("weekly",
+    primary ? primary.weeklyPercent : null,
+    primary ? primary.weeklyHours : null);
+  // 月窗口由 C# 端单独下发；缺失时为 null。
+  renderGauge("monthly", d.monthlyPercent, d.monthlyHours);
+}
+
+window.__renderBalance = function (msg) { try { render(msg); } catch (e) {} };
+
+// Claude Code hook 活动流：按数组顺序渲染最近 5 条；空数组隐藏整个 section。
+function renderHooks(hooks) {
+  var section = document.getElementById("hooksSection");
+  var list = document.getElementById("hooksList");
+  if (!section || !list) return;
+  if (!hooks || hooks.length === 0) { section.hidden = true; list.innerHTML = ""; return; }
+  section.hidden = false;
+  var html = "";
+  for (var i = 0; i < hooks.length; i++) {
+    var h = hooks[i];
+    var txt = (h.summary || h.event || "").toString();
+    html += '<li><span class="h-time">' + escapeHtml(h.time || "") +
+            '</span><span class="h-text" title="' + escapeHtml(txt) + '">' +
+            escapeHtml(txt) + '</span></li>';
+  }
+  list.innerHTML = html;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" })[c];
+  });
+}
+if (bridge) {
+  bridge.addEventListener("message", function (e) { try { render(JSON.parse(e.data)); } catch (e) {} });
+  bridge.postMessage({ type: "ready" });
+}
+
+/* ── Accordion 折叠:localStorage 持久化 + 无闪烁恢复 ── */
+var COLLAPSE_KEY = "paperTodo.balanceMonitor.collapse";
+var DEFAULT_COLLAPSE = { hero: true }; // true=默认展开(笔记纸默认尺寸适配)
+
+function loadCollapseState() {
+  try {
+    var raw = localStorage.getItem(COLLAPSE_KEY);
+    if (!raw) return Object.assign({}, DEFAULT_COLLAPSE);
+    return Object.assign({}, DEFAULT_COLLAPSE, JSON.parse(raw));
+  } catch (e) {
+    return Object.assign({}, DEFAULT_COLLAPSE);
+  }
+}
+function saveCollapseState(state) {
+  try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+function initCollapsibles() {
+  var state = loadCollapseState();
+  // 一次性迁移:zoom 1.0× 适配后默认改为展开,清掉旧的折叠状态
+  try {
+    if (!localStorage.getItem("paperTodo.balanceMonitor.collapse.v2")) {
+      localStorage.removeItem("paperTodo.balanceMonitor.collapse");
+      localStorage.setItem("paperTodo.balanceMonitor.collapse.v2", "1");
+      state = Object.assign({}, DEFAULT_COLLAPSE);
+      saveCollapseState(state);
+    }
+  } catch (e) {}
+  var nodes = document.querySelectorAll(".collapsible[data-collapsible]");
+  document.documentElement.removeAttribute("data-init-open");
+  nodes.forEach(function (el) {
+    var key = el.getAttribute("data-collapsible");
+    var head = el.querySelector(".coll-head");
+    if (!head || !DEFAULT_COLLAPSE.hasOwnProperty(key)) return;
+    var open = state[key] === true;
+    el.classList.toggle("is-open", open);
+    head.setAttribute("aria-expanded", open ? "true" : "false");
+    head.addEventListener("click", function (ev) {
+      if (ev.target.closest("select, input")) return;
+      var nowOpen = el.classList.toggle("is-open");
+      head.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+      state[key] = nowOpen;
+      saveCollapseState(state);
+    });
+  });
+}
+
+initCollapsibles();
+
+// 页面等比缩放：跟随宿主 WebView 容器尺寸变化
+// 宿主笔记纸默认宽度 304 DIP(320 - 16 chrome 边距),
+// baseVisualZoom = 304 DIP 下视觉缩放,等价于 monitor.html 的固定 1.35。
+// Todo 纸 264 DIP / 大尺寸 paper 等场景下,按 innerWidth / 304 等比缩放。
+(function () {
+  var BASE_DIP = 304;
+  var BASE_VISUAL_ZOOM = 1.0;   // 笔记纸 304 DIP 下视觉缩放 1.0×(适配后)
+  var ZOOM_MIN = 0.85;
+  var ZOOM_MAX = 1.5;
+  function syncZoom() {
+    var ratio = Math.max(0.01, window.innerWidth) / BASE_DIP;
+    var zoom = ratio * BASE_VISUAL_ZOOM;
+    document.body.style.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)).toFixed(3);
+  }
+  window.addEventListener("resize", syncZoom);
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncZoom).observe(document.documentElement);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncZoom, { once: true });
+  } else {
+    syncZoom();
+  }
+})();
+
+// 右上角 ⚙ 供应商切换：点按钮展开/收起列表；点列表项切换；点外部收起
+(function () {
+  var gear = document.getElementById("settingsGear");
+  var btn = document.getElementById("gearBtn");
+  var menu = document.getElementById("gearMenu");
+  if (!gear || !btn || !menu) return;
+
+  function setOpen(open) {
+    menu.hidden = !open;
+    btn.classList.toggle("open", open);
+  }
+  btn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    setOpen(menu.hidden);
+  });
+  menu.addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList || !t.classList.contains("gear-item")) return;
+    var p = t.getAttribute("data-provider");
+    if (!p) return;
+    setOpen(false);
+    if (t.classList.contains("active")) return; // 已是当前
+    if (bridge) {
+      bridge.postMessage({ type: "switchProvider", provider: p });
+    }
+  });
+  document.addEventListener("click", function () { setOpen(false); });
+})();
+</script>
+</body>
+</html>

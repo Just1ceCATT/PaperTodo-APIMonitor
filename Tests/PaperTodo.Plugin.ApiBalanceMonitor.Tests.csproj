@@ -21,7 +21,12 @@
       不要链接主 csproj 进来（UseWPF=true 会拖入 Windows-only 依赖，破坏纯逻辑测试）。
     -->
     <Compile Include="..\Models\BalanceSample.cs" Link="BalanceSample.cs" />
+    <Compile Include="..\Models\BalanceSnapshot.cs" Link="BalanceSnapshot.cs" />
     <Compile Include="..\Services\TrendAnalyzer.cs" Link="TrendAnalyzer.cs" />
+    <!-- OpenCodeProvider 只依赖 HttpClient / JsonDocument / HttpFetcher 纯逻辑，
+         不引用 WPF，可直接链接进 net10.0 测试工程覆盖解析逻辑。 -->
+    <Compile Include="..\Services\HttpFetcher.cs" Link="HttpFetcher.cs" />
+    <Compile Include="..\Services\OpenCodeProvider.cs" Link="OpenCodeProvider.cs" />
   </ItemGroup>
 
 </Project>

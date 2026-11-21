@@ -328,7 +328,7 @@ internal sealed partial class BalanceMiniView : Border
     public void Update(MiniViewSnapshot snapshot, string statusText)
     {
         // 顶部供应商名:按 Provider 设置文本与可见性。
-        // 配额型 (MiniMax / ZhiPu / Kimi) 共享双进度条模块。
+        // 配额型 (MiniMax / ZhiPu / Kimi / OpenCode) 共享双进度条模块。
         switch (snapshot.Provider)
         {
             case PaperState.MiniMax:
@@ -343,6 +343,10 @@ internal sealed partial class BalanceMiniView : Border
                 _providerHeader.Text = "Kimi For Coding";
                 _providerHeader.Visibility = Visibility.Visible;
                 break;
+            case PaperState.OpenCode:
+                _providerHeader.Text = "OpenCode Go";
+                _providerHeader.Visibility = Visibility.Visible;
+                break;
             case PaperState.DeepSeek:
                 _providerHeader.Text = "DeepSeek";
                 _providerHeader.Visibility = Visibility.Visible;
@@ -352,10 +356,12 @@ internal sealed partial class BalanceMiniView : Border
                 break;
         }
 
-        // 配额型 provider (MiniMax / ZhiPu / Kimi) 共用 _maxRootGrid 双进度条。
+        // 配额型 provider (MiniMax / ZhiPu / Kimi / OpenCode) 共用 _maxRootGrid 双进度条。
+        // OpenCode 的月窗口只在其专属 Web 面板展示，MiniView 仍按 5h + 周两行布局。
         if (string.Equals(snapshot.Provider, PaperState.MiniMax, StringComparison.Ordinal) ||
             string.Equals(snapshot.Provider, PaperState.ZhiPu, StringComparison.Ordinal) ||
-            string.Equals(snapshot.Provider, PaperState.Kimi, StringComparison.Ordinal))
+            string.Equals(snapshot.Provider, PaperState.Kimi, StringComparison.Ordinal) ||
+            string.Equals(snapshot.Provider, PaperState.OpenCode, StringComparison.Ordinal))
         {
             // 整个 _maxRootGrid 显示,_dsRootGrid 隐藏,互斥且不互相影响 layout。
             _maxRootGrid.Visibility = Visibility.Visible;

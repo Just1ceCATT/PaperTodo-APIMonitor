@@ -39,7 +39,7 @@ PaperTodo.ApiBalanceMonitor/                # 本仓库根(插件源码仓库)
 ├── Test-MiniMaxCodingPlan.ps1               # MiniMax 接口连通性测试(只测网络和 Key)
 ├── Models/                                  # 纯数据 record / DTO,不引用业务逻辑
 │   ├── BalanceSettings.cs                   # 全局设置 DTO(ApiKey / UsageToken / PollSeconds / ...)
-│   ├── PaperState.cs                        # per-paper state + Provider 常量(DefaultProvider / DeepSeek / MiniMax / OpenCode)
+│   ├── PaperState.cs                        # per-paper state + Provider 常量(DefaultProvider / DeepSeek / MiniMax / OpenCode / ...)
 │   ├── BalanceSnapshot.cs                   # 余额快照(Remaining / HasRemaining / StatusText)+ Empty / Error / Ok 工厂
 │   ├── UsageCostRecords.cs                  # UsageDay / CostDay / CostParseResult(今日各模型明细)
 │   └── ColorPalette.cs                      # 货币符号 → DeepSeek 币种代码映射(¥/CNY 等)
@@ -47,6 +47,7 @@ PaperTodo.ApiBalanceMonitor/                # 本仓库根(插件源码仓库)
 │   ├── HttpFetcher.cs                       # HTTP + JSON 通用助手(FetchJsonAsync / TryReadNumber)
 │   ├── DeepSeekProvider.cs                  # DeepSeek /user/balance 客户端 + 响应解析
 │   ├── MiniMaxProvider.cs                   # MiniMax /v1/api/openplatform/coding_plan/remains 客户端
+│   ├── OpenCodeProvider.cs                  # OpenCode Go /zen/go/v1/usage 三窗口用量客户端
 │   ├── UsageProvider.cs                     # DeepSeek usage + cost 接口客户端
 │   ├── SettingsReader.cs                    # 解析全局 settings JSON
 │   └── RiskClassifier.cs                    # 风险档位阈值(Safe / Warming / Danger / Overrun)+ 风险色 + ClassifyRisk
@@ -224,8 +225,8 @@ powershell -File Test-DeepSeekBalance.ps1
 
 - 不要在 UI 文案里硬编码白色 / 黑色,统一跟随宿主主题 `PaperBodyTheme.TextColor` / `PaperBodyTheme.PaperColor`。
 - 不要把供应商 Key(`deepseekApiKey` / `minimaxApiKey` / `opencodeApiKey`)写入 per-paper state;Key 始终走全局设置。
-- 不要为 OpenCode Go 引入半成品 UI;面板返回"尚未适配该供应商"是当前契约。
-- 不要把多个供应商的监视面板 HTML 塞进同一个文件用 `if` 分发;`web/monitor.html` 与 `web/minimax.html` 各自维护,新增供应商时按 `HtmlFileNameFor(provider)` 同步扩展。
+- OpenCode Go 已完整接入（`OpenCodeProvider` + `web/opencode.html` 三进度条面板）;不要再退回「尚未适配该供应商」的半成品状态。
+- 不要把多个供应商的监视面板 HTML 塞进同一个文件用 `if` 分发;`web/monitor.html`、`web/minimax.html`、`web/opencode.html` 各自维护,新增供应商时按 `HtmlFileNameFor(provider)` 同步扩展。
 - 不要让签名 / 风险色 / status 文本中**任何一个**变化就触发 `SetCapsulePresentation` 重写;signature 去重是宿主布局稳定的前提。
 
 ---
@@ -241,8 +242,8 @@ powershell -File Test-DeepSeekBalance.ps1
 ### 产品边界
 
 - 本插件是为 PaperTodo 提供额外能力的**第三方余额监测面板**,不是账户管理平台、计费系统或限流工具。默认不做账号体系、Token 计算、明细导出、配额充值、跨供应商余额汇总、自动告警通道。
-- 支持的供应商:**DeepSeek**(`/user/balance`、`/api/v0/usage/...`)与 **MiniMax**(`/v1/api/openplatform/coding_plan/remains`)。**OpenCode Go** 仅在 `plugin.json` 中预留 Key 入口,监视面板返回「尚未适配该供应商」。
-- UI 分三层:**胶囊**(常驻可见,1.7 自绘)/ **MiniView**(1.8 边缘预览,MiniMax 双进度条 + DeepSeek 三列卡片)/ **展开后的监视面板**(WebView2)。
+- 支持的供应商:**DeepSeek**(`/user/balance`、`/api/v0/usage/...`)、**MiniMax**(`/v1/api/openplatform/coding_plan/remains`)、**ZhiPu GLM**、**Kimi For Coding** 与 **OpenCode Go**(`/zen/go/v1/usage`)。**MiMo / CodeX** 仅在 `plugin.json` 中预留 Key 入口,监视面板返回「尚未适配该供应商」。
+- UI 分三层:**胶囊**(常驻可见,1.7 自绘)/ **MiniView**(1.8 边缘预览,配额型双进度条 + DeepSeek 三列卡片)/ **展开后的监视面板**(WebView2)。
 - 每张 paper 独立选择供应商(per-paper state);不同纸条可以选不同供应商,但 Key 始终走全局设置。
 
 ### 插件协议
@@ -276,7 +277,7 @@ powershell -File Test-DeepSeekBalance.ps1
 
 ### WebView2 监视面板
 
-- C# 端 `BuildViewPayload` 输出必须保持键名稳定(`provider` / `status` / `statusKind` / `balance` / `costToday` / `cost7d` / `todayTokens` / `todayHit` / `cacheRate` / `modelRemains` / `usage` / ...);改键名必须同时改 `web/*.html` 的 `window.__renderBalance`。
+- C# 端 `BuildViewPayload` 输出必须保持键名稳定(`provider` / `status` / `statusKind` / `balance` / `costToday` / `cost7d` / `todayTokens` / `todayHit` / `cacheRate` / `modelRemains` / `monthlyPercent` / `monthlyHours` / `usage` / ...);改键名必须同时改 `web/*.html` 的 `window.__renderBalance`。
 - 虚拟主机名 `papertodo.balance.monitor.local` 与 `userDataFolder`(默认 `<pluginDir>/.runtime/webview2`)是本插件私有命名空间,不要复用宿主其他插件使用的虚拟主机名。
 - WebView2 渲染进程 `RenderProcessExited` 时调用 `CoreWebView2.Reload()` 恢复;不要在 `ProcessFailed` 里直接 Dispose `_webView`,留给 `Dispose()`。
 - `_webViewReady` / `_documentReady` 双闸门:任一未就绪就把最新 payload 缓存到 `_pendingPayload`,`NavigationCompleted` 后补发。

@@ -51,6 +51,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private readonly MiniMaxProvider _minimax;
     private readonly ZhiPuProvider _zhipu;
     private readonly KimiProvider _kimi;
+    private readonly OpenCodeProvider _opencode;
     private readonly UsageProvider _usage;
     private UsageDay[]? _usageDays;
     private CostDay[]? _costDays;
@@ -62,6 +63,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     private List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? _minimaxModelRemains;
     // ZhiPu 返回的 data.level(max / pro / ...),其他 provider 为 null。
     private string? _credentialLevel;
+    // OpenCode Go 的月窗口剩余%与重置时长；其他 provider 为 null。
+    // 5h / 周窗口复用上面的 _minimax* 缓存，月窗口只有 OpenCode 返回，单独存放。
+    private double? _opencodeMonthlyPercent;
+    private double? _opencodeMonthlyHours;
     private PaperBodyTheme _theme;
     // 关闭胶囊圆环（来自 settings.disableRing）。ApplySettings 同步；CreateCapsuleView 读它传给胶囊构造。
     private bool _disableRing;
@@ -83,6 +88,10 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     internal List<(string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)>? MiniMaxModelRemains => _minimaxModelRemains;
     /// <summary>ZhiPu data.level(max / pro / ...);其他 provider 为 null。供 web 面板显示套餐等级。</summary>
     internal string? CredentialLevel => _credentialLevel;
+    /// <summary>OpenCode Go 月窗口剩余百分比 0-100；其他 provider / 缺少窗口时为 null。</summary>
+    internal double? OpenCodeMonthlyPercent => _opencodeMonthlyPercent;
+    /// <summary>OpenCode Go 月窗口距重置的小时数；percent == 0 或缺少窗口时为 null/0。</summary>
+    internal double? OpenCodeMonthlyHours => _opencodeMonthlyHours;
     /// <summary>最近的 Claude Code hook 事件；用于胶囊 ToolTip 第二行。</summary>
     internal HookEvent LatestHookEvent => _latestHookEvent;
     /// <summary>滑窗：最近 5 条 hook 事件；用于 Web 面板"Claude 活动"列表。</summary>
@@ -178,6 +187,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _minimax = new MiniMaxProvider(_http);
         _zhipu = new ZhiPuProvider(_http);
         _kimi = new KimiProvider(_http);
+        _opencode = new OpenCodeProvider(_http);
         _usage = new UsageProvider(_http);
         _panel = new WebPanel.WebViewPanelHost();
         _panel.SetActiveProvider(_state.Provider);
@@ -499,6 +509,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         _minimaxModelRemains = null;
         _minimaxRemainingPercent = null;
         _credentialLevel = null;
+        _opencodeMonthlyPercent = null;
+        _opencodeMonthlyHours = null;
         // 清空所有胶囊视图缓存：不同 provider 对应不同胶囊类，下一次 CreateCapsuleView
         // 会按新 provider 实例化正确类型。
         _regularRingCapsuleView = null;
@@ -668,7 +680,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
 
     /// <summary>
     /// 拉取当前 provider 的余额。MiniMax → MiniMaxProvider;ZhiPu → ZhiPuProvider;
-    /// Kimi → KimiProvider;OpenCode / MiMo / CodeX → "尚未适配";默认 DeepSeek。
+    /// Kimi → KimiProvider;OpenCode → OpenCodeProvider;MiMo / CodeX → "尚未适配";默认 DeepSeek。
     /// 失败/网络异常走 BalanceSnapshot.Error。
     /// </summary>
     private async Task<BalanceSnapshot> FetchBalanceAsync()
@@ -700,11 +712,22 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
             _credentialLevel = _kimi.CredentialLevel;
             return snap;
         }
-        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal) ||
-            string.Equals(_state.Provider, PaperState.MiMo, StringComparison.Ordinal) ||
+        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
+        {
+            var snap = await _opencode.FetchBalanceAsync(_settings.ApiKey).ConfigureAwait(false);
+            // 5h / 周窗口复用 _minimax* 缓存（与 MiniMax / ZhiPu / Kimi 同构），
+            // 月窗口单独缓存，供 web/opencode.html 第三条进度条使用。
+            _minimaxModelRemains = _opencode.ModelRemains;
+            _minimaxRemainingPercent = _opencode.RemainingPercent;
+            _credentialLevel = _opencode.CredentialLevel;
+            _opencodeMonthlyPercent = _opencode.MonthlyPercent;
+            _opencodeMonthlyHours = _opencode.MonthlyHours;
+            return snap;
+        }
+        if (string.Equals(_state.Provider, PaperState.MiMo, StringComparison.Ordinal) ||
             string.Equals(_state.Provider, PaperState.CodeX, StringComparison.Ordinal))
         {
-            // 预留 Key 入口但不发起真实请求,与 AGENTS.md「不要为 OpenCode Go 引入半成品 UI」契约一致。
+            // 预留 Key 入口但不发起真实请求。
             return BalanceSnapshot.Error("尚未适配该供应商");
         }
         // DeepSeek（默认）
@@ -783,7 +806,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         // 趋势：每次刷新都重算（窗口是滑动窗口，时间会裁剪样本）；和阈值是两套独立指标。
         var trend = CurrentTrend;
 
-        var text = BuildCapsuleText(snapshot, _settings, _state, riskRatio, _costDays);
+        var text = BuildCapsuleText(
+            snapshot, _settings, _state, riskRatio, _costDays,
+            GetQuotaResetHoursForCapsule());
         var toolTip = string.IsNullOrEmpty(snapshot.StatusText)
             ? text
             : $"{text}\n{snapshot.StatusText}";
@@ -910,8 +935,8 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     /// <summary>
     /// 协议 1.7 自定义胶囊视图：宿主为 Regular / Docked 各调一次并缓存；宽度变化时重新调用。
     /// 必须返回 fresh unparented FrameworkElement（宿主校验 Parent==null）。
-    /// 按当前 provider 分发到独立的胶囊类：配额型 (MiniMax / ZhiPu / Kimi) → BalanceRingCapsuleView，
-    /// 其他 (DeepSeek / OpenCode / MiMo / CodeX) → BalanceDotCapsuleView。
+    /// 按当前 provider 分发到独立的胶囊类：配额型 (MiniMax / ZhiPu / Kimi / OpenCode) → BalanceRingCapsuleView，
+    /// 其他 (DeepSeek / MiMo / CodeX) → BalanceDotCapsuleView。
     /// 两种胶囊互不继承、各自封装指示器。
     /// </summary>
     public FrameworkElement? CreateCapsuleView(PaperCapsuleViewContext context)
@@ -939,7 +964,7 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
         }
 
         var dotView = new BalanceDotCapsuleView(context);
-        // DeepSeek/OpenCode/ZhiPu/MiMo/CodeX 走 BalanceDotCapsuleView,关闭圆环时内圆点也一并隐藏。
+        // DeepSeek/MiMo/CodeX 走 BalanceDotCapsuleView,关闭圆环时内圆点也一并隐藏。
         dotView.SetRingVisible(!_disableRing);
         // 关闭呼吸动效设置首次创建时即时生效,与 _disableRing 同步应用。
         dotView.SetDotBreathEnabled(!_disableDotBreath);
@@ -965,14 +990,9 @@ internal sealed class BalanceSession : IPaperBodySession, IPaperCapsuleViewProvi
     }
 
     /// <summary>
-    /// <summary>
-/// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
-/// </summary>
-    /// <summary>
-/// 协议 1.8 自定义边缘预览视图：胶囊悬停时暴露 brief 卡片。OpenCode 返回 null 让宿主走 1.6/1.7 回退。
-/// DeepSeek(3 行 + footer)需要更大空间,返回 322×232;MiniMax(2 行双模块)改为 280×190;
-/// OpenCode 返回 null view 但宿主仍需尺寸用于布局占位,同样返回 280×190。
-/// </summary>
+    /// 协议 1.8 自定义边缘预览视图尺寸：DeepSeek(3 行 + footer)需要更大空间，返回 322×232；
+    /// 配额型 provider（MiniMax / ZhiPu / Kimi / OpenCode）双进度条返回 280×190。
+    /// </summary>
 public PaperMiniViewSize PreferredMiniViewSize
 {
     get
@@ -988,10 +1008,6 @@ public PaperMiniViewSize PreferredMiniViewSize
 
     public FrameworkElement? CreateMiniView(PaperMiniViewContext context)
     {
-        if (string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
-        {
-            return null;
-        }
         var view = new BalanceMiniView(_miniViewFontFamily, context);
         view.ApplyTheme(context.Theme);
         // 显式锁定 MiniView 尺寸为 PreferredMiniViewSize。
@@ -1015,7 +1031,7 @@ public PaperMiniViewSize PreferredMiniViewSize
     public void OnMiniViewVisibilityChanged(bool visible) { }
 
     /// <summary>
-    /// 把当前 snapshot 推给 1.8 边缘预览视图。MiniMax 走 5h+周双模块;
+    /// 把当前 snapshot 推给 1.8 边缘预览视图。配额型 provider 走 5h+周双模块;
     /// DeepSeek 走三列卡片(今日消费/近7日/今日消耗)。非二者时 _miniView 为 null 空操作。
     /// </summary>
     private void ApplyMiniViewSnapshot()
@@ -1027,9 +1043,10 @@ public PaperMiniViewSize PreferredMiniViewSize
 
         if (IsQuotaProvider && _minimaxModelRemains != null && _minimaxModelRemains.Count > 0)
         {
-            // 三家配额型 provider (MiniMax/ZhiPu/Kimi) 共用 model_remains 字段。
-            // MiniMax 真实填 general 模型；ZhiPu/Kimi 只放一条 ("default", 5hPct, 5hHours, weeklyPct, weeklyHours)。
-            // 优先匹配 "general"（MiniMax），找不到时 fallback 到首条（ZhiPu/Kimi）。
+            // 配额型 provider (MiniMax/ZhiPu/Kimi/OpenCode) 共用 model_remains 字段。
+            // MiniMax 真实填 general 模型；ZhiPu/Kimi/OpenCode 只放一条
+            // ("default", 5hPct, 5hHours, weeklyPct, weeklyHours)。
+            // 优先匹配 "general"（MiniMax），找不到时 fallback 到首条（ZhiPu/Kimi/OpenCode）。
             (string Model, double Percent, double Hours, double WeeklyPercent, double WeeklyHours)? picked = null;
             for (var i = 0; i < _minimaxModelRemains.Count; i++)
             {
@@ -1088,7 +1105,24 @@ public PaperMiniViewSize PreferredMiniViewSize
     }
 
     /// <summary>
-    /// 胶囊文本：MiniMax 走 "xx% · xx时xx分"；DeepSeek 走两段 "◉ ¥余额 · -¥今日消耗"，
+    /// OpenCode 胶囊倒计时使用的 5h 窗口重置小时数；非 OpenCode 返回 null。
+    /// 数据来自 modelRemains[0].Hours（与 MiniView 5h 进度条同源）。
+    /// </summary>
+    private double? GetQuotaResetHoursForCapsule()
+    {
+        if (!string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        if (_minimaxModelRemains is { Count: > 0 })
+        {
+            return _minimaxModelRemains[0].Hours;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 胶囊文本：配额型 provider 走 "xx% · xx时xx分"；DeepSeek 走两段 "◉ ¥余额 · -¥今日消耗"，
     /// 缺数据的段整段省略（避免出现 "--" / 空分隔符）。百分比圆环由视图层切到呼吸圆点，
     /// 所以 ShowPercentage 不再影响 DeepSeek 文本。
     /// </summary>
@@ -1097,9 +1131,44 @@ public PaperMiniViewSize PreferredMiniViewSize
         BalanceSettings settings,
         PaperState state,
         double riskRatio,
-        CostDay[]? costDays)
+        CostDay[]? costDays,
+        double? quotaResetHours)
     {
         var sb = new StringBuilder();
+        // OpenCode Go：snapshot.Remaining 是主窗口剩余百分比（不是小时），
+        // 倒计时取 5h 窗口的 quotaResetHours。percent == 0 时上游不返回真实重置时间，
+        // 只显示 "100%" 不显示倒计时。
+        if (string.Equals(state.Provider, PaperState.OpenCode, StringComparison.Ordinal))
+        {
+            if (snapshot.HasRemaining && !double.IsNaN(snapshot.Remaining))
+            {
+                var remain = (int)Math.Round(
+                    Math.Clamp(snapshot.Remaining, 0, 100), MidpointRounding.AwayFromZero);
+                sb.Append(remain.ToString(CultureInfo.CurrentCulture));
+                sb.Append('%');
+                if (quotaResetHours is > 0)
+                {
+                    var hours = quotaResetHours.Value;
+                    var h = (int)Math.Floor(hours);
+                    var m = (int)Math.Round((hours - h) * 60);
+                    if (m == 60)
+                    {
+                        h += 1;
+                        m = 0;
+                    }
+                    sb.Append(" · ");
+                    sb.Append(h.ToString(CultureInfo.CurrentCulture));
+                    sb.Append('时');
+                    sb.Append(m.ToString(CultureInfo.CurrentCulture));
+                    sb.Append('分');
+                }
+            }
+            else
+            {
+                sb.Append('—');
+            }
+            return sb.ToString();
+        }
         // MiniMax：胶囊显示 "xx% · xx时xx分"——百分比为 current_interval_remaining_percent，
         // 时长为 remains_time 转换的时分。圆环弧值由 UpdateSnapshot 用剩余百分比计算。
         if (string.Equals(state.Provider, PaperState.MiniMax, StringComparison.Ordinal))
@@ -1191,17 +1260,20 @@ public PaperMiniViewSize PreferredMiniViewSize
         string.Equals(_state.Provider, PaperState.MiniMax, StringComparison.Ordinal);
 
     /// <summary>
-    /// 当前 provider 是否为 5h+weekly 双桶的"配额型" provider（MiniMax / ZhiPu / Kimi）。
-    /// 这三家共享同一个 5h 剩余% 缓存字段 + 同样的 ringColor/ringArc/riskRatio 算法。
+    /// 当前 provider 是否为 5h+weekly 双桶的"配额型" provider
+    /// （MiniMax / ZhiPu / Kimi / OpenCode）。
+    /// 这几家共享同一个 5h 剩余% 缓存字段 + 同样的 ringColor/ringArc/riskRatio 算法；
+    /// OpenCode 额外有 monthly 窗口，单独用 _opencode* 字段缓存。
     /// </summary>
     internal bool IsQuotaProvider =>
         string.Equals(_state.Provider, PaperState.MiniMax, StringComparison.Ordinal) ||
         string.Equals(_state.Provider, PaperState.ZhiPu, StringComparison.Ordinal) ||
-        string.Equals(_state.Provider, PaperState.Kimi, StringComparison.Ordinal);
+        string.Equals(_state.Provider, PaperState.Kimi, StringComparison.Ordinal) ||
+        string.Equals(_state.Provider, PaperState.OpenCode, StringComparison.Ordinal);
 
     /// <summary>
-    /// 当前供应商的风险比例：配额型 (MiniMax/ZhiPu/Kimi) 用"已消耗比例"（100 − 剩余百分比），
-    /// DeepSeek 已删除阈值风险比逻辑，固定返回 0（Safe 绿、弧值 0）。
+    /// 当前供应商的风险比例：配额型 (MiniMax/ZhiPu/Kimi/OpenCode) 用"已消耗比例"
+    /// （100 − 剩余百分比），DeepSeek 已删除阈值风险比逻辑，固定返回 0（Safe 绿、弧值 0）。
     /// 统一过滤 NaN/Infinity。
     /// internal:供 Payload/ViewPayloadBuilder 读取。
     /// </summary>

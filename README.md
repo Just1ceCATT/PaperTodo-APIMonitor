@@ -6,7 +6,7 @@
 - **MiniView**(1.8 自绘)— paper 悬停预览时,在屏幕边缘露出的小卡
 - **监视面板**(WebView2)— 点胶囊展开后显示的完整 HTML 面板
 
-> 当前版本 **1.2.0**(API 协议 **2.0**)。已支持 **DeepSeek / MiniMax / Kimi For Coding / ZhiPu GLM** 四个供应商;OpenCode Go / MiMo / CodeX 已预留 Key 入口,监视面板暂未适配。
+> 当前版本 **1.4.0**(API 协议 **2.1**)。已支持 **DeepSeek / MiniMax / Kimi For Coding / ZhiPu GLM / OpenCode Go** 五个供应商;MiMo / CodeX 已预留 Key 入口,监视面板暂未适配。
 
 ---
 
@@ -18,7 +18,7 @@
 
 - **状态指示**:
   - DeepSeek:风险圆环 + 余额数字(`¥15.96` 或 `21% · ¥15.96`,百分比可在设置里关)
-  - MiniMax / Kimi / ZhiPu:剩余百分比 + 当前周期重置倒计时(`7% · 3时45分`)
+  - MiniMax / Kimi / ZhiPu / OpenCode:剩余百分比 + 当前周期重置倒计时(`7% · 3时45分`)
 - **风险色**:余额越低颜色越红,跟着阈值走;阈值未设置时显示灰色。设置里可一键关闭圆环(`disableRing`),仅保留文字。
 - **hook overlay**:Claude Code 触发 `PreToolUse` / `PostToolUse` 时,胶囊临时覆盖一个旋转沙漏或工具名;`Stop` / `PermissionRequest` / `PostToolUseFailure` 时覆盖一个对勾 / 问号 / 红叉,默认 3 秒后恢复余额(可在插件设置里调成 1-30 秒)。
 
@@ -55,6 +55,13 @@ WebView2 渲染 `web/monitor.html` 或 `web/minimax.html`,与 paper body 容器�
 
 - 顶部:Coding Plan 标题(22px serif)+ 状态点 + ⚙ 切换
 - **两根进度条**:每五小时余额(interval)+ 每周余额(weekly),各自显示百分比 + 倒计时;风险 < 30% 时进度条变橙
+- **Claude Code 活动流**(同 DeepSeek)
+
+**OpenCode Go**(面板标题 "OpenCode Go"):
+
+- 独立的 `web/opencode.html`,顶部为订阅标题 + 状态点 + ⚙ 切换
+- **三根进度条**:每五小时(rolling)/ 每周(weekly)/ 每月(monthly),显示剩余百分比 + 重置倒计时
+- `percent == 0` 的窗口上游不返回真实重置时间,倒计时显示「重置时间未知」
 - **Claude Code 活动流**(同 DeepSeek)
 
 每个 section header 都可以**点击收起 / 展开**,折叠状态写 `localStorage`(`paperTodo.balanceMonitor.collapse`),跨 paper / 跨 provider / 重启 PaperTodo 都保留。`hooks` 段不受折叠影响,由数据驱动(`hooks = []` 时整段 `hidden`)。
@@ -124,7 +131,7 @@ WebView2 渲染 `web/monitor.html` 或 `web/minimax.html`,与 paper body 容器�
 | ZhiPu 区域 | select,国际版 / 国内版 |
 | ZhiPu 套餐类型 | select,影响配额面板字段 |
 | Kimi For Coding API Key | platform.kimi.com 控制台获取 |
-| OpenCode Go API Key | 开发中,面板暂未适配 |
+| OpenCode Go API Key | 查询 5 小时 / 每周 / 每月三档订阅配额;面板展示剩余百分比与重置倒计时 |
 | MiMo API Key | 开发中,面板暂未适配 |
 | CodeX API Key | 开发中,面板暂未适配 |
 
@@ -194,6 +201,7 @@ powershell -File Test-DeepSeekBalance.ps1
 | MiniMax | Coding Plan 余额 | `https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains` |
 | ZhiPu GLM | Coding Plan 余额 | 国内 / 国际版区分 |
 | Kimi For Coding | Coding Plan 余额 | `platform.kimi.com` |
+| OpenCode Go | 订阅用量(5 小时 / 周 / 月) | `https://opencode.ai/zen/go/v1/usage` |
 
 ---
 
@@ -209,7 +217,7 @@ powershell -File Test-DeepSeekBalance.ps1
 
 **切换供应商后没反应?**
 - ⚙ 切换是按"每张纸"独立记录的。如果面板是 HTML 重载后还没拉数据,等一个轮询周期即可。
-- 切换到 OpenCode / MiMo / CodeX 会回到「尚未适配该供应商」状态,这是正常的(面板开发中)。
+- 切换到 MiMo / CodeX 会回到「尚未适配该供应商」状态,这是正常的(面板开发中)。
 
 **Key 是明文存储,安全吗?**
 - 本插件不加密,文件落在 PaperTodo 的 `plugins/data/api.balance.monitor.json` 下,本机用户权限即可读取。**请勿在共享电脑使用,或自行评估是否接受此风险**。
@@ -223,7 +231,8 @@ powershell -File Test-DeepSeekBalance.ps1
 
 ## 版本历史
 
-- **1.2.0**(当前)— Kimi / ZhiPu 接入、Capsule hook overlay、`HookOverlayController` 状态机、MiniView 1.8 协议、笔记纸默认尺寸适配(zoom 1.0× + 折叠默认展开)、WebView2 等比缩放
+- **1.4.0**(当前)— OpenCode Go 接入:三窗口订阅用量查询、环形胶囊、MiniView 双进度条、`web/opencode.html` 三进度条面板
+- **1.2.0** — Kimi / ZhiPu 接入、Capsule hook overlay、`HookOverlayController` 状态机、MiniView 1.8 协议、笔记纸默认尺寸适配(zoom 1.0× + 折叠默认展开)、WebView2 等比缩放
 - **1.1.0** — DeepSeek / MiniMax 双供应商、HTML 监视面板、缓存命中可视化
 - **1.0.0** — DeepSeek 单一余额监测
 

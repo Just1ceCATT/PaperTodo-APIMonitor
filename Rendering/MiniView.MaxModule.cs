@@ -265,13 +265,17 @@ internal sealed partial class BalanceMiniView
     /// 把小时数格式化为剩余时长。
     /// 5h(includeDays=false):"x 时 y 分 后重置",小时为 0 时简化为 "x 分 后重置"。
     /// 周(includeDays=true):"x 天 x 时 x 分 后重置",三段都显示不省略。
-    /// NaN / 0 / 负数视为未拉取。
+    /// NaN 视为未拉取；0 / 负数视为上游未返回真实重置时间（OpenCode percent == 0 场景）。
     /// </summary>
     private static string FormatRemaining(double hours, bool includeDays)
     {
-        if (double.IsNaN(hours) || hours <= 0)
+        if (double.IsNaN(hours))
         {
             return "尚未拉取";
+        }
+        if (hours <= 0)
+        {
+            return "重置时间未知";
         }
         var totalHours = (int)Math.Floor(hours);
         var m = (int)Math.Round((hours - totalHours) * 60);

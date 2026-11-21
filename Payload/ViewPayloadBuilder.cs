@@ -88,6 +88,9 @@ internal sealed class ViewPayloadBuilder
             ["todayHit"] = RiskClassifier.Finite(MetricsAggregator.BuildTodayHit(usageDays)),
             ["cacheRate"] = RiskClassifier.FiniteOrNull(MetricsAggregator.BuildTodayCacheRate(usageDays)),
             ["modelRemains"] = MetricsAggregator.BuildMiniMaxModelRemains(minimaxModelRemains),
+            // OpenCode Go 专属月窗口；其他 provider 为 null，opencode.html 据此隐藏/置空。
+            ["monthlyPercent"] = _session.OpenCodeMonthlyPercent,
+            ["monthlyHours"] = _session.OpenCodeMonthlyHours,
             ["usage"] = MetricsAggregator.BuildUsageArray(usageDays),
             // 余额趋势：30 分钟滑动窗口分析结果。前端可按 trendLevel 决定是否渲染。
             // MiniMax / OpenCode 走"unknown"占位，前端识别后不显示。
